@@ -61,8 +61,11 @@ return new class extends Migration
             $table->string('operation_type', 50);
             $table->string('resource_type', 100);
             $table->string('resource_id', 100)->nullable();
+            $table->string('status', 30)->default('completed'); // processing, completed, failed
             $table->jsonb('response_payload')->nullable();
+            $table->text('error_message')->nullable();
             $table->timestamp('created_at')->useCurrent();
+            $table->timestamp('completed_at')->nullable();
 
             $table->unique(['tenant_id', 'idempotency_key', 'operation_type'], 'inv_op_keys_unique');
         });

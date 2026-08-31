@@ -9,6 +9,8 @@ use Database\Seeders\ReferenceDataSeeder;
 use Modules\Catalog\Actions\CreateProductAction;
 use Modules\Catalog\DTOs\ProductData;
 use Modules\Inventory\Contracts\InventoryAdjustmentServiceInterface;
+use Modules\Inventory\Models\InventoryMovement;
+use Modules\Inventory\Models\InventoryOperationKey;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
@@ -37,15 +39,26 @@ beforeEach(function (): void {
     ]);
 });
 
-test('Receiving with duplicate idempotency key does not duplicate stock', function (): void {
+test('Claim-first idempotency prevents duplicate stock addition on retried calls', function (): void {
     $service = app(InventoryAdjustmentServiceInterface::class);
 
-    $service->receive($this->stockItem, Quantity::fromString('15.0000'), idempotencyKey: 'RECEIVE-KEY-100');
+    // Initial receive: +15
+    $m1 = $service->receive($this->stockItem, Quantity::fromString('15.0000'), idempotencyKey: 'RECEIVE-KEY-100');
     $this->stockItem->refresh();
     expect($this->stockItem->on_hand)->toBe('15.0000');
 
-    $service->receive($this->stockItem, Quantity::fromString('15.0000'), idempotencyKey: 'RECEIVE-KEY-100');
+    // Duplicate call with identical key
+    $m2 = $service->receive($this->stockItem, Quantity::fromString('15.0000'), idempotencyKey: 'RECEIVE-KEY-100');
     $this->stockItem->refresh();
 
-    expect($this->stockItem->on_hand)->toBe('15.0000');
+    // Stock must remain 15.0000, not 30.0000
+    expect($this->stockItem->on_hand)->toBe('15.0000')
+        ->and($m1->id)->toBe($m2->id);
+
+    // Verify exactly 1 movement and 1 operation key in database
+    $movementsCount = InventoryMovement::where('stock_item_id', $this->stockItem->id)->count();
+    $keysCount = InventoryOperationKey::where('idempotency_key', 'RECEIVE-KEY-100')->count();
+
+    expect($movementsCount)->toBe(1)
+        ->and($keysCount)->toBe(1);
 });

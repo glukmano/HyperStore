@@ -12,8 +12,10 @@ return new class extends Migration
             $table->id();
             $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
             $table->string('transfer_number', 100);
-            $table->foreignId('source_warehouse_id')->constrained('warehouses')->cascadeOnDelete();
-            $table->foreignId('destination_warehouse_id')->constrained('warehouses')->cascadeOnDelete();
+            $table->foreignId('source_inventory_source_id')->constrained('inventory_sources')->cascadeOnDelete();
+            $table->foreignId('destination_inventory_source_id')->constrained('inventory_sources')->cascadeOnDelete();
+            $table->foreignId('source_warehouse_id')->nullable()->constrained('warehouses')->nullOnDelete();
+            $table->foreignId('destination_warehouse_id')->nullable()->constrained('warehouses')->nullOnDelete();
             $table->string('status', 50)->default('draft'); // draft, requested, in_transit, received, cancelled
             $table->timestamp('dispatched_at')->nullable();
             $table->timestamp('received_at')->nullable();

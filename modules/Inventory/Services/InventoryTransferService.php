@@ -11,7 +11,6 @@ use Modules\Inventory\Contracts\InventoryTransferServiceInterface;
 use Modules\Inventory\Events\StockTransferReceived;
 use Modules\Inventory\Events\StockTransferred;
 use Modules\Inventory\Models\InventoryMovement;
-use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\InventoryTransfer;
 use Modules\Inventory\Models\InventoryTransferItem;
 use Modules\Inventory\Models\StockItem;
@@ -44,10 +43,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         throw new InvalidArgumentException('Transfer must be in draft or requested status to dispatch.');
                     }
 
-                    $sourceInvSource = InventorySource::query()
-                        ->where('tenant_id', $lockedTransfer->tenant_id)
-                        ->where('warehouse_id', $lockedTransfer->source_warehouse_id)
-                        ->firstOrFail();
+                    $sourceSourceId = $lockedTransfer->source_inventory_source_id;
 
                     // Sort transfer items deterministically by product_id
                     $items = $lockedTransfer->items()->orderBy('product_id')->get();
@@ -57,7 +53,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         /** @var StockItem $sourceStock */
                         $sourceStock = StockItem::query()
                             ->where('tenant_id', $lockedTransfer->tenant_id)
-                            ->where('inventory_source_id', $sourceInvSource->id)
+                            ->where('inventory_source_id', $sourceSourceId)
                             ->where('product_id', $item->product_id)
                             ->where('product_variant_id', $item->product_variant_id)
                             ->lockForUpdate()
@@ -67,7 +63,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         $currentOnHand = Quantity::fromString((string) $sourceStock->on_hand);
 
                         if ($currentOnHand->isLessThan($reqQty)) {
-                            throw new InvalidArgumentException('Source warehouse does not have enough on-hand stock to dispatch transfer.');
+                            throw new InvalidArgumentException('Source inventory source does not have enough on-hand stock to dispatch transfer.');
                         }
 
                         // Deduct from source on_hand
@@ -80,7 +76,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         InventoryMovement::create([
                             'tenant_id' => $lockedTransfer->tenant_id,
                             'stock_item_id' => $sourceStock->id,
-                            'inventory_source_id' => $sourceInvSource->id,
+                            'inventory_source_id' => $sourceSourceId,
                             'product_id' => $item->product_id,
                             'product_variant_id' => $item->product_variant_id,
                             'quantity_delta' => '-'.$reqQty->toString(),
@@ -88,7 +84,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                             'movement_type' => 'transfer_out',
                             'reference_type' => 'inventory_transfer',
                             'reference_id' => $lockedTransfer->transfer_number,
-                            'reason' => "Dispatched transfer to destination warehouse #{$lockedTransfer->destination_warehouse_id}",
+                            'reason' => "Dispatched transfer to destination source #{$lockedTransfer->destination_inventory_source_id}",
                             'created_at' => now(),
                         ]);
                     }
@@ -126,11 +122,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         throw new InvalidArgumentException('Transfer must be in_transit to receive.');
                     }
 
-                    $destInvSource = InventorySource::query()
-                        ->where('tenant_id', $lockedTransfer->tenant_id)
-                        ->where('warehouse_id', $lockedTransfer->destination_warehouse_id)
-                        ->firstOrFail();
-
+                    $destSourceId = $lockedTransfer->destination_inventory_source_id;
                     $items = $lockedTransfer->items()->orderBy('product_id')->get();
 
                     foreach ($items as $item) {
@@ -149,7 +141,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         /** @var StockItem $destStock */
                         $destStock = StockItem::firstOrCreate([
                             'tenant_id' => $lockedTransfer->tenant_id,
-                            'inventory_source_id' => $destInvSource->id,
+                            'inventory_source_id' => $destSourceId,
                             'product_id' => $item->product_id,
                             'product_variant_id' => $item->product_variant_id,
                         ], [
@@ -169,7 +161,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         InventoryMovement::create([
                             'tenant_id' => $lockedTransfer->tenant_id,
                             'stock_item_id' => $lockedDestStock->id,
-                            'inventory_source_id' => $destInvSource->id,
+                            'inventory_source_id' => $destSourceId,
                             'product_id' => $item->product_id,
                             'product_variant_id' => $item->product_variant_id,
                             'quantity_delta' => $qtyToReceive->toString(),
@@ -177,7 +169,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                             'movement_type' => 'transfer_in',
                             'reference_type' => 'inventory_transfer',
                             'reference_id' => $lockedTransfer->transfer_number,
-                            'reason' => "Received transfer from source warehouse #{$lockedTransfer->source_warehouse_id}",
+                            'reason' => "Received transfer from source #{$lockedTransfer->source_inventory_source_id}",
                             'created_at' => now(),
                         ]);
                     }

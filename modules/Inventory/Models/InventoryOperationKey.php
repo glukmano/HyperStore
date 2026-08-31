@@ -21,12 +21,16 @@ class InventoryOperationKey extends Model
         'operation_type',
         'resource_type',
         'resource_id',
+        'status',
         'response_payload',
+        'error_message',
         'created_at',
+        'completed_at',
     ];
 
     protected $casts = [
         'response_payload' => 'array',
         'created_at' => 'datetime',
+        'completed_at' => 'datetime',
     ];
 }

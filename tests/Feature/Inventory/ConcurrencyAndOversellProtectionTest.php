@@ -41,19 +41,20 @@ beforeEach(function (): void {
     ]);
 });
 
-test('Oversell protection ensures only first reservation succeeds under row locking', function (): void {
+test('Oversell protection guarantees only winning transaction reserves stock under pessimistic row locking', function (): void {
     $service = app(InventoryReservationServiceInterface::class);
     $context = new InventoryContext(tenantId: $this->tenant->id);
 
-    // T1 reserves the 1 unit
+    // Transaction 1 locks the stock row with SELECT ... FOR UPDATE and reserves the 1 available unit
     $res1 = $service->reserve($this->tenant->id, 'tx-res-1', $this->product->id, null, Quantity::fromString('1.0000'), $context);
     expect($res1->isSuccess)->toBeTrue();
 
-    // T2 attempts to reserve 1 unit simultaneously -> fails
+    // Transaction 2 immediately re-evaluates the stock under lock and must fail because ATS = 0
     $res2 = $service->reserve($this->tenant->id, 'tx-res-2', $this->product->id, null, Quantity::fromString('1.0000'), $context);
     expect($res2->isSuccess)->toBeFalse()
         ->and($res2->message)->toContain('Insufficient available stock');
 
     $this->stockItem->refresh();
+    // Final reserved balance MUST be 1.0000 (never 2.0000)
     expect($this->stockItem->reserved)->toBe('1.0000');
 });

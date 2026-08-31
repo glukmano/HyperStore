@@ -278,23 +278,27 @@ Route::middleware(['api', 'auth:sanctum,web', ResolveContextMiddleware::class])-
         }
         $data = $request->validate([
             'transfer_number' => ['required', 'string', 'max:100'],
-            'source_warehouse_id' => ['required', 'integer'],
-            'destination_warehouse_id' => ['required', 'integer', 'different:source_warehouse_id'],
+            'source_inventory_source_id' => ['required', 'integer'],
+            'destination_inventory_source_id' => ['required', 'integer', 'different:source_inventory_source_id'],
             'items' => ['required', 'array', 'min:1'],
             'items.*.product_id' => ['required', 'integer'],
             'items.*.variant_id' => ['nullable', 'integer'],
             'items.*.requested_quantity' => ['required', 'string'],
         ]);
 
-        // Validate warehouse ownership
-        Warehouse::where('tenant_id', $tenantId)->findOrFail($data['source_warehouse_id']);
-        Warehouse::where('tenant_id', $tenantId)->findOrFail($data['destination_warehouse_id']);
+        // Validate source ownership
+        /** @var InventorySource $source */
+        $source = InventorySource::query()->where('tenant_id', $tenantId)->findOrFail($data['source_inventory_source_id']);
+        /** @var InventorySource $dest */
+        $dest = InventorySource::query()->where('tenant_id', $tenantId)->findOrFail($data['destination_inventory_source_id']);
 
         $transfer = InventoryTransfer::create([
             'tenant_id' => $tenantId,
             'transfer_number' => $data['transfer_number'],
-            'source_warehouse_id' => $data['source_warehouse_id'],
-            'destination_warehouse_id' => $data['destination_warehouse_id'],
+            'source_inventory_source_id' => $source->id,
+            'destination_inventory_source_id' => $dest->id,
+            'source_warehouse_id' => $source->warehouse_id,
+            'destination_warehouse_id' => $dest->warehouse_id,
             'status' => 'draft',
         ]);
 

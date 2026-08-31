@@ -49,6 +49,8 @@ test('Warehouse transfer flow dispatches stock and rejects over-receipt', functi
     $transfer = InventoryTransfer::create([
         'tenant_id' => $this->tenant->id,
         'transfer_number' => 'TR-2026-001',
+        'source_inventory_source_id' => $this->sourceSrc->id,
+        'destination_inventory_source_id' => $this->destSrc->id,
         'source_warehouse_id' => $this->sourceWh->id,
         'destination_warehouse_id' => $this->destWh->id,
         'status' => 'requested',

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Inventory\Services;
 
-use Illuminate\Database\QueryException;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventoryOperationKey;
@@ -22,7 +22,7 @@ class InventoryIdempotencyService
 
         $trimmedKey = trim($idempotencyKey);
 
-        // 1. First check if completed key exists
+        // 1. Check existing record
         $existing = InventoryOperationKey::query()
             ->where('tenant_id', $tenantId)
             ->where('idempotency_key', $trimmedKey)
@@ -30,57 +30,85 @@ class InventoryIdempotencyService
             ->first();
 
         if ($existing !== null) {
-            if ($existing->resource_type === 'inventory_movements' && $existing->resource_id !== null) {
-                $movement = InventoryMovement::find((int) $existing->resource_id);
-                if ($movement !== null) {
-                    return $movement;
+            if ($existing->status === 'completed') {
+                if ($existing->resource_type === 'inventory_movements' && $existing->resource_id !== null) {
+                    $movement = InventoryMovement::find((int) $existing->resource_id);
+                    if ($movement !== null) {
+                        return $movement;
+                    }
                 }
-            }
 
-            return $existing->response_payload;
+                return $existing->response_payload;
+            }
+            if ($existing->status === 'failed') {
+                throw new \RuntimeException('Previous idempotent operation failed: '.($existing->error_message ?? 'Unknown error'));
+            }
         }
 
         // 2. Atomic claim via DB transaction
         return DB::transaction(function () use ($tenantId, $trimmedKey, $operationType, $resourceType, $resourceId, $callback) {
-            $result = $callback();
+            // Re-check under transaction with FOR UPDATE
+            $existingLocked = InventoryOperationKey::query()
+                ->where('tenant_id', $tenantId)
+                ->where('idempotency_key', $trimmedKey)
+                ->where('operation_type', $operationType)
+                ->lockForUpdate()
+                ->first();
 
-            $storedResourceType = $resourceType;
-            $storedResourceId = $resourceId;
+            if ($existingLocked !== null) {
+                if ($existingLocked->status === 'completed') {
+                    if ($existingLocked->resource_type === 'inventory_movements' && $existingLocked->resource_id !== null) {
+                        $movement = InventoryMovement::find((int) $existingLocked->resource_id);
+                        if ($movement !== null) {
+                            return $movement;
+                        }
+                    }
 
-            if ($result instanceof InventoryMovement) {
-                $storedResourceType = 'inventory_movements';
-                $storedResourceId = (string) $result->id;
+                    return $existingLocked->response_payload;
+                }
+                if ($existingLocked->status === 'failed') {
+                    throw new \RuntimeException('Previous idempotent operation failed: '.($existingLocked->error_message ?? 'Unknown error'));
+                }
             }
 
+            // Create initial processing record
+            $opKey = InventoryOperationKey::create([
+                'tenant_id' => $tenantId,
+                'idempotency_key' => $trimmedKey,
+                'operation_type' => $operationType,
+                'resource_type' => $resourceType,
+                'resource_id' => $resourceId,
+                'status' => 'processing',
+                'created_at' => now(),
+            ]);
+
             try {
-                InventoryOperationKey::create([
-                    'tenant_id' => $tenantId,
-                    'idempotency_key' => $trimmedKey,
-                    'operation_type' => $operationType,
+                $result = $callback();
+
+                $storedResourceType = $resourceType;
+                $storedResourceId = $resourceId;
+
+                if ($result instanceof InventoryMovement) {
+                    $storedResourceType = 'inventory_movements';
+                    $storedResourceId = (string) $result->id;
+                }
+
+                $opKey->update([
+                    'status' => 'completed',
                     'resource_type' => $storedResourceType,
                     'resource_id' => $storedResourceId,
                     'response_payload' => is_array($result) || is_scalar($result) ? $result : ['success' => true],
-                    'created_at' => now(),
+                    'completed_at' => Carbon::now(),
                 ]);
-            } catch (QueryException $e) {
-                // If concurrent race inserted key, fetch existing
-                $existing = InventoryOperationKey::query()
-                    ->where('tenant_id', $tenantId)
-                    ->where('idempotency_key', $trimmedKey)
-                    ->where('operation_type', $operationType)
-                    ->first();
 
-                if ($existing !== null) {
-                    if ($existing->resource_type === 'inventory_movements' && $existing->resource_id !== null) {
-                        return InventoryMovement::find((int) $existing->resource_id);
-                    }
-
-                    return $existing->response_payload;
-                }
+                return $result;
+            } catch (\Throwable $e) {
+                $opKey->update([
+                    'status' => 'failed',
+                    'error_message' => $e->getMessage(),
+                ]);
                 throw $e;
             }
-
-            return $result;
         });
     }
 }
