@@ -6,6 +6,7 @@
     "license": "proprietary",
     "require": {
         "php": "^8.4",
+        "brick/money": "^0.14.2",
         "laravel/framework": "^13.0",
         "laravel/pennant": "^1.26",
         "laravel/sanctum": "^4.3",

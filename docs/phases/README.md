@@ -16,4 +16,5 @@ The **Hyper Commerce Platform** is engineered strictly phase by phase.
 | [`PHASE-01-PLATFORM-FOUNDATION.md`](PHASE-01-PLATFORM-FOUNDATION.md) | Platform Foundation & Modular Monolith Kernel | COMPLETED | 2026-08-31 |
 | [`PHASE-02-IDENTITY-TENANCY-STORES-MARKETS-CHANNELS.md`](PHASE-02-IDENTITY-TENANCY-STORES-MARKETS-CHANNELS.md) | Identity, Tenancy, Stores, Markets & Channels | COMPLETED | 2026-08-31 |
 | [`PHASE-03-CATALOG-PRODUCT-TYPES-ATTRIBUTES-VARIANTS.md`](PHASE-03-CATALOG-PRODUCT-TYPES-ATTRIBUTES-VARIANTS.md) | Catalog, Product Types, Attributes & Variants | COMPLETED | 2026-08-31 |
-| `PHASE-04-PRICING-CURRENCIES-TAX-PROMOTIONS.md` | Pricing, Multi-Currency, Taxes & Promotions | PLANNED | — |
+| [`PHASE-04-PRICING-MULTI-CURRENCY-TAXES-PROMOTIONS.md`](PHASE-04-PRICING-MULTI-CURRENCY-TAXES-PROMOTIONS.md) | Pricing, Multi-Currency, Taxes & Promotions | COMPLETED | 2026-08-31 |
+| `PHASE-05-INVENTORY-WAREHOUSES-SUPPLIERS.md` | Inventory, Warehouses & Multi-Source Stock | PLANNED | — |

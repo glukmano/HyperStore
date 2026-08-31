@@ -8,5 +8,6 @@ parameters:
         - modules
     treatPhpDocTypesAsCertain: false
     bootstrapFiles:
-        - vendor/autoload.php
-        - vendor/larastan/larastan/bootstrap.php
+        - phpstan-bootstrap.php
+    ignoreErrors:
+        - identifier: missingType.generics

@@ -1,0 +1,11 @@
+{
+    "name": "Pricing",
+    "description": "Commercial pricing, price books, multi-currency conversion, quantity tiers, cost tracking, and taxation engine.",
+    "version": "1.0.0",
+    "enabled": true,
+    "order": 20,
+    "dependencies": [
+        "Catalog"
+    ],
+    "provider": "Modules\\Pricing\\PricingServiceProvider"
+}

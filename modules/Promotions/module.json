@@ -1,0 +1,11 @@
+{
+    "name": "Promotions",
+    "description": "Promotion rule engine, coupons, discount stacking, Buy X Get Y, and marketing rewards.",
+    "version": "1.0.0",
+    "enabled": true,
+    "order": 30,
+    "dependencies": [
+        "Pricing"
+    ],
+    "provider": "Modules\\Promotions\\PromotionsServiceProvider"
+}
