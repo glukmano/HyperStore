@@ -24,12 +24,14 @@ class InventoryOperationKey extends Model
         'status',
         'response_payload',
         'error_message',
+        'lease_expires_at',
         'created_at',
         'completed_at',
     ];
 
     protected $casts = [
         'response_payload' => 'array',
+        'lease_expires_at' => 'datetime',
         'created_at' => 'datetime',
         'completed_at' => 'datetime',
     ];

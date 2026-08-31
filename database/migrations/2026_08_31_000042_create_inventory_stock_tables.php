@@ -64,6 +64,7 @@ return new class extends Migration
             $table->string('status', 30)->default('completed'); // processing, completed, failed
             $table->jsonb('response_payload')->nullable();
             $table->text('error_message')->nullable();
+            $table->timestamp('lease_expires_at')->nullable();
             $table->timestamp('created_at')->useCurrent();
             $table->timestamp('completed_at')->nullable();
 
