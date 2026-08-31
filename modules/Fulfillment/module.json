@@ -1,0 +1,9 @@
+{
+    "name": "Fulfillment",
+    "slug": "fulfillment",
+    "description": "HyperStore Multi-Source Fulfillment Planning and Packaging Module",
+    "version": "1.0.0",
+    "provider": "Modules\\Fulfillment\\FulfillmentServiceProvider",
+    "requires": ["catalog", "inventory", "shipping"],
+    "enabled": true
+}

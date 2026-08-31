@@ -1,0 +1,9 @@
+{
+    "name": "Shipping",
+    "slug": "shipping",
+    "description": "HyperStore Shipping, Zones, Methods, Rates and Carrier Abstraction Module",
+    "version": "1.0.0",
+    "provider": "Modules\\Shipping\\ShippingServiceProvider",
+    "requires": ["catalog", "pricing"],
+    "enabled": true
+}
