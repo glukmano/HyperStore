@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Modules\Catalog\Events;
+
+use Illuminate\Foundation\Events\Dispatchable;
+use Modules\Catalog\Models\ProductStoreListing;
+
+class ProductPublishedToStore
+{
+    use Dispatchable;
+
+    public function __construct(public ProductStoreListing $listing) {}
+}

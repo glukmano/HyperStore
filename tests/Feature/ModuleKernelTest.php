@@ -40,17 +40,17 @@ test('ModuleKernel discovers all fixture modules', function () {
     expect($registry->all())->toHaveCount(3);
 });
 
-test('production modules/ directory is empty', function () {
+test('production modules are discovered by ModuleKernel', function () {
     $modulesPath = base_path('modules');
 
     if (! is_dir($modulesPath)) {
-        expect(true)->toBeTrue(); // no directory = no modules, pass
+        expect(true)->toBeTrue();
 
         return;
     }
 
-    $entries = array_diff(scandir($modulesPath) ?: [], ['.', '..']);
-    expect($entries)->toBeEmpty('Production modules/ must remain empty during PHASE-01');
+    $registry = app(ModuleRegistryInterface::class);
+    expect($registry->has('Catalog'))->toBeTrue();
 });
 
 // ── Enabled / Disabled ────────────────────────────────────────────────────────

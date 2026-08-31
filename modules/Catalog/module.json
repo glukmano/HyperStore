@@ -1,0 +1,9 @@
+{
+    "name": "Catalog",
+    "slug": "catalog",
+    "version": "1.0.0",
+    "description": "Canonical Catalog, Product Type Registry, Categories, Brands, Typed Attributes, Variants, Customizations, Bundles, and Multi-Store Publications",
+    "provider": "Modules\\Catalog\\CatalogServiceProvider",
+    "dependencies": [],
+    "enabled": true
+}

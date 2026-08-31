@@ -25,3 +25,13 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 2. Get review from at least one architect or senior engineer.
 3. Merge — the ADR is now "Accepted".
 4. ADRs are NEVER retroactively edited once accepted (except to add a "Superseded" status).
+| [ADR-0015](ADR-0015-catalog-module-ownership-and-boundaries.md) | Catalog Module Ownership and Boundaries | ACCEPTED | 2026-08-31 |
+| [ADR-0016](ADR-0016-product-type-registry-and-capability-contracts.md) | Product Type Registry and Capability Contracts | ACCEPTED | 2026-08-31 |
+| [ADR-0017](ADR-0017-hybrid-typed-attribute-storage-architecture.md) | Hybrid Typed-Value Attribute Storage Architecture | ACCEPTED | 2026-08-31 |
+| [ADR-0018](ADR-0018-product-vs-variant-vs-customer-input-distinction.md) | Product vs Variant vs Customer Input Distinction | ACCEPTED | 2026-08-31 |
+| [ADR-0019](ADR-0019-catalog-multi-language-localization-strategy.md) | Catalog Multi-Language Localization Strategy | ACCEPTED | 2026-08-31 |
+| [ADR-0020](ADR-0020-canonical-product-multi-store-publication-strategy.md) | Canonical Product Multi-Store Publication Strategy | ACCEPTED | 2026-08-31 |
+| [ADR-0021](ADR-0021-scoped-sku-and-slug-uniqueness-strategy.md) | Scoped SKU and Slug Uniqueness Strategy | ACCEPTED | 2026-08-31 |
+| [ADR-0022](ADR-0022-catalog-media-abstraction-and-storage.md) | Catalog Media Abstraction and Storage | ACCEPTED | 2026-08-31 |
+| [ADR-0023](ADR-0023-hierarchical-category-cycle-prevention-strategy.md) | Hierarchical Category Cycle Prevention Strategy | ACCEPTED | 2026-08-31 |
+| [ADR-0024](ADR-0024-catalog-lifecycle-and-archive-strategy.md) | Catalog Lifecycle and Archive Strategy | ACCEPTED | 2026-08-31 |
