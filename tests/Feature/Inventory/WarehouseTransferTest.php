@@ -43,7 +43,7 @@ beforeEach(function (): void {
     ]);
 });
 
-test('Warehouse transfer flow dispatches stock and rejects over-receipt', function (): void {
+test('Warehouse transfer flow supports cumulative multi-step partial receiving', function (): void {
     $service = app(InventoryTransferServiceInterface::class);
 
     $transfer = InventoryTransfer::create([
@@ -62,21 +62,48 @@ test('Warehouse transfer flow dispatches stock and rejects over-receipt', functi
         'requested_quantity' => '10.0000',
     ]);
 
-    // 1. Dispatch
+    // 1. Dispatch 10 units
     $dispatched = $service->dispatch($transfer);
     expect($dispatched)->toBeTrue();
 
     $this->sourceStock->refresh();
     expect($this->sourceStock->on_hand)->toBe('10.0000');
 
-    // 2. Reject Over-receipt (15 > 10)
-    expect(fn () => $service->receive($transfer, [$item->id => '15.0000']))
+    // 2. Reject Over-receipt (11 > 10)
+    expect(fn () => $service->receive($transfer, [$item->id => '11.0000']))
         ->toThrow(InvalidArgumentException::class);
 
-    // 3. Valid Partial Receipt (8 of 10)
-    $received = $service->receive($transfer, [$item->id => '8.0000']);
-    expect($received)->toBeTrue();
+    // 3. Receive #1: 4 units -> partially_received
+    $service->receive($transfer, [$item->id => '4.0000']);
+    $transfer->refresh();
+    $item->refresh();
 
     $destStock = StockItem::where('inventory_source_id', $this->destSrc->id)->first();
-    expect($destStock->on_hand)->toBe('8.0000');
+    expect($transfer->status)->toBe('partially_received')
+        ->and($item->received_quantity)->toBe('4.0000')
+        ->and($destStock->on_hand)->toBe('4.0000');
+
+    // 4. Receive #2: 3 units -> cumulative 7, partially_received
+    $service->receive($transfer, [$item->id => '3.0000']);
+    $transfer->refresh();
+    $item->refresh();
+    $destStock->refresh();
+
+    expect($transfer->status)->toBe('partially_received')
+        ->and($item->received_quantity)->toBe('7.0000')
+        ->and($destStock->on_hand)->toBe('7.0000');
+
+    // 5. Receive #3: remaining 3 units -> cumulative 10, received
+    $service->receive($transfer, [$item->id => '3.0000']);
+    $transfer->refresh();
+    $item->refresh();
+    $destStock->refresh();
+
+    expect($transfer->status)->toBe('received')
+        ->and($item->received_quantity)->toBe('10.0000')
+        ->and($destStock->on_hand)->toBe('10.0000');
+
+    // 6. Further receipt after fully received throws InvalidArgumentException
+    expect(fn () => $service->receive($transfer, [$item->id => '1.0000']))
+        ->toThrow(InvalidArgumentException::class);
 });

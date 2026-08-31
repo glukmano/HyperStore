@@ -17,7 +17,8 @@ $app = require_once __DIR__.'/../bootstrap/app.php';
 $kernel = $app->make(Kernel::class);
 $kernel->bootstrap();
 
-echo "=== POSTGRESQL MULTI-PROCESS IDEMPOTENCY HARNESS ===\n";
+echo '=== POSTGRESQL MULTI-PROCESS IDEMPOTENCY HARNESS ===
+';
 
 $tenant = Tenant::firstOrCreate(['slug' => 'pg-idempotency-tenant'], ['name' => 'PG Idempotency Tenant', 'status' => 'active']);
 
@@ -39,7 +40,8 @@ $stockItem = StockItem::create([
     'reserved' => '0.0000',
 ]);
 
-echo "Initial Stock: on_hand = {$stockItem->on_hand}\n";
+echo "Initial Stock: on_hand = {$stockItem->on_hand}
+";
 
 $idemKey = 'PG-CONCURRENT-KEY-'.uniqid();
 
@@ -53,8 +55,12 @@ $workerScript = sprintf(
 
     $service = app(\Modules\Inventory\Contracts\InventoryAdjustmentServiceInterface::class);
     $item = \Modules\Inventory\Models\StockItem::find(%d);
-    $res = $service->receive($item, \Modules\Inventory\ValueObjects\Quantity::fromString("10.0000"), null, null, "%s");
-    echo $res ? "DONE" : "FAIL";
+    try {
+        $res = $service->receive($item, \Modules\Inventory\ValueObjects\Quantity::fromString("10.0000"), null, null, "%s");
+        echo $res ? "DONE" : "FAIL";
+    } catch (\Throwable $e) {
+        echo "EXCEPTION: " . $e->getMessage();
+    }
     ',
     dirname(__DIR__),
     dirname(__DIR__),
@@ -65,36 +71,44 @@ $workerScript = sprintf(
 $tmp = sys_get_temp_dir().'/pg_idem_worker_'.uniqid().'.php';
 file_put_contents($tmp, $workerScript);
 
-echo "Spawning 2 concurrent processes executing receive +10 with identical idempotency key...\n";
+echo 'Spawning 2 concurrent processes executing receive +10 with identical idempotency key...
+';
 $p1 = proc_open("php {$tmp}", [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes1);
 $p2 = proc_open("php {$tmp}", [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes2);
 
-$out1 = stream_get_contents($pipes1[1]);
+$out1 = trim((string) stream_get_contents($pipes1[1]));
 fclose($pipes1[1]);
 proc_close($p1);
 
-$out2 = stream_get_contents($pipes2[1]);
+$out2 = trim((string) stream_get_contents($pipes2[1]));
 fclose($pipes2[1]);
 proc_close($p2);
 
 @unlink($tmp);
 
-echo "Process 1 Result: {$out1}\n";
-echo "Process 2 Result: {$out2}\n";
+echo "Process 1 Result: {$out1}
+";
+echo "Process 2 Result: {$out2}
+";
 
 $stockItem->refresh();
-echo "Final Stock: on_hand = {$stockItem->on_hand}\n";
+echo "Final Stock: on_hand = {$stockItem->on_hand}
+";
 
 $movementsCount = InventoryMovement::where('stock_item_id', $stockItem->id)->count();
 $keysCount = InventoryOperationKey::where('idempotency_key', $idemKey)->count();
 
-echo "Total movements recorded: {$movementsCount}\n";
-echo "Total operation keys recorded: {$keysCount}\n";
+echo "Total movements recorded: {$movementsCount}
+";
+echo "Total operation keys recorded: {$keysCount}
+";
 
-if ($stockItem->on_hand === '10.0000' && $movementsCount === 1 && $keysCount === 1) {
-    echo ">>> IDEMPOTENCY CONCURRENCY VERIFICATION PASSED: Exactly 1 stock mutation executed (10.0000, not 20.0000)! <<<\n";
+if ($out1 === 'DONE' && $out2 === 'DONE' && $stockItem->on_hand === '10.0000' && $movementsCount === 1 && $keysCount === 1) {
+    echo '>>> IDEMPOTENCY CONCURRENCY VERIFICATION PASSED: Both callers returned DONE with 0 exceptions, exactly 1 mutation executed! <<<
+';
     exit(0);
 } else {
-    echo ">>> IDEMPOTENCY CONCURRENCY VERIFICATION FAILED! <<<\n";
+    echo '>>> IDEMPOTENCY CONCURRENCY VERIFICATION FAILED! <<<
+';
     exit(1);
 }

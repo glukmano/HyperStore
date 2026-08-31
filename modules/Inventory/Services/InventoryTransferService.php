@@ -44,8 +44,6 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                     }
 
                     $sourceSourceId = $lockedTransfer->source_inventory_source_id;
-
-                    // Sort transfer items deterministically by product_id
                     $items = $lockedTransfer->items()->orderBy('product_id')->get();
 
                     foreach ($items as $item) {
@@ -66,11 +64,11 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                             throw new InvalidArgumentException('Source inventory source does not have enough on-hand stock to dispatch transfer.');
                         }
 
-                        // Deduct from source on_hand
                         $sourceStock->on_hand = $currentOnHand->subtract($reqQty)->toString();
                         $sourceStock->save();
 
                         $item->dispatched_quantity = $reqQty->toString();
+                        $item->received_quantity = '0.0000';
                         $item->save();
 
                         InventoryMovement::create([
@@ -101,6 +99,9 @@ class InventoryTransferService implements InventoryTransferServiceInterface
         );
     }
 
+    /**
+     * @param  array<int, string>  $receivedQuantities  Incremental quantities to receive [item_id => incremental_quantity_string]
+     */
     public function receive(InventoryTransfer $transfer, array $receivedQuantities = [], ?string $idempotencyKey = null): bool
     {
         return $this->idempotencyService->execute(
@@ -108,7 +109,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
             $idempotencyKey,
             'receive_transfer',
             'inventory_transfers',
-            (string) $transfer->id,
+            (string) $transfer->id.'_'.uniqid(),
             function () use ($transfer, $receivedQuantities) {
                 return DB::transaction(function () use ($transfer, $receivedQuantities) {
                     /** @var InventoryTransfer $lockedTransfer */
@@ -118,25 +119,48 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         ->lockForUpdate()
                         ->firstOrFail();
 
-                    if ($lockedTransfer->status !== 'in_transit') {
-                        throw new InvalidArgumentException('Transfer must be in_transit to receive.');
+                    if ($lockedTransfer->status === 'received') {
+                        throw new InvalidArgumentException('Transfer is already fully received.');
+                    }
+
+                    if ($lockedTransfer->status !== 'in_transit' && $lockedTransfer->status !== 'partially_received') {
+                        throw new InvalidArgumentException('Transfer must be in_transit or partially_received to receive items.');
                     }
 
                     $destSourceId = $lockedTransfer->destination_inventory_source_id;
                     $items = $lockedTransfer->items()->orderBy('product_id')->get();
+                    $allFullyReceived = true;
+                    $anyReceived = false;
 
                     foreach ($items as $item) {
                         /** @var InventoryTransferItem $item */
                         $dispQty = Quantity::fromString((string) $item->dispatched_quantity);
+                        $currRecQty = Quantity::fromString((string) ($item->received_quantity ?? '0.0000'));
+                        $remainingQty = $dispQty->subtract($currRecQty);
 
-                        // If explicit quantity provided, validate partial/over-receipt
-                        $qtyToReceive = isset($receivedQuantities[$item->id])
+                        // Incremental quantity to receive in this batch
+                        $incQty = isset($receivedQuantities[$item->id])
                             ? Quantity::fromString($receivedQuantities[$item->id])
-                            : $dispQty;
+                            : $remainingQty;
 
-                        if ($qtyToReceive->isGreaterThan($dispQty)) {
-                            throw new InvalidArgumentException("Received quantity [{$qtyToReceive->toString()}] cannot exceed dispatched quantity [{$dispQty->toString()}].");
+                        if ($incQty->isNegative()) {
+                            throw new InvalidArgumentException('Received quantity increment cannot be negative.');
                         }
+
+                        if ($incQty->isZero()) {
+                            if (! $currRecQty->equals($dispQty)) {
+                                $allFullyReceived = false;
+                            }
+
+                            continue;
+                        }
+
+                        // Validate against remaining dispatched quantity
+                        if ($incQty->isGreaterThan($remainingQty)) {
+                            throw new InvalidArgumentException("Incremental received quantity [{$incQty->toString()}] exceeds remaining dispatched quantity [{$remainingQty->toString()}].");
+                        }
+
+                        $anyReceived = true;
 
                         /** @var StockItem $destStock */
                         $destStock = StockItem::firstOrCreate([
@@ -152,10 +176,11 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         $lockedDestStock = StockItem::query()->where('id', $destStock->id)->lockForUpdate()->firstOrFail();
                         $currentOnHand = Quantity::fromString((string) $lockedDestStock->on_hand);
 
-                        $lockedDestStock->on_hand = $currentOnHand->add($qtyToReceive)->toString();
+                        $lockedDestStock->on_hand = $currentOnHand->add($incQty)->toString();
                         $lockedDestStock->save();
 
-                        $item->received_quantity = $qtyToReceive->toString();
+                        $newTotalRec = $currRecQty->add($incQty);
+                        $item->received_quantity = $newTotalRec->toString();
                         $item->save();
 
                         InventoryMovement::create([
@@ -164,18 +189,30 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                             'inventory_source_id' => $destSourceId,
                             'product_id' => $item->product_id,
                             'product_variant_id' => $item->product_variant_id,
-                            'quantity_delta' => $qtyToReceive->toString(),
+                            'quantity_delta' => $incQty->toString(),
                             'resulting_on_hand' => $lockedDestStock->on_hand,
                             'movement_type' => 'transfer_in',
                             'reference_type' => 'inventory_transfer',
                             'reference_id' => $lockedTransfer->transfer_number,
-                            'reason' => "Received transfer from source #{$lockedTransfer->source_inventory_source_id}",
+                            'reason' => "Received {$incQty->toString()} units for transfer from source #{$lockedTransfer->source_inventory_source_id}",
                             'created_at' => now(),
                         ]);
+
+                        if (! $newTotalRec->equals($dispQty)) {
+                            $allFullyReceived = false;
+                        }
                     }
 
-                    $lockedTransfer->status = 'received';
-                    $lockedTransfer->received_at = Carbon::now();
+                    if (! $anyReceived) {
+                        throw new InvalidArgumentException('No stock was received in this operation.');
+                    }
+
+                    if ($allFullyReceived) {
+                        $lockedTransfer->status = 'received';
+                        $lockedTransfer->received_at = Carbon::now();
+                    } else {
+                        $lockedTransfer->status = 'partially_received';
+                    }
                     $lockedTransfer->save();
 
                     StockTransferReceived::dispatch($lockedTransfer);
@@ -196,8 +233,8 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            if ($lockedTransfer->status === 'in_transit' || $lockedTransfer->status === 'received') {
-                throw new InvalidArgumentException('In-transit or received transfers cannot be cancelled.');
+            if ($lockedTransfer->status === 'in_transit' || $lockedTransfer->status === 'partially_received' || $lockedTransfer->status === 'received') {
+                throw new InvalidArgumentException('In-transit, partially received, or received transfers cannot be cancelled.');
             }
 
             $lockedTransfer->status = 'cancelled';
