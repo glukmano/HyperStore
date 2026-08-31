@@ -18,7 +18,7 @@ class Carrier extends Model
         'tenant_id',
         'code',
         'name',
-        'provider_class',
+        'provider_code',
         'status',
         'metadata',
     ];

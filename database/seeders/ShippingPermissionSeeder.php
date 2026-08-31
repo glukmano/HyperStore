@@ -24,6 +24,7 @@ class ShippingPermissionSeeder extends Seeder
             'shipping.methods.manage',
             'shipping.rates.view',
             'shipping.rates.manage',
+            'shipping.rates.quote',
             'shipping.carriers.view',
             'shipping.carriers.manage',
             'shipping.credentials.manage',

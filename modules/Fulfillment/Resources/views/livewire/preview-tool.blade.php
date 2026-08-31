@@ -1,1 +1,1 @@
-<div>Fulfillment Preview Tool</div>
+<div><h2 class="text-xl font-bold mb-4">Fulfillment Plan Preview</h2><p class="text-sm text-gray-500">Preview multi-source routing and packaging splits.</p></div>

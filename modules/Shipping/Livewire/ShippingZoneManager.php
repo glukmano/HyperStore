@@ -29,6 +29,12 @@ class ShippingZoneManager extends Component
             abort(403, 'Permission denied.');
         }
 
+        $this->validate([
+            'code' => ['required', 'string', 'max:100'],
+            'name' => ['required', 'string', 'max:255'],
+            'priority' => ['nullable', 'integer'],
+        ]);
+
         ShippingZone::create([
             'tenant_id' => $tenant->getId(),
             'code' => $this->code,

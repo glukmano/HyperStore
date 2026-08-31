@@ -9,21 +9,32 @@ use Modules\Fulfillment\Contracts\PackingStrategyInterface;
 use Modules\Fulfillment\DTOs\FulfillmentGroup;
 use Modules\Fulfillment\DTOs\FulfillmentItemLine;
 use Modules\Fulfillment\DTOs\FulfillmentPlan;
+use Modules\Fulfillment\DTOs\FulfillmentReadiness;
 use Modules\Fulfillment\Models\FulfillmentSourceConfiguration;
-use Modules\Inventory\Contracts\InventoryAvailabilityServiceInterface;
+use Modules\Inventory\Contracts\InventorySourceQueryInterface;
 use Modules\Inventory\DTOs\InventoryContext;
-use Modules\Inventory\Models\InventorySource;
+use Modules\Inventory\DTOs\InventorySourceDTO;
+use Modules\Inventory\DTOs\SourceAvailabilityDTO;
 use Modules\Shipping\ValueObjects\ShippingContext;
 
 class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
 {
     public function __construct(
-        private readonly InventoryAvailabilityServiceInterface $availabilityService,
+        private readonly InventorySourceQueryInterface $sourceQuery,
         private readonly PackingStrategyInterface $packingService
     ) {}
 
     /**
      * Executes pure read-only fulfillment planning with ZERO database mutations.
+     *
+     * Source selection strategy (deterministic):
+     *  1. Eligible sources only (active, not stale, context-scoped).
+     *  2. Prefer single source that can fulfill entire physical request.
+     *  3. Minimize splits.
+     *  4. Source priority DESC.
+     *  5. Stable source ID/code tie-breaker.
+     *
+     * @param  array<int, FulfillmentItemLine>  $items
      */
     public function plan(int $tenantId, array $items, ShippingContext $context): FulfillmentPlan
     {
@@ -31,7 +42,6 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
         $nonPhysicalItems = [];
 
         foreach ($items as $item) {
-            /** @var FulfillmentItemLine $item */
             if ($item->isShippable) {
                 $shippableItems[] = $item;
             } else {
@@ -41,16 +51,17 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
 
         $groups = [];
 
-        // 1. Non-physical items group
+        // 1. Non-physical items group — deterministic key
         if (! empty($nonPhysicalItems)) {
             $groups[] = new FulfillmentGroup(
-                groupKey: 'grp_non_physical_'.uniqid(),
+                groupKey: 'non_physical:digital',
                 fulfillmentMode: 'non_physical',
                 inventorySourceId: null,
                 warehouseId: null,
                 items: $nonPhysicalItems,
                 packages: [],
                 isShippable: false,
+                readiness: FulfillmentReadiness::NON_PHYSICAL,
                 splitReason: null
             );
         }
@@ -64,85 +75,32 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
                 channelId: $context->channelId
             );
 
-            // Fetch active sources sorted by priority
-            $sources = InventorySource::query()
-                ->where('tenant_id', $tenantId)
-                ->where('status', 'active')
-                ->orderBy('priority', 'desc')
-                ->get();
+            // Fetch eligible sources through Inventory contract (NO Eloquent here)
+            $eligibleSources = $this->sourceQuery->getEligibleSources($invContext);
 
-            // A. Check for single source that can fulfill ALL shippable items
-            $singleSource = null;
-            foreach ($sources as $source) {
-                /** @var InventorySource $source */
-                if ($this->canSourceFulfillAll($source, $shippableItems, $invContext)) {
-                    $singleSource = $source;
-                    break;
-                }
-            }
-
-            if ($singleSource !== null) {
-                // All items fulfilled from this single source
-                $packages = $this->packingService->pack($shippableItems, $singleSource->id);
-                $mode = $this->resolveFulfillmentMode($tenantId, $singleSource->id);
-
-                $groups[] = new FulfillmentGroup(
-                    groupKey: 'grp_src_'.$singleSource->id,
-                    fulfillmentMode: $mode,
-                    inventorySourceId: $singleSource->id,
-                    warehouseId: $singleSource->warehouse_id,
-                    items: $shippableItems,
-                    packages: $packages,
-                    isShippable: true,
-                    splitReason: null
-                );
-            } else {
-                // B. Split required across multiple sources
-                $allocatedSourceMap = []; // sourceId => items[]
-
+            if (empty($eligibleSources)) {
+                // No eligible sources — all items unavailable
                 foreach ($shippableItems as $item) {
-                    $allocated = false;
-                    $avail = $this->availabilityService->check($item->productId, $item->variantId, $invContext);
-
-                    foreach ($avail->sourceBreakdown as $breakdown) {
-                        $srcId = $breakdown['source_id'];
-                        $availQty = $breakdown['available'];
-                        if (bccomp($availQty->toString(), (string) $item->quantity, 4) >= 0) {
-                            $allocatedSourceMap[$srcId][] = $item;
-                            $allocated = true;
-                            break;
-                        }
-                    }
-
-                    if (! $allocated) {
-                        // Fallback to primary source even if backordered
-                        $primarySource = $sources->first();
-                        $primarySourceId = $primarySource ? $primarySource->id : 0;
-                        $allocatedSourceMap[$primarySourceId][] = $item;
-                    }
-                }
-
-                foreach ($allocatedSourceMap as $srcId => $allocatedItems) {
-                    /** @var InventorySource|null $src */
-                    $src = $sources->firstWhere('id', $srcId);
-                    $packages = $this->packingService->pack($allocatedItems, $srcId > 0 ? $srcId : null);
-                    $mode = $srcId > 0 ? $this->resolveFulfillmentMode($tenantId, $srcId) : 'own_stock';
-
                     $groups[] = new FulfillmentGroup(
-                        groupKey: 'grp_src_'.$srcId.'_'.uniqid(),
-                        fulfillmentMode: $mode,
-                        inventorySourceId: $srcId > 0 ? $srcId : null,
-                        warehouseId: $src?->warehouse_id,
-                        items: $allocatedItems,
-                        packages: $packages,
-                        isShippable: true,
-                        splitReason: 'Multi-source stock availability split'
+                        groupKey: 'unavailable:no_sources',
+                        fulfillmentMode: 'unavailable',
+                        inventorySourceId: null,
+                        warehouseId: null,
+                        items: [$item],
+                        packages: [],
+                        isShippable: false,
+                        readiness: FulfillmentReadiness::UNAVAILABLE,
+                        splitReason: 'No eligible inventory sources for context'
                     );
                 }
+            } else {
+                $newGroups = $this->allocateShippableItems($tenantId, $shippableItems, $eligibleSources, $invContext);
+                $groups = array_merge($groups, $newGroups);
             }
         }
 
-        $hasSplits = count(array_filter($groups, fn ($g) => $g->isShippable)) > 1;
+        $physicalGroups = array_filter($groups, fn ($g) => $g->isShippable);
+        $hasSplits = count($physicalGroups) > 1;
 
         return new FulfillmentPlan(
             tenantId: $tenantId,
@@ -152,27 +110,188 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
     }
 
     /**
+     * Allocates shippable items across eligible sources using the deterministic 5-step strategy.
+     *
      * @param  array<int, FulfillmentItemLine>  $items
+     * @param  InventorySourceDTO[]  $sources  Already sorted by priority DESC, id ASC
+     * @return array<int, FulfillmentGroup>
      */
-    private function canSourceFulfillAll(InventorySource $source, array $items, InventoryContext $context): bool
+    private function allocateShippableItems(
+        int $tenantId,
+        array $items,
+        array $sources,
+        InventoryContext $invContext
+    ): array {
+        // Step 1: Build per-source availability for all items
+        // sourceId => productKey => SourceAvailabilityDTO
+        /** @var array<int, array<string, SourceAvailabilityDTO>> $availability */
+        $availability = [];
+        foreach ($sources as $source) {
+            $availability[$source->id] = [];
+            foreach ($items as $item) {
+                $key = $item->productId.'_'.($item->variantId ?? '0');
+                $avail = $this->sourceQuery->checkSourceAvailability(
+                    $item->productId,
+                    $item->variantId,
+                    $source->id,
+                    $invContext
+                );
+                $availability[$source->id][$key] = $avail;
+            }
+        }
+
+        // Step 2: Try single-source fulfillment (prefer no split)
+        foreach ($sources as $source) {
+            if ($this->sourceCanFulfillAll($source->id, $items, $availability)) {
+                $packResult = $this->packingService->pack($items, $source->id);
+                $mode = $this->resolveFulfillmentMode($tenantId, $source->id);
+
+                return [new FulfillmentGroup(
+                    groupKey: 'source:'.$source->id,
+                    fulfillmentMode: $mode,
+                    inventorySourceId: $source->id,
+                    warehouseId: $source->warehouseId,
+                    items: $items,
+                    packages: is_array($packResult) ? $packResult : $packResult->packages,
+                    isShippable: true,
+                    readiness: FulfillmentReadiness::READY,
+                    splitReason: null
+                )];
+            }
+        }
+
+        // Step 3: Split required — allocate quantities across sources
+        // Each line item quantity may be split across multiple sources
+        return $this->splitAllocate($tenantId, $items, $sources, $availability, $invContext);
+    }
+
+    /**
+     * Check if a given source can fulfill ALL items at their requested quantities.
+     *
+     * @param  array<int, FulfillmentItemLine>  $items
+     * @param  array<int, array<string, SourceAvailabilityDTO>>  $availability
+     */
+    private function sourceCanFulfillAll(int $sourceId, array $items, array $availability): bool
     {
         foreach ($items as $item) {
-            /** @var FulfillmentItemLine $item */
-            $avail = $this->availabilityService->check($item->productId, $item->variantId, $context);
-            $sourceAvail = null;
-            foreach ($avail->sourceBreakdown as $sb) {
-                if ($sb['source_id'] === $source->id) {
-                    $sourceAvail = $sb['available'];
-                    break;
-                }
-            }
-
-            if ($sourceAvail === null || bccomp($sourceAvail->toString(), (string) $item->quantity, 4) < 0) {
+            $key = $item->productId.'_'.($item->variantId ?? '0');
+            $avail = $availability[$sourceId][$key] ?? null;
+            if ($avail === null || ! $avail->canFulfillQuantity($item->quantity)) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    /**
+     * Split-allocate quantities across sources.
+     * A single line quantity can be split across two or more sources.
+     *
+     * @param  array<int, FulfillmentItemLine>  $items
+     * @param  InventorySourceDTO[]  $sources
+     * @param  array<int, array<string, SourceAvailabilityDTO>>  $availability
+     * @return array<int, FulfillmentGroup>
+     */
+    private function splitAllocate(
+        int $tenantId,
+        array $items,
+        array $sources,
+        array $availability,
+        InventoryContext $invContext
+    ): array {
+        // sourceId => [ FulfillmentItemLine (partial qty) ]
+        /** @var array<int, list<FulfillmentItemLine>> $sourceAllocations */
+        $sourceAllocations = [];
+        // Items that could not be fulfilled by any source
+        $unavailableItems = [];
+
+        foreach ($items as $item) {
+            $key = $item->productId.'_'.($item->variantId ?? '0');
+            $remainingQty = $item->quantity;
+
+            foreach ($sources as $source) {
+                if ($remainingQty <= 0) {
+                    break;
+                }
+                $avail = $availability[$source->id][$key] ?? null;
+                if ($avail === null || ! $avail->isReady()) {
+                    continue;
+                }
+                $availableAtSource = (int) floor((float) $avail->available->toString());
+                if ($availableAtSource <= 0) {
+                    continue;
+                }
+
+                $allocateQty = min($remainingQty, $availableAtSource);
+                $allocatedLine = new FulfillmentItemLine(
+                    productId: $item->productId,
+                    variantId: $item->variantId,
+                    quantity: $allocateQty,
+                    unitPrice: $item->unitPrice,
+                    unitWeight: $item->unitWeight,
+                    isShippable: true
+                );
+                $sourceAllocations[$source->id][] = $allocatedLine;
+                $remainingQty -= $allocateQty;
+            }
+
+            if ($remainingQty > 0) {
+                // Remaining quantity cannot be fulfilled
+                $unavailableItem = new FulfillmentItemLine(
+                    productId: $item->productId,
+                    variantId: $item->variantId,
+                    quantity: $remainingQty,
+                    unitPrice: $item->unitPrice,
+                    unitWeight: $item->unitWeight,
+                    isShippable: false
+                );
+                $unavailableItems[] = $unavailableItem;
+            }
+        }
+
+        $groups = [];
+
+        // Build groups for each source allocation
+        foreach ($sourceAllocations as $sourceId => $allocatedLines) {
+            $sourceDto = null;
+            foreach ($sources as $s) {
+                if ($s->id === $sourceId) {
+                    $sourceDto = $s;
+                    break;
+                }
+            }
+            $packResult = $this->packingService->pack($allocatedLines, $sourceId);
+            $mode = $this->resolveFulfillmentMode($tenantId, $sourceId);
+            $groups[] = new FulfillmentGroup(
+                groupKey: 'source:'.$sourceId,
+                fulfillmentMode: $mode,
+                inventorySourceId: $sourceId,
+                warehouseId: $sourceDto?->warehouseId,
+                items: $allocatedLines,
+                packages: is_array($packResult) ? $packResult : $packResult->packages,
+                isShippable: true,
+                readiness: FulfillmentReadiness::READY,
+                splitReason: 'Multi-source quantity split'
+            );
+        }
+
+        // Build unavailable group
+        if (! empty($unavailableItems)) {
+            $groups[] = new FulfillmentGroup(
+                groupKey: 'unavailable:no_stock',
+                fulfillmentMode: 'unavailable',
+                inventorySourceId: null,
+                warehouseId: null,
+                items: $unavailableItems,
+                packages: [],
+                isShippable: false,
+                readiness: FulfillmentReadiness::UNAVAILABLE,
+                splitReason: 'Insufficient stock across all eligible sources'
+            );
+        }
+
+        return $groups;
     }
 
     private function resolveFulfillmentMode(int $tenantId, int $inventorySourceId): string

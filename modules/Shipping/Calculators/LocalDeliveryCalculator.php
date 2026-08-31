@@ -15,7 +15,7 @@ class LocalDeliveryCalculator implements RateCalculatorInterface
 {
     public function calculate(ShippingMethod $method, ShippingZone $zone, ShippingRateRequest $request): ?RateBreakdown
     {
-        $currency = $request->context->currency;
+        $currency = $method->currency ?? $request->context->currency;
         $baseRate = MoneyValue::fromMinor((int) $method->base_amount, $currency);
         $handling = MoneyValue::fromMinor((int) $method->handling_fee, $currency);
         $zero = MoneyValue::fromMinor(0, $currency);

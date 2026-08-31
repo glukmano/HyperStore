@@ -1,1 +1,1 @@
-<div>Shipping Class Manager</div>
+<div><h2 class="text-xl font-bold mb-4">Shipping Classes</h2><p class="text-sm text-gray-500">Manage shipping class classifications.</p></div>

@@ -15,7 +15,7 @@ return new class extends Migration
             $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
             $table->string('code', 100);
             $table->string('name', 255);
-            $table->string('provider_class', 255)->default('manual');
+            $table->string('provider_code', 255)->default('manual');
             $table->string('status', 30)->default('active');
             $table->jsonb('metadata')->nullable();
             $table->timestamps();

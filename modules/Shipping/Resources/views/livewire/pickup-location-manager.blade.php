@@ -1,1 +1,1 @@
-<div>Pickup Location Manager</div>
+<div><h2 class="text-xl font-bold mb-4">Pickup Locations</h2><p class="text-sm text-gray-500">Manage in-store and warehouse pickup points.</p></div>

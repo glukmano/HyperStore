@@ -1,1 +1,1 @@
-<div>Package Type Manager</div>
+<div><h2 class="text-xl font-bold mb-4">Package Types</h2><p class="text-sm text-gray-500">Manage standard packaging dimensions.</p></div>

@@ -1,1 +1,1 @@
-<div>Shipping Restriction Manager</div>
+<div><h2 class="text-xl font-bold mb-4">Shipping Restrictions</h2><p class="text-sm text-gray-500">Manage geographic and product delivery restrictions.</p></div>

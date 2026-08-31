@@ -18,7 +18,13 @@ class ShippingMethodManager extends Component
 
     public string $rateCalculatorType = 'flat_rate';
 
+    public string $currency = 'CHF';
+
     public int $baseAmount = 0;
+
+    public int $handlingFee = 0;
+
+    public int $priority = 0;
 
     public function createMethod(): void
     {
@@ -31,23 +37,33 @@ class ShippingMethodManager extends Component
             abort(403, 'Permission denied.');
         }
 
+        $this->validate([
+            'code' => ['required', 'string', 'max:100'],
+            'name' => ['required', 'string', 'max:255'],
+            'rateCalculatorType' => ['required', 'string'],
+            'currency' => ['required', 'string', 'size:3'],
+            'baseAmount' => ['required', 'integer'],
+        ]);
+
         ShippingMethod::create([
             'tenant_id' => $tenant->getId(),
             'code' => $this->code,
             'name' => $this->name,
             'rate_calculator_type' => $this->rateCalculatorType,
+            'currency' => $this->currency,
             'base_amount' => $this->baseAmount,
-            'currency' => 'CHF',
+            'handling_fee' => $this->handlingFee,
+            'priority' => $this->priority,
             'status' => 'active',
         ]);
 
-        $this->reset(['code', 'name', 'baseAmount']);
+        $this->reset(['code', 'name', 'baseAmount', 'handlingFee', 'priority']);
     }
 
     public function render(): View
     {
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
-        $methods = $tenantId ? ShippingMethod::where('tenant_id', $tenantId)->get() : collect();
+        $methods = $tenantId ? ShippingMethod::where('tenant_id', $tenantId)->with('methodZones')->get() : collect();
 
         return view('shipping::livewire.shipping-method-manager', ['methods' => $methods]);
     }

@@ -24,12 +24,16 @@ class ManualCarrierProvider implements CarrierProviderInterface
                 continue;
             }
 
-            $rateMinor = $service->markup_amount > 0 ? (int) $service->markup_amount : 1000;
+            // Distinguish configured base rate from markup
+            $baseRateMinor = isset($service->metadata['base_rate']) && is_numeric($service->metadata['base_rate'])
+                ? (int) $service->metadata['base_rate']
+                : ($service->markup_amount > 0 ? (int) $service->markup_amount : 1500);
+
             $results[] = new CarrierRateResult(
                 carrierCode: $carrier->code,
                 serviceCode: $service->code,
                 serviceName: $service->name,
-                rateAmount: MoneyValue::fromMinor($rateMinor, $currency),
+                rateAmount: MoneyValue::fromMinor($baseRateMinor, $currency),
                 transitDaysMin: (int) $service->transit_days_min,
                 transitDaysMax: (int) $service->transit_days_max,
                 metadata: ['provider' => 'manual']

@@ -1,1 +1,1 @@
-<div>Rate Rule Manager</div>
+<div><h2 class="text-xl font-bold mb-4">Rate Rules</h2><p class="text-sm text-gray-500">Configure table rate rules and conditions.</p></div>

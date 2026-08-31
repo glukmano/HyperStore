@@ -73,7 +73,7 @@ class ShippingApiAndRbacTest extends TestCase
             'tenant_id' => $this->tenant->id,
             'code' => 'SWISS_POST',
             'name' => 'Swiss Post',
-            'provider_class' => 'manual',
+            'provider_code' => 'manual',
             'status' => 'active',
         ]);
 

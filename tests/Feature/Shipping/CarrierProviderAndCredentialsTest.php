@@ -32,7 +32,7 @@ class CarrierProviderAndCredentialsTest extends TestCase
             'tenant_id' => $this->tenantA->id,
             'code' => 'DHL_EXPRESS',
             'name' => 'DHL Express',
-            'provider_class' => 'manual',
+            'provider_code' => 'manual',
             'status' => 'active',
         ]);
 

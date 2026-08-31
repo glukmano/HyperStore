@@ -6,13 +6,18 @@ use App\Core\Context\ContextManager;
 use App\Core\Context\Middleware\ResolveContextMiddleware;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Modules\Catalog\Models\Product;
+use Modules\Catalog\Models\ProductVariant;
 use Modules\Fulfillment\Contracts\FulfillmentPlanningServiceInterface;
 use Modules\Fulfillment\DTOs\FulfillmentGroup;
 use Modules\Fulfillment\DTOs\FulfillmentItemLine;
+use Modules\Fulfillment\Models\FulfillmentSourceConfiguration;
+use Modules\Fulfillment\Models\FulfillmentStrategy;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\Weight;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnauthorizedHttpException;
 
 Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', ResolveContextMiddleware::class])->group(function () {
@@ -26,7 +31,7 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
         return (int) $tenant->getId();
     };
 
-    // Pure Fulfillment Planning
+    // 1. Pure Fulfillment Planning
     Route::post('plan', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
         if (! $request->user()?->can('fulfillment.plan') && ! $request->user()?->is_super_admin) {
@@ -41,21 +46,48 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
             'items.*.quantity' => ['required', 'integer', 'min:1'],
             'items.*.unit_price' => ['required', 'integer'],
             'items.*.unit_weight' => ['nullable', 'string'],
-            'items.*.is_shippable' => ['nullable', 'boolean'],
         ]);
 
-        $currency = $data['currency'] ?? 'CHF';
-        $context = new ShippingContext(tenantId: $tenantId, currency: $currency);
+        $resolvedContext = app(ContextManager::class);
+        $currency = $data['currency'] ?? ($resolvedContext->getCurrency()?->getCode() ?? 'CHF');
+
+        $store = $resolvedContext->getStore()?->getId();
+        $market = $resolvedContext->getMarket()?->getId();
+        $channel = $resolvedContext->getChannel()?->getId();
+        $context = new ShippingContext(
+            tenantId: $tenantId,
+            currency: $currency,
+            storeId: $store !== null ? (int) $store : null,
+            marketId: $market !== null ? (int) $market : null,
+            channelId: $channel !== null ? (int) $channel : null
+        );
 
         $lines = [];
         foreach ($data['items'] as $item) {
+            $productId = (int) $item['product_id'];
+            $variantId = isset($item['variant_id']) ? (int) $item['variant_id'] : null;
+
+            // Product & Variant Tenant Ownership Check
+            $product = Product::where('tenant_id', $tenantId)->find($productId);
+            if ($product === null) {
+                throw new NotFoundHttpException("Product [{$productId}] not found for tenant.");
+            }
+            if ($variantId !== null) {
+                $variant = ProductVariant::where('tenant_id', $tenantId)->where('product_id', $productId)->find($variantId);
+                if ($variant === null) {
+                    throw new NotFoundHttpException("Variant [{$variantId}] not found for product.");
+                }
+            }
+
+            $isShippable = $product->product_type !== 'digital' && $product->product_type !== 'service';
+
             $lines[] = new FulfillmentItemLine(
-                productId: (int) $item['product_id'],
-                variantId: isset($item['variant_id']) ? (int) $item['variant_id'] : null,
+                productId: $productId,
+                variantId: $variantId,
                 quantity: (int) $item['quantity'],
                 unitPrice: MoneyValue::fromMinor((int) $item['unit_price'], $currency),
                 unitWeight: isset($item['unit_weight']) ? Weight::of((string) $item['unit_weight'], 'kg') : Weight::zero(),
-                isShippable: $item['is_shippable'] ?? true
+                isShippable: $isShippable
             );
         }
 
@@ -72,10 +104,31 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
                 'inventory_source_id' => $g->inventorySourceId,
                 'warehouse_id' => $g->warehouseId,
                 'is_shippable' => $g->isShippable,
+                'readiness' => $g->readiness,
                 'split_reason' => $g->splitReason,
                 'items_count' => count($g->items),
                 'packages_count' => count($g->packages),
             ], $plan->groups),
         ]);
+    });
+
+    // 2. Fulfillment Source Configurations CRUD
+    Route::get('source-configurations', function (Request $request) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('fulfillment.sources.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(FulfillmentSourceConfiguration::where('tenant_id', $tenantId)->get());
+    });
+
+    // 3. Fulfillment Strategies CRUD
+    Route::get('strategies', function (Request $request) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('fulfillment.strategies.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(FulfillmentStrategy::where('tenant_id', $tenantId)->get());
     });
 });

@@ -1,1 +1,1 @@
-<div>Fulfillment Source Manager</div>
+<div><h2 class="text-xl font-bold mb-4">Fulfillment Sources</h2><p class="text-sm text-gray-500">Configure fulfillment source operational modes.</p></div>

@@ -7,11 +7,10 @@ namespace Modules\Shipping\Services;
 use Illuminate\Support\Collection;
 use Modules\Pricing\Contracts\CurrencyConversionInterface;
 use Modules\Pricing\ValueObjects\MoneyValue;
+use Modules\Shipping\Contracts\ShippingPromotionBenefitInterface;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\Contracts\ShippingZoneMatcherInterface;
 use Modules\Shipping\Models\ShippingMethod;
-use Modules\Shipping\Models\ShippingRestriction;
-use Modules\Shipping\Models\ShippingSourceMethodMapping;
 use Modules\Shipping\Registries\ShippingMethodTypeRegistry;
 use Modules\Shipping\ValueObjects\RateBreakdown;
 use Modules\Shipping\ValueObjects\ShippingRateQuote;
@@ -22,6 +21,7 @@ class ShippingRateEngine implements ShippingRateEngineInterface
     public function __construct(
         private readonly ShippingZoneMatcherInterface $zoneMatcher,
         private readonly ShippingMethodTypeRegistry $methodTypeRegistry,
+        private readonly ShippingRestrictionEvaluator $restrictionEvaluator,
         private readonly ?CurrencyConversionInterface $currencyConverter = null
     ) {}
 
@@ -54,17 +54,18 @@ class ShippingRateEngine implements ShippingRateEngineInterface
 
         foreach ($methods as $method) {
             /** @var ShippingMethod $method */
-            // 2. Check restrictions
-            if ($this->isRestricted($method, $request)) {
-                continue;
-            }
-
-            // 3. Find highest specificity matched zone for this method
+            // 2. Find highest specificity matched zone for this method
             $matchedZone = $matchedZones->first(function ($zone) use ($method) {
                 return $method->methodZones->contains('shipping_zone_id', $zone->id);
             });
 
             if (! $matchedZone) {
+                continue;
+            }
+
+            // 3. Check restrictions via typed evaluator
+            $restrictionResult = $this->restrictionEvaluator->evaluate($method, $matchedZone, $request);
+            if ($restrictionResult->isRestricted) {
                 continue;
             }
 
@@ -80,26 +81,31 @@ class ShippingRateEngine implements ShippingRateEngineInterface
                 continue;
             }
 
-            // 5. Currency conversion if method currency differs from request context
-            if ($method->currency !== $request->context->currency && $this->currencyConverter !== null) {
-                $convertedAmount = $this->currencyConverter->convert(
-                    $breakdown->finalAmount,
-                    $request->context->currency,
-                    $tenantId
-                );
+            // 5. Currency conversion: convert EACH breakdown component independently
+            $methodCurrency = $method->currency ?? $request->context->currency;
+            if ($methodCurrency !== $request->context->currency && $this->currencyConverter !== null) {
+                $targetCurr = $request->context->currency;
+                $convBase = $this->currencyConverter->convert($breakdown->baseRate, $targetCurr, $tenantId);
+                $convPerItem = $this->currencyConverter->convert($breakdown->perItemAmount, $targetCurr, $tenantId);
+                $convPerWeight = $this->currencyConverter->convert($breakdown->perWeightAmount, $targetCurr, $tenantId);
+                $convHandling = $this->currencyConverter->convert($breakdown->handlingFee, $targetCurr, $tenantId);
+                $convMarkup = $this->currencyConverter->convert($breakdown->carrierMarkup, $targetCurr, $tenantId);
+                $convDiscount = $this->currencyConverter->convert($breakdown->promotionDiscount, $targetCurr, $tenantId);
+                $convFinal = $convBase->add($convPerItem)->add($convPerWeight)->add($convHandling)->add($convMarkup)->subtract($convDiscount);
+
                 $breakdown = new RateBreakdown(
-                    baseRate: $convertedAmount,
-                    perItemAmount: MoneyValue::fromMinor(0, $request->context->currency),
-                    perWeightAmount: MoneyValue::fromMinor(0, $request->context->currency),
-                    handlingFee: MoneyValue::fromMinor(0, $request->context->currency),
-                    carrierMarkup: MoneyValue::fromMinor(0, $request->context->currency),
-                    promotionDiscount: $breakdown->promotionDiscount,
-                    finalAmount: $convertedAmount
+                    baseRate: $convBase,
+                    perItemAmount: $convPerItem,
+                    perWeightAmount: $convPerWeight,
+                    handlingFee: $convHandling,
+                    carrierMarkup: $convMarkup,
+                    promotionDiscount: $convDiscount,
+                    finalAmount: $convFinal
                 );
             }
 
-            // 6. Apply Promotion FreeShipping Benefit if provided
-            $finalBreakdown = $this->applyPromotionBenefits($breakdown, $request->promotionBenefits, $request->context->currency);
+            // 6. Apply Promotion FreeShipping Benefit if provided (typed contract & array adapter)
+            $finalBreakdown = $this->applyPromotionBenefits($breakdown, $method->code, $request->promotionBenefits, $request->context->currency);
 
             $quotes[] = new ShippingRateQuote(
                 methodId: $method->id,
@@ -108,6 +114,7 @@ class ShippingRateEngine implements ShippingRateEngineInterface
                 description: $method->description,
                 amount: $finalBreakdown->finalAmount,
                 breakdown: $finalBreakdown,
+                methodPriority: (int) $method->priority,
                 carrierCode: $method->metadata['carrier_code'] ?? null,
                 serviceCode: $method->metadata['service_code'] ?? null,
                 estimatedDaysMin: (int) ($method->metadata['transit_days_min'] ?? 1),
@@ -116,67 +123,50 @@ class ShippingRateEngine implements ShippingRateEngineInterface
             );
         }
 
-        // Sort quotes: Priority (from method metadata / priority), Amount ASC, Code ASC
+        // Sort quotes: Priority DESC, Amount ASC, Code ASC
         usort($quotes, function (ShippingRateQuote $a, ShippingRateQuote $b) {
+            if ($a->methodPriority !== $b->methodPriority) {
+                return $b->methodPriority <=> $a->methodPriority; // Priority DESC
+            }
             $amtA = $a->amount->getMinorAmount();
             $amtB = $b->amount->getMinorAmount();
             if ($amtA !== $amtB) {
-                return $amtA <=> $amtB;
+                return $amtA <=> $amtB; // Amount ASC
             }
 
-            return strcmp($a->methodCode, $b->methodCode);
+            return strcmp($a->methodCode, $b->methodCode); // Code ASC
         });
 
         return collect($quotes);
     }
 
-    private function isRestricted(ShippingMethod $method, ShippingRateRequest $request): bool
-    {
-        $tenantId = $request->context->tenantId;
-
-        // Check source-method mapping if source is specified on lines
-        foreach ($request->lines as $line) {
-            $sourceId = $line['inventory_source_id'] ?? null;
-            if ($sourceId !== null) {
-                $mapping = ShippingSourceMethodMapping::query()
-                    ->where('tenant_id', $tenantId)
-                    ->where('inventory_source_id', $sourceId)
-                    ->where('shipping_method_id', $method->id)
-                    ->first();
-
-                if ($mapping !== null && ! $mapping->is_allowed) {
-                    return true;
-                }
-            }
-        }
-
-        // Check explicit ShippingRestrictions
-        $hasRestriction = ShippingRestriction::query()
-            ->where('tenant_id', $tenantId)
-            ->where('shipping_method_id', $method->id)
-            ->exists();
-
-        return $hasRestriction;
-    }
-
     /**
      * @param  array<int, mixed>  $benefits
      */
-    private function applyPromotionBenefits(RateBreakdown $breakdown, array $benefits, string $currency): RateBreakdown
-    {
+    private function applyPromotionBenefits(
+        RateBreakdown $breakdown,
+        string $methodCode,
+        array $benefits,
+        string $currency
+    ): RateBreakdown {
         if (empty($benefits)) {
             return $breakdown;
         }
 
         $isFreeShipping = false;
         foreach ($benefits as $benefit) {
-            if (is_object($benefit) && (property_exists($benefit, 'type') && $benefit->type === 'free_shipping' || str_contains(get_class($benefit), 'FreeShipping'))) {
-                $isFreeShipping = true;
-                break;
-            }
-            if (is_array($benefit) && ($benefit['type'] ?? '') === 'free_shipping') {
-                $isFreeShipping = true;
-                break;
+            if ($benefit instanceof ShippingPromotionBenefitInterface && $benefit->isFreeShipping()) {
+                $applicableCode = $benefit->getApplicableMethodCode();
+                if ($applicableCode === null || $applicableCode === $methodCode) {
+                    $isFreeShipping = true;
+                    break;
+                }
+            } elseif (is_array($benefit) && ($benefit['type'] ?? '') === 'free_shipping') {
+                $applicableCode = $benefit['applicable_method_code'] ?? null;
+                if ($applicableCode === null || $applicableCode === $methodCode) {
+                    $isFreeShipping = true;
+                    break;
+                }
             }
         }
 

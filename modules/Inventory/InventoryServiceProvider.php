@@ -11,6 +11,7 @@ use Modules\Inventory\Commands\ReconcileInventoryCommand;
 use Modules\Inventory\Contracts\InventoryAdjustmentServiceInterface;
 use Modules\Inventory\Contracts\InventoryAvailabilityServiceInterface;
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
+use Modules\Inventory\Contracts\InventorySourceQueryInterface;
 use Modules\Inventory\Contracts\InventoryTransferServiceInterface;
 use Modules\Inventory\Livewire\InventoryAdjustmentManager;
 use Modules\Inventory\Livewire\InventoryMovementHistory;
@@ -26,6 +27,7 @@ use Modules\Inventory\Services\InventoryAvailabilityService;
 use Modules\Inventory\Services\InventoryIdempotencyService;
 use Modules\Inventory\Services\InventoryReconciliationService;
 use Modules\Inventory\Services\InventoryReservationService;
+use Modules\Inventory\Services\InventorySourceQueryService;
 use Modules\Inventory\Services\InventoryTransferService;
 
 class InventoryServiceProvider extends ModuleServiceProvider
@@ -39,6 +41,7 @@ class InventoryServiceProvider extends ModuleServiceProvider
     {
         $this->app->singleton(InventoryIdempotencyService::class);
         $this->app->singleton(InventoryAvailabilityServiceInterface::class, InventoryAvailabilityService::class);
+        $this->app->singleton(InventorySourceQueryInterface::class, InventorySourceQueryService::class);
         $this->app->singleton(InventoryReservationServiceInterface::class, InventoryReservationService::class);
         $this->app->singleton(InventoryAdjustmentServiceInterface::class, InventoryAdjustmentService::class);
         $this->app->singleton(InventoryTransferServiceInterface::class, InventoryTransferService::class);

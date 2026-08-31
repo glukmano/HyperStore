@@ -7,6 +7,7 @@ namespace Modules\Shipping\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Facades\Crypt;
+use Modules\Shipping\Services\CredentialDecryptionException;
 
 class CarrierCredential extends Model
 {
@@ -41,6 +42,8 @@ class CarrierCredential extends Model
      * Retrieve decrypted secrets securely for provider execution.
      *
      * @return array<string, mixed>
+     *
+     * @throws CredentialDecryptionException
      */
     public function getDecryptedCredentials(): array
     {
@@ -51,9 +54,9 @@ class CarrierCredential extends Model
         try {
             $json = Crypt::decryptString($this->encrypted_credentials);
 
-            return json_decode($json, true, 512, JSON_THROW_ON_ERROR) ?? [];
-        } catch (\Throwable) {
-            return [];
+            return (array) json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable $e) {
+            throw new CredentialDecryptionException('Failed to securely decrypt carrier credentials: '.$e->getMessage(), 0, $e);
         }
     }
 }

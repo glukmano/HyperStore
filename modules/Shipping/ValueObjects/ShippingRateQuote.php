@@ -18,6 +18,7 @@ final readonly class ShippingRateQuote
         public ?string $description,
         public MoneyValue $amount,
         public RateBreakdown $breakdown,
+        public int $methodPriority = 0,
         public ?string $carrierCode = null,
         public ?string $serviceCode = null,
         public int $estimatedDaysMin = 1,

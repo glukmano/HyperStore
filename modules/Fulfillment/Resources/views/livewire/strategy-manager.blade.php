@@ -1,1 +1,1 @@
-<div>Fulfillment Strategy Manager</div>
+<div><h2 class="text-xl font-bold mb-4">Fulfillment Strategies</h2><p class="text-sm text-gray-500">Configure split minimization and priority rules.</p></div>

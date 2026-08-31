@@ -1,1 +1,1 @@
-<div>Rate Preview Tool</div>
+<div><h2 class="text-xl font-bold mb-4">Shipping Rate Preview</h2><p class="text-sm text-gray-500">Test shipping rate calculations in real-time.</p></div>

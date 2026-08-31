@@ -17,8 +17,12 @@ class CarrierRegistry
     /**
      * @param  class-string<CarrierProviderInterface>  $providerClass
      */
-    public function register(string $code, string $providerClass): void
+    public function register(string $code, string $providerClass, bool $override = false): void
     {
+        if (isset($this->providers[$code]) && ! $override) {
+            throw new InvalidArgumentException("Carrier provider [{$code}] is already registered. Explicit override required.");
+        }
+
         $this->providers[$code] = $providerClass;
     }
 

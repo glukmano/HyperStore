@@ -14,12 +14,13 @@ final readonly class FulfillmentGroup
      */
     public function __construct(
         public string $groupKey,
-        public string $fulfillmentMode, // own_stock, vendor_stock, dropship, 3pl, non_physical
+        public string $fulfillmentMode, // own_stock, dropship, 3pl, non_physical, unavailable
         public ?int $inventorySourceId,
         public ?int $warehouseId,
         public array $items,
-        public array $packages = [],
+        public array $packages,
         public bool $isShippable = true,
+        public string $readiness = FulfillmentReadiness::READY,
         public ?string $splitReason = null
     ) {}
 }
