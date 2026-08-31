@@ -16,6 +16,7 @@ class DatabaseSeeder extends Seeder
             ChannelSeeder::class,
             CatalogPermissionSeeder::class,
             PricingPermissionSeeder::class,
+            InventoryPermissionSeeder::class,
         ]);
 
         User::firstOrCreate(

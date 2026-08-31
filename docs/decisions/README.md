@@ -47,3 +47,17 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 | [`ADR-0034`](ADR-0034-fixed-discount-multi-currency-strategy.md) | Fixed-Discount Multi-Currency Strategy | Accepted |
 | [`ADR-0035`](ADR-0035-coupon-uniqueness-and-usage-boundary.md) | Coupon Uniqueness and Usage Boundary | Accepted |
 | [`ADR-0036`](ADR-0036-cost-margin-access-and-security-boundary.md) | Cost and Margin Access and Security Boundary | Accepted |
+
+### Phase 05: Inventory, Warehouses & Multi-Source Stock
+- [ADR-0037: Inventory Module Ownership and Boundaries](ADR-0037-inventory-module-ownership-and-boundaries.md)
+- [ADR-0038: Warehouse vs Inventory Source Architecture](ADR-0038-warehouse-vs-inventory-source-architecture.md)
+- [ADR-0039: Decimal Quantity Precision, Unit of Measure and Value Object](ADR-0039-decimal-quantity-precision-uom-and-value-object.md)
+- [ADR-0040: Stock Balance, Condition Buckets and Movement Ledger Model](ADR-0040-stock-balance-condition-buckets-and-movement-ledger-model.md)
+- [ADR-0041: Concurrency Safety and Oversell Protection via Deterministic Row Locking](ADR-0041-concurrency-safety-and-oversell-protection-via-deterministic-row-locking.md)
+- [ADR-0042: Inventory Reservation Lifecycle and Split Multi-Source Allocation](ADR-0042-inventory-reservation-lifecycle-and-split-multi-source-allocation.md)
+- [ADR-0043: Multi-Source Stock Aggregation and Allocation Routing Foundation](ADR-0043-multi-source-stock-aggregation-and-allocation-routing-foundation.md)
+- [ADR-0044: Backorder and Preorder Inventory Policies](ADR-0044-backorder-and-preorder-inventory-policies.md)
+- [ADR-0045: Inter-Warehouse Transfer Workflow and Accounting](ADR-0045-inter-warehouse-transfer-workflow-and-accounting.md)
+- [ADR-0046: Inventory Idempotency Persistence Strategy](ADR-0046-inventory-idempotency-persistence-strategy.md)
+- [ADR-0047: Inventory Reconciliation and Reservation Integrity Strategy](ADR-0047-inventory-reconciliation-and-reservation-integrity-strategy.md)
+- [ADR-0048: External Supplier and Vendor Stock Extension Boundaries](ADR-0048-external-supplier-and-vendor-stock-extension-boundaries.md)
