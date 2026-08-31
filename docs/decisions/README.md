@@ -1,22 +1,27 @@
-# Architecture Decision Records (ADRs)
+# Architectural Decision Records
 
-This directory tracks significant architectural decisions for the **Hyper Commerce Platform**.
+This directory contains all ADRs (Architectural Decision Records) for the HyperStore platform.
 
-## ADR Status Lifecycle
+Each ADR is an immutable record of an architectural decision. To supersede an ADR, create a new one referencing the old one and update the old one's status to "Superseded by ADR-XXXX".
 
-- **PROPOSED**: Under review / RFC phase.
-- **ACCEPTED**: Approved baseline; must be respected by all developers and AI agents.
-- **DEPRECATED**: No longer applicable.
-- **SUPERSEDED**: Replaced by a newer accepted ADR (must link to superseding ADR).
+## Index
 
-## Index of ADRs
+| ID | Title | Status | Phase |
+|---|---|---|---|
+| [ADR-0001](ADR-0001-modular-monolith-architecture.md) | Modular Monolith Architecture | ✅ Accepted | PHASE-01 |
+| [ADR-0002](ADR-0002-postgresql-source-of-truth.md) | PostgreSQL as Primary Database Source of Truth | ✅ Accepted | PHASE-01 |
+| [ADR-0003](ADR-0003-project-owned-module-kernel.md) | Project-Owned Module Kernel (No Third-Party Module Framework) | ✅ Accepted | PHASE-01 |
+| [ADR-0004](ADR-0004-strict-no-float-money.md) | Strict No-Float Money — Integer Minor Units Only | ✅ Accepted | PHASE-01 |
+| [ADR-0005](ADR-0005-canonical-multi-store-products.md) | Canonical Multi-Store Product Catalog | ✅ Accepted | PHASE-01 |
+| [ADR-0006](ADR-0006-theme-and-plugin-isolation.md) | Theme and Plugin Isolation | ✅ Accepted | PHASE-01 |
 
-| ADR ID | Title | Status | Date | Decision Summary |
-| :--- | :--- | :--- | :--- | :--- |
-| [ADR-0000](file:///Volumes/Lukman/dev/Projects/HyperStore/docs/decisions/ADR-0000-template.md) | ADR Template | DRAFT | 2026-08-31 | Standard ADR structure template |
+## Template
 
----
+Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 
-## Rules
-- Accepted ADRs cannot be silently contradicted.
-- To change an accepted decision, submit a formal proposal in `docs/proposals/`.
+## Process
+
+1. Draft the ADR in a feature branch.
+2. Get review from at least one architect or senior engineer.
+3. Merge — the ADR is now "Accepted".
+4. ADRs are NEVER retroactively edited once accepted (except to add a "Superseded" status).

@@ -1,0 +1,10 @@
+{
+    "name": "TestGamma",
+    "namespace": "Tests\\Fixtures\\Modules\\TestGamma",
+    "provider": "Tests\\Fixtures\\Modules\\TestGamma\\TestGammaServiceProvider",
+    "description": "Test fixture module Gamma — disabled, to prove disabled modules are not booted.",
+    "version": "1.0.0",
+    "enabled": false,
+    "dependencies": [],
+    "autoload": {}
+}

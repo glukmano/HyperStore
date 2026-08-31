@@ -1,0 +1,10 @@
+{
+    "name": "TestBeta",
+    "namespace": "Tests\\Fixtures\\Modules\\TestBeta",
+    "provider": "Tests\\Fixtures\\Modules\\TestBeta\\TestBetaServiceProvider",
+    "description": "Test fixture module Beta — depends on TestAlpha to prove dependency ordering.",
+    "version": "1.0.0",
+    "enabled": true,
+    "dependencies": ["TestAlpha"],
+    "autoload": {}
+}

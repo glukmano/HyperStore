@@ -12,4 +12,5 @@ The **Hyper Commerce Platform** is engineered strictly phase by phase.
 
 | Phase File | Phase Title | Status | Completion Date |
 | :--- | :--- | :--- | :--- |
-| `PHASE-00-BOOTSTRAP.md` | Governance & Skills Bootstrap | CURRENT | 2026-08-31 |
+| `PHASE-00-BOOTSTRAP.md` | Governance & Skills Bootstrap | COMPLETED | 2026-08-31 |
+| [`PHASE-01-PLATFORM-FOUNDATION.md`](file:///Volumes/Lukman/dev/Projects/HyperStore/docs/phases/PHASE-01-PLATFORM-FOUNDATION.md) | Platform Foundation & Modular Monolith Kernel | ACTIVE | IN_PROGRESS |

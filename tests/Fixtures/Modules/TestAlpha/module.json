@@ -1,0 +1,10 @@
+{
+    "name": "TestAlpha",
+    "namespace": "Tests\\Fixtures\\Modules\\TestAlpha",
+    "provider": "Tests\\Fixtures\\Modules\\TestAlpha\\TestAlphaServiceProvider",
+    "description": "Test fixture module Alpha — used to prove module discovery, registration, and boot lifecycle.",
+    "version": "1.0.0",
+    "enabled": true,
+    "dependencies": [],
+    "autoload": {}
+}
