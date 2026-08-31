@@ -10,6 +10,7 @@ use Modules\Catalog\Contracts\CategoryHierarchyValidatorInterface;
 use Modules\Catalog\Contracts\ProductTypeRegistryInterface;
 use Modules\Catalog\Contracts\VariantCombinatorInterface;
 use Modules\Catalog\Livewire\AttributeManager;
+use Modules\Catalog\Livewire\AttributeSetManager;
 use Modules\Catalog\Livewire\BrandManager;
 use Modules\Catalog\Livewire\CategoryManager;
 use Modules\Catalog\Livewire\ProductForm;
@@ -111,6 +112,7 @@ class CatalogServiceProvider extends ModuleServiceProvider
             Livewire::component('catalog.product-form', ProductForm::class);
             Livewire::component('catalog.category-manager', CategoryManager::class);
             Livewire::component('catalog.attribute-manager', AttributeManager::class);
+            Livewire::component('catalog.attribute-set-manager', AttributeSetManager::class);
             Livewire::component('catalog.brand-manager', BrandManager::class);
         }
     }

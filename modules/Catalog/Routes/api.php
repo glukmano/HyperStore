@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Core\Context\Middleware\ResolveContextMiddleware;
 use Illuminate\Support\Facades\Route;
 use Modules\Catalog\Http\Controllers\Api\V1\AttributeApiController;
+use Modules\Catalog\Http\Controllers\Api\V1\AttributeSetApiController;
 use Modules\Catalog\Http\Controllers\Api\V1\BrandApiController;
 use Modules\Catalog\Http\Controllers\Api\V1\CategoryApiController;
 use Modules\Catalog\Http\Controllers\Api\V1\ProductApiController;
@@ -24,4 +25,5 @@ Route::prefix('api/v1/catalog')
         Route::apiResource('categories', CategoryApiController::class);
         Route::apiResource('brands', BrandApiController::class);
         Route::apiResource('attributes', AttributeApiController::class);
+        Route::apiResource('attribute-sets', AttributeSetApiController::class);
     });

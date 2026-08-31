@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Core\Context\Middleware\ResolveContextMiddleware;
 use Illuminate\Support\Facades\Route;
 use Modules\Catalog\Livewire\AttributeManager;
+use Modules\Catalog\Livewire\AttributeSetManager;
 use Modules\Catalog\Livewire\BrandManager;
 use Modules\Catalog\Livewire\CategoryManager;
 use Modules\Catalog\Livewire\ProductForm;
@@ -18,5 +19,6 @@ Route::prefix('control-center/catalog')
         Route::get('products/{id}/edit', ProductForm::class)->name('control-center.catalog.products.edit');
         Route::get('categories', CategoryManager::class)->name('control-center.catalog.categories');
         Route::get('attributes', AttributeManager::class)->name('control-center.catalog.attributes');
+        Route::get('attribute-sets', AttributeSetManager::class)->name('control-center.catalog.attribute-sets');
         Route::get('brands', BrandManager::class)->name('control-center.catalog.brands');
     });

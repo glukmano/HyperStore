@@ -74,6 +74,10 @@ class ProductApiController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        $user = $request->user();
+        if ($user !== null && ! $user->isSuperAdmin() && ! $user->can('products.create') && ! $user->can('catalog.manage')) {
+            return response()->json(['message' => 'Forbidden: You do not have permission to create products.'], 403);
+        }
         $tenantId = (int) ($this->contextManager->getTenant()->getId() ?? $request->input('tenant_id', 1));
 
         $validated = $request->validate([
@@ -138,6 +142,10 @@ class ProductApiController extends Controller
 
     public function update(Request $request, int $id): JsonResponse
     {
+        $user = $request->user();
+        if ($user !== null && ! $user->isSuperAdmin() && ! $user->can('products.update') && ! $user->can('catalog.manage')) {
+            return response()->json(['message' => 'Forbidden: You do not have permission to update products.'], 403);
+        }
         /** @var Product $product */
         $product = Product::findOrFail($id);
 
@@ -187,8 +195,12 @@ class ProductApiController extends Controller
         return response()->json(['data' => $updated]);
     }
 
-    public function destroy(int $id): JsonResponse
+    public function destroy(Request $request, int $id): JsonResponse
     {
+        $user = $request->user();
+        if ($user !== null && ! $user->isSuperAdmin() && ! $user->can('products.archive') && ! $user->can('catalog.manage')) {
+            return response()->json(['message' => 'Forbidden: You do not have permission to archive products.'], 403);
+        }
         /** @var Product $product */
         $product = Product::findOrFail($id);
 

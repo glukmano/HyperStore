@@ -9,3 +9,4 @@ parameters:
     treatPhpDocTypesAsCertain: false
     bootstrapFiles:
         - vendor/autoload.php
+        - vendor/larastan/larastan/bootstrap.php

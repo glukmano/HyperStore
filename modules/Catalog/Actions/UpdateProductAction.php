@@ -4,17 +4,45 @@ declare(strict_types=1);
 
 namespace Modules\Catalog\Actions;
 
+use App\Core\Audit\Contracts\AuditManagerInterface;
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use Modules\Catalog\DTOs\ProductData;
 use Modules\Catalog\Events\ProductUpdated;
+use Modules\Catalog\Models\Brand;
+use Modules\Catalog\Models\Category;
 use Modules\Catalog\Models\Product;
 use Modules\Catalog\Models\ProductTranslation;
 
 class UpdateProductAction
 {
+    public function __construct(
+        private readonly ?AuditManagerInterface $auditManager = null,
+    ) {}
+
     public function execute(Product $product, ProductData $data): Product
     {
         return DB::transaction(function () use ($product, $data): Product {
+            // Cross-tenant validation for Brand
+            if ($data->brandId !== null) {
+                $brand = Brand::find($data->brandId);
+                if ($brand !== null && $brand->tenant_id !== $product->tenant_id) {
+                    throw new InvalidArgumentException("Cross-tenant violation: Brand [{$data->brandId}] belongs to a different tenant.");
+                }
+            }
+
+            // Cross-tenant validation for Categories
+            if (! empty($data->categoryIds)) {
+                $invalidCat = Category::query()
+                    ->whereIn('id', $data->categoryIds)
+                    ->where('tenant_id', '!=', $product->tenant_id)
+                    ->exists();
+
+                if ($invalidCat) {
+                    throw new InvalidArgumentException('Cross-tenant violation: One or more categories belong to a different tenant.');
+                }
+            }
+
             $product->update([
                 'brand_id' => $data->brandId,
                 'attribute_set_id' => $data->attributeSetId,
@@ -47,6 +75,12 @@ class UpdateProductAction
                 }
                 $product->categories()->sync($syncData);
             }
+
+            $this->auditManager?->log(
+                event: 'product.updated',
+                subject: $product,
+                properties: ['sku' => $product->sku]
+            );
 
             ProductUpdated::dispatch($product);
 

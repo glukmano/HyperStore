@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Catalog\ProductTypes;
 
+use InvalidArgumentException;
 use Modules\Catalog\Contracts\ProductTypeInterface;
 use Modules\Catalog\Contracts\ProductTypeRegistryInterface;
 
@@ -14,7 +15,12 @@ class ProductTypeRegistry implements ProductTypeRegistryInterface
 
     public function register(ProductTypeInterface $productType): void
     {
-        $this->types[$productType->getId()] = $productType;
+        $id = $productType->getId();
+        if (isset($this->types[$id])) {
+            throw new InvalidArgumentException("Product type [{$id}] is already registered.");
+        }
+
+        $this->types[$id] = $productType;
     }
 
     public function get(string $id): ProductTypeInterface
