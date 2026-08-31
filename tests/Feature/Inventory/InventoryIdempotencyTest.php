@@ -64,36 +64,45 @@ test('Claim-first idempotency prevents duplicate stock addition on retried calls
         ->and($keysCount)->toBe(1);
 });
 
-test('Failed idempotency operation allows subsequent retry with same key to succeed', function (): void {
+test('Crash-boundary test: mutation and completion occur in one atomic transaction', function (): void {
     $idemService = app(InventoryIdempotencyService::class);
     $adjService = app(InventoryAdjustmentServiceInterface::class);
 
-    $attempts = 0;
-    $action = function () use (&$attempts, $adjService) {
-        $attempts++;
-        if ($attempts === 1) {
-            throw new RuntimeException('Simulated transient error during first attempt.');
+    $failOnce = true;
+    $action = function () use (&$failOnce, $adjService) {
+        $movement = $adjService->receive($this->stockItem, Quantity::fromString('10.0000'));
+        if ($failOnce) {
+            $failOnce = false;
+            throw new RuntimeException('Simulated crash right after mutation but before transaction commit.');
         }
 
-        return $adjService->receive($this->stockItem, Quantity::fromString('20.0000'));
+        return $movement;
     };
 
-    // First attempt fails and sets status='failed'
-    expect(fn () => $idemService->execute($this->tenant->id, 'FAILED-RETRY-KEY', 'receive', 'stock_items', (string) $this->stockItem->id, $action))
-        ->toThrow(RuntimeException::class, 'Simulated transient error');
+    // First attempt fails inside transaction
+    expect(fn () => $idemService->execute($this->tenant->id, 'CRASH-BOUNDARY-KEY', 'receive', 'stock_items', (string) $this->stockItem->id, $action))
+        ->toThrow(RuntimeException::class, 'Simulated crash');
 
+    // Verify atomic rollback: on_hand must still be 0.0000 and status must NOT be completed
     $this->stockItem->refresh();
     expect($this->stockItem->on_hand)->toBe('0.0000');
 
-    // Second attempt with SAME key takes over failed claim and succeeds
-    $result = $idemService->execute($this->tenant->id, 'FAILED-RETRY-KEY', 'receive', 'stock_items', (string) $this->stockItem->id, $action);
+    $opKey = InventoryOperationKey::where('idempotency_key', 'CRASH-BOUNDARY-KEY')->first();
+    expect($opKey->status)->toBe('failed')
+        ->and($opKey->completed_at)->toBeNull();
+
+    // Subsequent retry with SAME key succeeds
+    $result = $idemService->execute($this->tenant->id, 'CRASH-BOUNDARY-KEY', 'receive', 'stock_items', (string) $this->stockItem->id, $action);
 
     $this->stockItem->refresh();
-    expect($this->stockItem->on_hand)->toBe('20.0000');
+    expect($this->stockItem->on_hand)->toBe('10.0000');
 
-    $opKey = InventoryOperationKey::where('idempotency_key', 'FAILED-RETRY-KEY')->first();
+    $opKey->refresh();
     expect($opKey->status)->toBe('completed')
-        ->and($opKey->error_message)->toBeNull();
+        ->and($opKey->completed_at)->not->toBeNull();
+
+    $movementsCount = InventoryMovement::where('stock_item_id', $this->stockItem->id)->count();
+    expect($movementsCount)->toBe(1);
 });
 
 test('Abandoned processing claim with expired lease is atomically recovered and completed', function (): void {
@@ -129,7 +138,7 @@ test('Abandoned processing claim with expired lease is atomically recovered and 
     expect($opKey->status)->toBe('completed');
 });
 
-test('Non-unique QueryException is rethrown and not treated as a duplicate conflict', function (): void {
+test('Non-unique QueryException is strictly rethrown without text matching fallback', function (): void {
     $idemService = app(InventoryIdempotencyService::class);
 
     expect(fn () => $idemService->execute(
@@ -139,7 +148,7 @@ test('Non-unique QueryException is rethrown and not treated as a duplicate confl
         'stock_items',
         (string) $this->stockItem->id,
         function () {
-            // Trigger a database QueryException (syntax error)
+            // Trigger a database syntax/table error (non-unique constraint)
             DB::select('SELECT * FROM non_existent_table_xyz');
         }
     ))->toThrow(QueryException::class);

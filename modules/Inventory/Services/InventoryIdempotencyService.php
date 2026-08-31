@@ -29,7 +29,6 @@ class InventoryIdempotencyService
 
         $trimmedKey = trim($idempotencyKey);
 
-        // Loop handles initial claim, waiting on valid lease, or takeover on expired/failed lease without unbounded recursion
         for ($iteration = 0; $iteration < 3; $iteration++) {
             // 1. Check existing record
             $existing = InventoryOperationKey::query()
@@ -101,10 +100,10 @@ class InventoryIdempotencyService
                 return $this->runMutationAndComplete($tenantId, $trimmedKey, $operationType, $resourceType, $resourceId, $callback);
             } catch (QueryException $e) {
                 if (! $this->isUniqueConstraintViolation($e)) {
-                    throw $e; // Rethrow non-uniqueness DB errors (connection failure, column errors, etc.)
+                    throw $e; // Strict rethrow of non-uniqueness DB errors (connection failure, column errors, syntax errors)
                 }
 
-                // Unique collision -> another process claimed concurrently, loop to wait/poll
+                // Strict unique collision -> another process claimed concurrently, loop to wait/poll
             }
         }
 
@@ -123,28 +122,40 @@ class InventoryIdempotencyService
     }
 
     /**
+     * Executes domain mutation and marks idempotency completion inside ONE atomic database transaction.
+     *
+     * Invariant:
+     * Either mutation commits AND idempotency status='completed' commits atomically,
+     * OR mutation rolls back AND idempotency status is NOT marked completed.
+     *
      * @param  callable(): mixed  $callback
      */
     private function runMutationAndComplete(int $tenantId, string $key, string $opType, string $resType, ?string $resId, callable $callback): mixed
     {
         try {
-            $result = DB::transaction(function () use ($callback) {
-                return $callback();
-            });
+            return DB::transaction(function () use ($tenantId, $key, $opType, $resType, $resId, $callback) {
+                // 1. Lock and verify ownership of the idempotency claim inside the outer transaction
+                /** @var InventoryOperationKey $opKey */
+                $opKey = InventoryOperationKey::query()
+                    ->where('tenant_id', $tenantId)
+                    ->where('idempotency_key', $key)
+                    ->where('operation_type', $opType)
+                    ->lockForUpdate()
+                    ->firstOrFail();
 
-            $storedResourceType = $resType;
-            $storedResourceId = $resId;
+                // 2. Execute the inventory mutation (nested DB::transactions inside callback participate via savepoints)
+                $result = $callback();
 
-            if ($result instanceof InventoryMovement) {
-                $storedResourceType = 'inventory_movements';
-                $storedResourceId = (string) $result->id;
-            }
+                $storedResourceType = $resType;
+                $storedResourceId = $resId;
 
-            InventoryOperationKey::query()
-                ->where('tenant_id', $tenantId)
-                ->where('idempotency_key', $key)
-                ->where('operation_type', $opType)
-                ->update([
+                if ($result instanceof InventoryMovement) {
+                    $storedResourceType = 'inventory_movements';
+                    $storedResourceId = (string) $result->id;
+                }
+
+                // 3. Atomically transition claim status to completed and record response payload
+                $opKey->update([
                     'status' => 'completed',
                     'resource_type' => $storedResourceType,
                     'resource_id' => $storedResourceId,
@@ -152,17 +163,23 @@ class InventoryIdempotencyService
                     'completed_at' => Carbon::now(),
                 ]);
 
-            return $result;
+                return $result;
+            });
         } catch (\Throwable $e) {
-            // Mark claim failed so subsequent retries can safely recover and retry
-            InventoryOperationKey::query()
-                ->where('tenant_id', $tenantId)
-                ->where('idempotency_key', $key)
-                ->where('operation_type', $opType)
-                ->update([
-                    'status' => 'failed',
-                    'error_message' => $e->getMessage(),
-                ]);
+            // Transaction rolled back: mutation and completed status were NOT committed.
+            // Safely mark failed in a separate transaction so subsequent retries can acquire the claim.
+            try {
+                InventoryOperationKey::query()
+                    ->where('tenant_id', $tenantId)
+                    ->where('idempotency_key', $key)
+                    ->where('operation_type', $opType)
+                    ->update([
+                        'status' => 'failed',
+                        'error_message' => $e->getMessage(),
+                    ]);
+            } catch (\Throwable) {
+                // Ignore secondary errors if DB is unreachable
+            }
 
             throw $e;
         }
@@ -184,10 +201,9 @@ class InventoryIdempotencyService
             }
 
             if ($record === null || $record->status === 'failed') {
-                return null; // Return null so outer loop can trigger takeover/retry
+                return null;
             }
 
-            // If lease expired while polling, break to allow takeover
             if ($record->lease_expires_at !== null && Carbon::parse($record->lease_expires_at)->isPast()) {
                 return null;
             }
@@ -208,16 +224,26 @@ class InventoryIdempotencyService
         return $record->response_payload;
     }
 
+    /**
+     * Strictly verifies SQLSTATE 23505 (PostgreSQL unique violation) or SQLite 23000 error code 19.
+     * Never falls back to message-text substring matching.
+     */
     private function isUniqueConstraintViolation(QueryException $e): bool
     {
         $code = (string) $e->getCode();
         $sqlState = (string) ($e->errorInfo[0] ?? '');
+        $driverCode = (int) ($e->errorInfo[1] ?? 0);
 
-        // PostgreSQL 23505 or standard 23000
-        return $code === '23505'
-            || $sqlState === '23505'
-            || $code === '23000'
-            || str_contains($e->getMessage(), 'unique')
-            || str_contains($e->getMessage(), 'Duplicate');
+        // PostgreSQL SQLSTATE 23505
+        if ($code === '23505' || $sqlState === '23505') {
+            return true;
+        }
+
+        // SQLite SQLSTATE 23000 with error code 19 (SQLITE_CONSTRAINT_UNIQUE)
+        if ($sqlState === '23000' && $driverCode === 19) {
+            return true;
+        }
+
+        return false;
     }
 }
