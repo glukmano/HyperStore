@@ -17,10 +17,7 @@ use Modules\Inventory\ValueObjects\Quantity;
 beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'idempotency-tenant'],
-        ['name' => 'Idempotency Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'idempotency-tenant', 'name' => 'Idempotency Tenant', 'status' => 'active']);
 
     $this->product = app(CreateProductAction::class)->execute(new ProductData(
         tenantId: $this->tenant->id,
@@ -43,15 +40,12 @@ beforeEach(function (): void {
 test('Receiving with duplicate idempotency key does not duplicate stock', function (): void {
     $service = app(InventoryAdjustmentServiceInterface::class);
 
-    // Initial receive with key 'RECEIVE-KEY-100'
     $service->receive($this->stockItem, Quantity::fromString('15.0000'), idempotencyKey: 'RECEIVE-KEY-100');
     $this->stockItem->refresh();
     expect($this->stockItem->on_hand)->toBe('15.0000');
 
-    // Duplicate receive with same key
     $service->receive($this->stockItem, Quantity::fromString('15.0000'), idempotencyKey: 'RECEIVE-KEY-100');
     $this->stockItem->refresh();
 
-    // Stock must remain 15.0000, not 30.0000
     expect($this->stockItem->on_hand)->toBe('15.0000');
 });

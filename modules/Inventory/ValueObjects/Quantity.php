@@ -16,7 +16,7 @@ final class Quantity
     private function __construct(string $value)
     {
         /** @var numeric-string $val */
-        $val = (string) $value;
+        $val = is_numeric($value) ? $value : '0';
         /** @var numeric-string $normalized */
         $normalized = (string) bcadd($val, '0', self::SCALE);
         $this->value = $normalized;
@@ -48,11 +48,6 @@ final class Quantity
     public function toString(): string
     {
         return $this->value;
-    }
-
-    public function toFloat(): float
-    {
-        return (float) $this->value;
     }
 
     public function isZero(): bool

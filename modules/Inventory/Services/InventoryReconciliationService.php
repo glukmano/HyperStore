@@ -16,7 +16,8 @@ class InventoryReconciliationService
      *     is_clean: bool,
      *     total_stock_items: int,
      *     balance_discrepancies: array<int, array{stock_item_id: int, on_hand: string, expected_on_hand: string, drift: string}>,
-     *     reservation_discrepancies: array<int, array{stock_item_id: int, reserved: string, expected_reserved: string, drift: string}>
+     *     reservation_discrepancies: array<int, array{stock_item_id: int, reserved: string, expected_reserved: string, drift: string}>,
+     *     orphan_allocations_count: int
      * }
      */
     public function reconcile(int $tenantId): array
@@ -62,13 +63,19 @@ class InventoryReconciliationService
             }
         }
 
-        $isClean = empty($balanceDiscrepancies) && empty($reservationDiscrepancies);
+        // 3. Audit Orphan Allocations
+        $orphanCount = InventoryReservationAllocation::query()
+            ->whereDoesntHave('reservation')
+            ->count();
+
+        $isClean = empty($balanceDiscrepancies) && empty($reservationDiscrepancies) && $orphanCount === 0;
 
         return [
             'is_clean' => $isClean,
             'total_stock_items' => $stockItems->count(),
             'balance_discrepancies' => $balanceDiscrepancies,
             'reservation_discrepancies' => $reservationDiscrepancies,
+            'orphan_allocations_count' => $orphanCount,
         ];
     }
 }

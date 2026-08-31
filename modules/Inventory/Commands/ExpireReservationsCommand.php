@@ -13,21 +13,22 @@ class ExpireReservationsCommand extends Command
 {
     protected $signature = 'inventory:expire-reservations';
 
-    protected $description = 'Expire stale inventory reservations that have passed their expiration timestamp';
+    protected $description = 'Expire stale inventory reservations in batches';
 
     public function handle(InventoryReservationServiceInterface $reservationService): int
     {
-        $stale = InventoryReservation::query()
+        $count = 0;
+
+        InventoryReservation::query()
             ->where('status', 'active')
             ->where('expires_at', '<=', Carbon::now())
-            ->get();
-
-        $count = 0;
-        foreach ($stale as $res) {
-            if ($reservationService->expire($res)) {
-                $count++;
-            }
-        }
+            ->chunkById(100, function ($batch) use ($reservationService, &$count) {
+                foreach ($batch as $res) {
+                    if ($reservationService->expire($res)) {
+                        $count++;
+                    }
+                }
+            });
 
         $this->info("Expired [{$count}] stale inventory reservations.");
 

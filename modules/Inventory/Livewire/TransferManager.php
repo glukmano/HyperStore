@@ -15,7 +15,12 @@ class TransferManager extends Component
 {
     public function render(): View|Factory
     {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+        $tenant = app(ContextManager::class)->getTenant();
+        $tenantId = $tenant->getId();
+        if ($tenantId === null) {
+            throw new \RuntimeException('Tenant context required.');
+        }
+        $tenantId = (int) $tenantId;
 
         return view('inventory::livewire.transfer-manager', [
             'transfers' => InventoryTransfer::where('tenant_id', $tenantId)->with(['sourceWarehouse', 'destinationWarehouse', 'items'])->latest()->paginate(25),

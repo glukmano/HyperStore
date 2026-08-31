@@ -18,76 +18,67 @@ beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
     $this->seed(InventoryPermissionSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'inv-api-tenant'],
-        ['name' => 'Inventory API Tenant', 'status' => 'active']
-    );
+    $this->tenantA = Tenant::create(['slug' => 'api-tenant-a', 'name' => 'Tenant A', 'status' => 'active']);
+    $this->tenantB = Tenant::create(['slug' => 'api-tenant-b', 'name' => 'Tenant B', 'status' => 'active']);
 
-    $this->admin = User::firstOrCreate(
-        ['email' => 'inv-api-admin@hyperstore.test'],
-        ['name' => 'Inventory API Admin', 'password' => bcrypt('password'), 'is_super_admin' => true]
-    );
+    $this->admin = User::create([
+        'email' => 'api-admin@hyperstore.test',
+        'name' => 'API Admin',
+        'password' => bcrypt('password'),
+        'is_super_admin' => true,
+    ]);
 
-    $this->actingAs($this->admin);
+    $this->limitedUser = User::create([
+        'email' => 'limited-user@hyperstore.test',
+        'name' => 'Limited User',
+        'password' => bcrypt('password'),
+        'is_super_admin' => false,
+    ]);
+
+    $this->actingAs($this->admin, 'sanctum');
 });
 
-test('api can create warehouse and inventory source', function (): void {
+test('api returns 401 when tenant header is missing', function (): void {
+    $response = $this->getJson('/api/v1/inventory/warehouses');
+    $response->assertStatus(401);
+});
+
+test('api denies non-privileged user without required RBAC permission', function (): void {
+    $this->actingAs($this->limitedUser, 'sanctum');
+
     $response = $this->postJson('/api/v1/inventory/warehouses', [
-        'code' => 'API-BERN-WH',
-        'name' => 'Bern Distribution Hub',
+        'code' => 'BERN-FAIL-WH',
+        'name' => 'Bern WH',
         'country_code' => 'CH',
-    ], ['X-Tenant-ID' => (string) $this->tenant->id]);
+    ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
 
-    $response->assertStatus(201)
-        ->assertJsonPath('data.code', 'API-BERN-WH');
-
-    $whId = $response->json('data.id');
-
-    $srcResponse = $this->postJson('/api/v1/inventory/sources', [
-        'code' => 'API-BERN-SRC',
-        'name' => 'Bern Stock Source',
-        'warehouse_id' => $whId,
-    ], ['X-Tenant-ID' => (string) $this->tenant->id]);
-
-    $srcResponse->assertStatus(201)
-        ->assertJsonPath('data.code', 'API-BERN-SRC');
+    $response->assertStatus(403);
 });
 
-test('api checks availability and makes reservations via REST', function (): void {
-    $product = app(CreateProductAction::class)->execute(new ProductData(
-        tenantId: $this->tenant->id,
+test('api prevents cross-tenant stock mutation IDOR', function (): void {
+    $productB = app(CreateProductAction::class)->execute(new ProductData(
+        tenantId: $this->tenantB->id,
         productType: 'physical',
-        sku: 'API-INV-PROD-1',
-        translations: ['en' => ['name' => 'API Product']],
+        sku: 'PROD-B-IDOR',
+        translations: ['en' => ['name' => 'Product B']],
     ));
 
-    $wh = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'API-WH-RES', 'name' => 'API Res Wh', 'country_code' => 'CH']);
-    $src = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $wh->id, 'code' => 'API-SRC-RES', 'name' => 'API Res Src']);
+    $whB = Warehouse::create(['tenant_id' => $this->tenantB->id, 'code' => 'WH-B-IDOR', 'name' => 'Wh B', 'country_code' => 'CH']);
+    $srcB = InventorySource::create(['tenant_id' => $this->tenantB->id, 'warehouse_id' => $whB->id, 'code' => 'SRC-B-IDOR', 'name' => 'Src B']);
 
-    StockItem::create([
-        'tenant_id' => $this->tenant->id,
-        'inventory_source_id' => $src->id,
-        'product_id' => $product->id,
+    $stockB = StockItem::create([
+        'tenant_id' => $this->tenantB->id,
+        'inventory_source_id' => $srcB->id,
+        'product_id' => $productB->id,
         'on_hand' => '10.0000',
     ]);
 
-    // Check Availability
-    $availResponse = $this->postJson('/api/v1/inventory/availability', [
-        'product_id' => $product->id,
-    ], ['X-Tenant-ID' => (string) $this->tenant->id]);
+    // Request from Tenant A context trying to adjust Tenant B stock item -> MUST RETURN 404
+    $response = $this->postJson('/api/v1/inventory/adjustments', [
+        'stock_item_id' => $stockB->id,
+        'delta' => '-5.0000',
+        'movement_type' => 'damaged',
+    ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
 
-    $availResponse->assertStatus(200)
-        ->assertJsonPath('data.available_quantity', '10.0000')
-        ->assertJsonPath('data.is_in_stock', true);
-
-    // Reserve
-    $resResponse = $this->postJson('/api/v1/inventory/reservations/reserve', [
-        'reservation_key' => 'api-order-res-123',
-        'product_id' => $product->id,
-        'quantity' => '3.0000',
-    ], ['X-Tenant-ID' => (string) $this->tenant->id]);
-
-    $resResponse->assertStatus(201)
-        ->assertJsonPath('data.reserved_quantity', '3.0000')
-        ->assertJsonPath('data.status', 'active');
+    $response->assertStatus(404);
 });

@@ -15,6 +15,18 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class InventorySource extends Model
 {
+    public static function boot(): void
+    {
+        parent::boot();
+
+        static::saving(function (InventorySource $source) {
+            $wh = $source->warehouse;
+            if ($wh instanceof Warehouse && (int) $wh->tenant_id !== (int) $source->tenant_id) {
+                throw new \InvalidArgumentException("InventorySource tenant_id [{$source->tenant_id}] does not match Warehouse tenant_id [{$wh->tenant_id}].");
+            }
+        });
+    }
+
     use BelongsToTenant;
 
     protected $table = 'inventory_sources';

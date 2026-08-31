@@ -9,8 +9,7 @@ use Modules\Inventory\ValueObjects\Quantity;
 
 test('Quantity handles exact scale 4 decimal operations without floating point loss', function (): void {
     $qty = Quantity::fromString('1.2500');
-    expect($qty->toString())->toBe('1.2500')
-        ->and($qty->toFloat())->toBe(1.25);
+    expect($qty->toString())->toBe('1.2500');
 
     $addition = $qty->add(Quantity::fromString('2.7500'));
     expect($addition->toString())->toBe('4.0000');

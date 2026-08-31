@@ -11,6 +11,22 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class InventoryTransfer extends Model
 {
+    public static function boot(): void
+    {
+        parent::boot();
+
+        static::saving(function (InventoryTransfer $transfer) {
+            $srcWh = $transfer->sourceWarehouse;
+            if ($srcWh instanceof Warehouse && (int) $srcWh->tenant_id !== (int) $transfer->tenant_id) {
+                throw new \InvalidArgumentException('Transfer tenant_id does not match Source Warehouse tenant_id.');
+            }
+            $destWh = $transfer->destinationWarehouse;
+            if ($destWh instanceof Warehouse && (int) $destWh->tenant_id !== (int) $transfer->tenant_id) {
+                throw new \InvalidArgumentException('Transfer tenant_id does not match Destination Warehouse tenant_id.');
+            }
+        });
+    }
+
     use BelongsToTenant;
 
     protected $table = 'inventory_transfers';

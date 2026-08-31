@@ -4,6 +4,6 @@
     "description": "Multi-warehouse, multi-source inventory management, stock ledger, reservations, transfers, and ATS calculation for Hyper Commerce.",
     "version": "1.0.0",
     "provider": "Modules\\Inventory\\InventoryServiceProvider",
-    "requires": ["catalog", "pricing"],
+    "requires": ["catalog"],
     "enabled": true
 }

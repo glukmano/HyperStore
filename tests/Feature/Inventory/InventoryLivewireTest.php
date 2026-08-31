@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Inventory;
 
+use App\Core\Context\ContextManager;
+use App\Core\Context\DTOs\TenantContext;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\InventoryPermissionSeeder;
@@ -17,17 +19,17 @@ beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
     $this->seed(InventoryPermissionSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'inv-lw-tenant'],
-        ['name' => 'Inventory Livewire Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'inv-lw-tenant', 'name' => 'Inventory Livewire Tenant', 'status' => 'active']);
 
-    $this->admin = User::firstOrCreate(
-        ['email' => 'inv-admin@hyperstore.test'],
-        ['name' => 'Inventory Admin', 'password' => bcrypt('password'), 'is_super_admin' => true]
-    );
+    $this->admin = User::create([
+        'email' => 'inv-admin@hyperstore.test',
+        'name' => 'Inventory Admin',
+        'password' => bcrypt('password'),
+        'is_super_admin' => true,
+    ]);
 
     $this->actingAs($this->admin);
+    app(ContextManager::class)->setTenant(TenantContext::from($this->tenant->id, $this->tenant->name));
 });
 
 test('WarehouseManager creates warehouse via Livewire', function (): void {

@@ -7,12 +7,27 @@ namespace Modules\Inventory\Models;
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use LogicException;
 use Modules\Catalog\Models\Product;
 use Modules\Catalog\Models\ProductVariant;
 
 class InventoryMovement extends Model
 {
     use BelongsToTenant;
+
+    public const array VALID_TYPES = [
+        'receive',
+        'adjustment_in',
+        'adjustment_out',
+        'reservation_commit',
+        'transfer_out',
+        'transfer_in',
+        'damaged',
+        'quarantine_in',
+        'quarantine_out',
+        'correction',
+        'recount',
+    ];
 
     public $timestamps = false;
 
@@ -44,6 +59,19 @@ class InventoryMovement extends Model
         'metadata' => 'array',
         'created_at' => 'datetime',
     ];
+
+    public static function boot(): void
+    {
+        parent::boot();
+
+        static::updating(function () {
+            throw new LogicException('Inventory movements are immutable and cannot be updated.');
+        });
+
+        static::deleting(function () {
+            throw new LogicException('Inventory movements are immutable and cannot be deleted.');
+        });
+    }
 
     public function stockItem(): BelongsTo
     {

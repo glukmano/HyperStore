@@ -6,6 +6,7 @@ namespace Tests\Feature\Inventory;
 
 use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
+use InvalidArgumentException;
 use Modules\Catalog\Actions\CreateProductAction;
 use Modules\Catalog\DTOs\ProductData;
 use Modules\Inventory\Contracts\InventoryTransferServiceInterface;
@@ -18,10 +19,7 @@ use Modules\Inventory\Models\Warehouse;
 beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'transfer-test-tenant'],
-        ['name' => 'Transfer Test Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'transfer-test-tenant', 'name' => 'Transfer Test Tenant', 'status' => 'active']);
 
     $this->product = app(CreateProductAction::class)->execute(new ProductData(
         tenantId: $this->tenant->id,
@@ -45,7 +43,7 @@ beforeEach(function (): void {
     ]);
 });
 
-test('Warehouse transfer flow dispatches stock from source and receives at destination', function (): void {
+test('Warehouse transfer flow dispatches stock and rejects over-receipt', function (): void {
     $service = app(InventoryTransferServiceInterface::class);
 
     $transfer = InventoryTransfer::create([
@@ -56,7 +54,7 @@ test('Warehouse transfer flow dispatches stock from source and receives at desti
         'status' => 'requested',
     ]);
 
-    InventoryTransferItem::create([
+    $item = InventoryTransferItem::create([
         'inventory_transfer_id' => $transfer->id,
         'product_id' => $this->product->id,
         'requested_quantity' => '10.0000',
@@ -67,13 +65,16 @@ test('Warehouse transfer flow dispatches stock from source and receives at desti
     expect($dispatched)->toBeTrue();
 
     $this->sourceStock->refresh();
-    expect($this->sourceStock->on_hand)->toBe('10.0000'); // Decremented by 10
+    expect($this->sourceStock->on_hand)->toBe('10.0000');
 
-    // 2. Receive
-    $received = $service->receive($transfer);
+    // 2. Reject Over-receipt (15 > 10)
+    expect(fn () => $service->receive($transfer, [$item->id => '15.0000']))
+        ->toThrow(InvalidArgumentException::class);
+
+    // 3. Valid Partial Receipt (8 of 10)
+    $received = $service->receive($transfer, [$item->id => '8.0000']);
     expect($received)->toBeTrue();
 
     $destStock = StockItem::where('inventory_source_id', $this->destSrc->id)->first();
-    expect($destStock)->not->toBeNull()
-        ->and($destStock->on_hand)->toBe('10.0000');
+    expect($destStock->on_hand)->toBe('8.0000');
 });

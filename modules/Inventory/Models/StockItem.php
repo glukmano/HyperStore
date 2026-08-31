@@ -14,6 +14,22 @@ use Modules\Inventory\ValueObjects\Quantity;
 
 class StockItem extends Model
 {
+    public static function boot(): void
+    {
+        parent::boot();
+
+        static::saving(function (StockItem $item) {
+            $prod = $item->product;
+            if ($prod instanceof Product && (int) $prod->tenant_id !== (int) $item->tenant_id) {
+                throw new \InvalidArgumentException("StockItem tenant_id [{$item->tenant_id}] does not match Product tenant_id [{$prod->tenant_id}].");
+            }
+            $src = $item->inventorySource;
+            if ($src instanceof InventorySource && (int) $src->tenant_id !== (int) $item->tenant_id) {
+                throw new \InvalidArgumentException("StockItem tenant_id [{$item->tenant_id}] does not match InventorySource tenant_id [{$src->tenant_id}].");
+            }
+        });
+    }
+
     use BelongsToTenant;
 
     protected $table = 'stock_items';

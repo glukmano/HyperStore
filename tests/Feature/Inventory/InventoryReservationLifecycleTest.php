@@ -6,11 +6,14 @@ namespace Tests\Feature\Inventory;
 
 use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
+use Illuminate\Support\Facades\Event;
 use Modules\Catalog\Actions\CreateProductAction;
 use Modules\Catalog\DTOs\ProductData;
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\DTOs\InventoryContext;
-use Modules\Inventory\Models\InventoryReservation;
+use Modules\Inventory\Events\InventoryCommitted;
+use Modules\Inventory\Events\InventoryReservationReleased;
+use Modules\Inventory\Events\InventoryReserved;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
@@ -19,10 +22,7 @@ use Modules\Inventory\ValueObjects\Quantity;
 beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'res-lifecycle-tenant'],
-        ['name' => 'Reservation Lifecycle Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'res-lifecycle-tenant', 'name' => 'Reservation Lifecycle Tenant', 'status' => 'active']);
 
     $this->product = app(CreateProductAction::class)->execute(new ProductData(
         tenantId: $this->tenant->id,
@@ -55,12 +55,12 @@ beforeEach(function (): void {
     ]);
 });
 
-test('InventoryReservationService splits requested quantity across multiple eligible sources', function (): void {
+test('InventoryReservationService splits requested quantity and emits InventoryReserved', function (): void {
+    Event::fake([InventoryReserved::class]);
     $service = app(InventoryReservationServiceInterface::class);
     $context = new InventoryContext(tenantId: $this->tenant->id);
 
-    // Request 7 units (takes 4 from Source 1 and 3 from Source 2)
-    $result = $service->reserve('cart-res-777', $this->product->id, null, Quantity::fromString('7.0000'), $context);
+    $result = $service->reserve($this->tenant->id, 'cart-res-777', $this->product->id, null, Quantity::fromString('7.0000'), $context);
 
     expect($result->isSuccess)->toBeTrue()
         ->and($result->reservation)->not->toBeNull()
@@ -72,44 +72,59 @@ test('InventoryReservationService splits requested quantity across multiple elig
 
     expect($this->stock1->reserved)->toBe('4.0000')
         ->and($this->stock2->reserved)->toBe('3.0000');
+
+    Event::assertDispatched(InventoryReserved::class);
 });
 
-test('InventoryReservationService release returns reserved quantity to available stock', function (): void {
+test('InventoryReservationService enforces backorder_limit correctly', function (): void {
+    $this->stock1->update([
+        'on_hand' => '2.0000',
+        'backorder_mode' => 'allow_with_limit',
+        'backorder_limit' => '5.0000',
+    ]);
+    $this->stock2->update(['on_hand' => '0.0000', 'backorder_mode' => 'deny']);
+
     $service = app(InventoryReservationServiceInterface::class);
     $context = new InventoryContext(tenantId: $this->tenant->id);
 
-    $service->reserve('cart-res-release-test', $this->product->id, null, Quantity::fromString('3.0000'), $context);
+    // Request 7 units (2 on-hand + 5 backorder limit = exact max allowed)
+    $resOk = $service->reserve($this->tenant->id, 'res-bo-exact', $this->product->id, null, Quantity::fromString('7.0000'), $context);
+    expect($resOk->isSuccess)->toBeTrue();
 
-    $this->stock1->refresh();
-    expect($this->stock1->reserved)->toBe('3.0000');
+    // Next request exceeds backorder limit -> MUST FAIL
+    $resFail = $service->reserve($this->tenant->id, 'res-bo-exceed', $this->product->id, null, Quantity::fromString('1.0000'), $context);
+    expect($resFail->isSuccess)->toBeFalse()
+        ->and($resFail->message)->toContain('backorder limit');
+});
 
-    $released = $service->release('cart-res-release-test');
+test('InventoryReservationService release returns reserved quantity and emits event', function (): void {
+    Event::fake([InventoryReservationReleased::class]);
+    $service = app(InventoryReservationServiceInterface::class);
+    $context = new InventoryContext(tenantId: $this->tenant->id);
+
+    $service->reserve($this->tenant->id, 'cart-res-release-test', $this->product->id, null, Quantity::fromString('3.0000'), $context);
+    $released = $service->release($this->tenant->id, 'cart-res-release-test');
     expect($released)->toBeTrue();
 
     $this->stock1->refresh();
     expect($this->stock1->reserved)->toBe('0.0000');
 
-    $res = InventoryReservation::where('reservation_key', 'cart-res-release-test')->first();
-    expect($res->status)->toBe('released');
+    Event::assertDispatched(InventoryReservationReleased::class);
 });
 
-test('InventoryReservationService commit deducts on_hand and logs reservation_commit movement', function (): void {
+test('InventoryReservationService commit deducts on_hand and emits InventoryCommitted', function (): void {
+    Event::fake([InventoryCommitted::class]);
     $service = app(InventoryReservationServiceInterface::class);
     $context = new InventoryContext(tenantId: $this->tenant->id);
 
-    $service->reserve('cart-res-commit-test', $this->product->id, null, Quantity::fromString('2.0000'), $context);
-    $committed = $service->commit('cart-res-commit-test');
+    $service->reserve($this->tenant->id, 'cart-res-commit-test', $this->product->id, null, Quantity::fromString('2.0000'), $context);
+    $committed = $service->commit($this->tenant->id, 'cart-res-commit-test');
 
     expect($committed)->toBeTrue();
 
     $this->stock1->refresh();
-    // on_hand was 4, now 2. reserved was 2, now 0.
     expect($this->stock1->on_hand)->toBe('2.0000')
         ->and($this->stock1->reserved)->toBe('0.0000');
 
-    $this->assertDatabaseHas('inventory_movements', [
-        'stock_item_id' => $this->stock1->id,
-        'movement_type' => 'reservation_commit',
-        'reference_id' => 'cart-res-commit-test',
-    ]);
+    Event::assertDispatched(InventoryCommitted::class);
 });

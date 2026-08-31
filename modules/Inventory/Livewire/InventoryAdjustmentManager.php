@@ -46,7 +46,12 @@ class InventoryAdjustmentManager extends Component
 
     public function render(): View|Factory
     {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+        $tenant = app(ContextManager::class)->getTenant();
+        $tenantId = $tenant->getId();
+        if ($tenantId === null) {
+            throw new \RuntimeException('Tenant context required.');
+        }
+        $tenantId = (int) $tenantId;
 
         return view('inventory::livewire.inventory-adjustment-manager', [
             'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product', 'inventorySource'])->get(),

@@ -16,7 +16,8 @@ use Modules\Inventory\ValueObjects\Quantity;
 class InventoryAvailabilityService implements InventoryAvailabilityServiceInterface
 {
     public function __construct(
-        private readonly ProductTypeRegistryInterface $productTypeRegistry
+        private readonly ProductTypeRegistryInterface $productTypeRegistry,
+        private readonly InventorySourceEligibilityService $eligibilityService
     ) {}
 
     public function check(int $productId, ?int $variantId, InventoryContext $context): AvailabilityResultDTO
@@ -51,34 +52,8 @@ class InventoryAvailabilityService implements InventoryAvailabilityServiceInterf
             );
         }
 
-        // 2. Fetch Eligible Inventory Sources
-        $sourceQuery = InventorySource::query()
-            ->where('tenant_id', $context->tenantId)
-            ->where('status', 'active')
-            ->orderByDesc('priority');
-
-        if ($context->storeId !== null) {
-            $sourceQuery->where(function ($q) use ($context) {
-                $q->whereDoesntHave('stores')
-                    ->orWhereHas('stores', fn ($sq) => $sq->where('stores.id', $context->storeId));
-            });
-        }
-
-        if ($context->marketId !== null) {
-            $sourceQuery->where(function ($q) use ($context) {
-                $q->whereDoesntHave('markets')
-                    ->orWhereHas('markets', fn ($mq) => $mq->where('markets.id', $context->marketId));
-            });
-        }
-
-        if ($context->channelId !== null) {
-            $sourceQuery->where(function ($q) use ($context) {
-                $q->whereDoesntHave('channels')
-                    ->orWhereHas('channels', fn ($cq) => $cq->where('channels.id', $context->channelId));
-            });
-        }
-
-        $eligibleSourceIds = $sourceQuery->pluck('id')->all();
+        // 2. Fetch Eligible Inventory Sources via shared service
+        $eligibleSourceIds = $this->eligibilityService->getEligibleSourceIds($context);
 
         // 3. Fetch StockItems
         $stockItems = StockItem::query()
@@ -95,22 +70,15 @@ class InventoryAvailabilityService implements InventoryAvailabilityServiceInterf
         $isLowStock = false;
 
         foreach ($stockItems as $item) {
-            $src = $item->inventorySource;
-            if ($src instanceof InventorySource && $src->isStale()) {
-                continue; // Skip stale external source
-            }
-
             $ats = $item->getAvailableToSellQuantity();
             $totalAvailable = $totalAvailable->add($ats);
 
-            if ($item->inventorySource) {
-                $srcName = $item->inventorySource instanceof InventorySource ? $item->inventorySource->name : 'Source';
-                $sourceBreakdown[] = [
-                    'source_id' => $item->inventory_source_id,
-                    'source_name' => $srcName,
-                    'available' => $ats,
-                ];
-            }
+            $srcName = $item->inventorySource instanceof InventorySource ? $item->inventorySource->name : 'Source';
+            $sourceBreakdown[] = [
+                'source_id' => $item->inventory_source_id,
+                'source_name' => $srcName,
+                'available' => $ats,
+            ];
 
             if ($item->backorder_mode === 'allow' || $item->backorder_mode === 'allow_with_limit') {
                 $isBackorderable = true;

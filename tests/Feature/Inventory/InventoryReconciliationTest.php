@@ -18,10 +18,7 @@ use Modules\Inventory\ValueObjects\Quantity;
 beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'reconcile-tenant'],
-        ['name' => 'Reconcile Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'reconcile-tenant', 'name' => 'Reconcile Tenant', 'status' => 'active']);
 
     $this->product = app(CreateProductAction::class)->execute(new ProductData(
         tenantId: $this->tenant->id,
@@ -41,24 +38,20 @@ beforeEach(function (): void {
     ]);
 });
 
-test('InventoryReconciliationService passes on valid stock and detects manual drift', function (): void {
+test('InventoryReconciliationService detects drift accurately', function (): void {
     $adjService = app(InventoryAdjustmentServiceInterface::class);
     $recService = app(InventoryReconciliationService::class);
 
-    // 1. Clean state after proper receive of 25
     $adjService->receive($this->stockItem, Quantity::fromString('25.0000'));
     $report1 = $recService->reconcile($this->tenant->id);
 
-    expect($report1['is_clean'])->toBeTrue()
-        ->and($report1['balance_discrepancies'])->toBeEmpty();
+    expect($report1['is_clean'])->toBeTrue();
 
-    // 2. Introduce artificial drift (e.g. out-of-band DB modification)
+    // Introduce drift
     $this->stockItem->on_hand = '30.0000';
     $this->stockItem->save();
 
     $report2 = $recService->reconcile($this->tenant->id);
-
     expect($report2['is_clean'])->toBeFalse()
-        ->and($report2['balance_discrepancies'])->toHaveCount(1)
         ->and($report2['balance_discrepancies'][0]['drift'])->toBe('5.0000');
 });

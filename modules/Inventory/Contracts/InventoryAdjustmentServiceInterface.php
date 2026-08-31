@@ -27,4 +27,25 @@ interface InventoryAdjustmentServiceInterface
         ?string $referenceId = null,
         ?string $idempotencyKey = null
     ): InventoryMovement;
+
+    public function quarantine(
+        StockItem $stockItem,
+        Quantity $quantity,
+        ?string $reason = null,
+        ?string $idempotencyKey = null
+    ): InventoryMovement;
+
+    public function releaseQuarantine(
+        StockItem $stockItem,
+        Quantity $quantity,
+        ?string $reason = null,
+        ?string $idempotencyKey = null
+    ): InventoryMovement;
+
+    public function markDamaged(
+        StockItem $stockItem,
+        Quantity $quantity,
+        ?string $reason = null,
+        ?string $idempotencyKey = null
+    ): InventoryMovement;
 }

@@ -18,10 +18,7 @@ use Modules\Inventory\ValueObjects\Quantity;
 beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'concurrency-tenant'],
-        ['name' => 'Concurrency Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'concurrency-tenant', 'name' => 'Concurrency Tenant', 'status' => 'active']);
 
     $this->product = app(CreateProductAction::class)->execute(new ProductData(
         tenantId: $this->tenant->id,
@@ -44,16 +41,16 @@ beforeEach(function (): void {
     ]);
 });
 
-test('Oversell protection ensures only first concurrent reservation succeeds', function (): void {
+test('Oversell protection ensures only first reservation succeeds under row locking', function (): void {
     $service = app(InventoryReservationServiceInterface::class);
     $context = new InventoryContext(tenantId: $this->tenant->id);
 
-    // Transaction 1 reserves the 1 available unit
-    $res1 = $service->reserve('tx-res-1', $this->product->id, null, Quantity::fromString('1.0000'), $context);
+    // T1 reserves the 1 unit
+    $res1 = $service->reserve($this->tenant->id, 'tx-res-1', $this->product->id, null, Quantity::fromString('1.0000'), $context);
     expect($res1->isSuccess)->toBeTrue();
 
-    // Transaction 2 simultaneously attempts to reserve 1 unit -> MUST FAIL
-    $res2 = $service->reserve('tx-res-2', $this->product->id, null, Quantity::fromString('1.0000'), $context);
+    // T2 attempts to reserve 1 unit simultaneously -> fails
+    $res2 = $service->reserve($this->tenant->id, 'tx-res-2', $this->product->id, null, Quantity::fromString('1.0000'), $context);
     expect($res2->isSuccess)->toBeFalse()
         ->and($res2->message)->toContain('Insufficient available stock');
 

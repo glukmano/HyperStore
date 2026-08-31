@@ -1,6 +1,7 @@
 <?php
 
 use App\Core\Context\ContextManager;
+use App\Core\Context\Middleware\ResolveContextMiddleware;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Modules\Inventory\Contracts\InventoryAdjustmentServiceInterface;
@@ -11,26 +12,47 @@ use Modules\Inventory\DTOs\InventoryContext;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\InventoryTransfer;
+use Modules\Inventory\Models\InventoryTransferItem;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
+use Modules\Inventory\Registries\InventorySourceTypeRegistry;
 use Modules\Inventory\Services\InventoryReconciliationService;
 use Modules\Inventory\ValueObjects\Quantity;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use Symfony\Component\HttpKernel\Exception\UnauthorizedHttpException;
 
-Route::middleware(['api', 'auth:sanctum'])->prefix('api/v1/inventory')->name('api.v1.inventory.')->group(function () {
+Route::middleware(['api', 'auth:sanctum,web', ResolveContextMiddleware::class])->prefix('api/v1/inventory')->name('api.v1.inventory.')->group(function () {
+
+    $getTenantId = function (): int {
+        $tenant = app(ContextManager::class)->getTenant();
+        $id = $tenant->getId();
+        if ($id === null) {
+            throw new UnauthorizedHttpException('Tenant', 'Tenant context required.');
+        }
+
+        return (int) $id;
+    };
 
     // 1. Warehouses
-    Route::get('warehouses', function () {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::get('warehouses', function () use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! request()->user()?->can('warehouses.view') && ! request()->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(['data' => Warehouse::where('tenant_id', $tenantId)->get()]);
     });
 
-    Route::post('warehouses', function (Request $request) {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::post('warehouses', function (Request $request) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('warehouses.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate([
-            'code' => ['required', 'string'],
-            'name' => ['required', 'string'],
+            'code' => ['required', 'string', 'max:100'],
+            'name' => ['required', 'string', 'max:255'],
             'country_code' => ['required', 'string', 'size:2'],
+            'type' => ['nullable', 'string', 'in:fulfillment_center,retail_store,distribution_center,hub'],
         ]);
         $wh = Warehouse::create(array_merge($data, ['tenant_id' => $tenantId]));
 
@@ -38,35 +60,55 @@ Route::middleware(['api', 'auth:sanctum'])->prefix('api/v1/inventory')->name('ap
     });
 
     // 2. Inventory Sources
-    Route::get('sources', function () {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::get('sources', function () use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! request()->user()?->can('inventory.view') && ! request()->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(['data' => InventorySource::where('tenant_id', $tenantId)->with('warehouse')->get()]);
     });
 
-    Route::post('sources', function (Request $request) {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::post('sources', function (Request $request, InventorySourceTypeRegistry $registry) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate([
-            'code' => ['required', 'string'],
-            'name' => ['required', 'string'],
-            'source_type' => ['nullable', 'string'],
+            'code' => ['required', 'string', 'max:100'],
+            'name' => ['required', 'string', 'max:255'],
+            'source_type' => ['required', 'string'],
             'warehouse_id' => ['nullable', 'integer'],
+            'priority' => ['nullable', 'integer'],
         ]);
+
+        if (! $registry->has($data['source_type'])) {
+            return response()->json(['error' => "Invalid source type [{$data['source_type']}]."], 422);
+        }
+
+        // Validate warehouse ownership if passed
+        if (! empty($data['warehouse_id'])) {
+            Warehouse::where('tenant_id', $tenantId)->findOrFail($data['warehouse_id']);
+        }
+
         $source = InventorySource::create(array_merge($data, ['tenant_id' => $tenantId]));
 
         return response()->json(['data' => $source], 201);
     });
 
     // 3. Stock Items
-    Route::get('stock-items', function () {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::get('stock-items', function () use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! request()->user()?->can('inventory.view') && ! request()->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(['data' => StockItem::where('tenant_id', $tenantId)->paginate(25)]);
     });
 
     // 4. Availability check
-    Route::post('availability', function (Request $request, InventoryAvailabilityServiceInterface $service) {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::post('availability', function (Request $request, InventoryAvailabilityServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
         $data = $request->validate([
             'product_id' => ['required', 'integer'],
             'variant_id' => ['nullable', 'integer'],
@@ -99,18 +141,31 @@ Route::middleware(['api', 'auth:sanctum'])->prefix('api/v1/inventory')->name('ap
     });
 
     // 5. Reservations
-    Route::post('reservations/reserve', function (Request $request, InventoryReservationServiceInterface $service) {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::post('reservations/reserve', function (Request $request, InventoryReservationServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.reserve') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate([
-            'reservation_key' => ['required', 'string'],
+            'reservation_key' => ['required', 'string', 'max:255'],
             'product_id' => ['required', 'integer'],
             'variant_id' => ['nullable', 'integer'],
             'quantity' => ['required', 'string'],
             'ttl_minutes' => ['nullable', 'integer'],
+            'store_id' => ['nullable', 'integer'],
+            'market_id' => ['nullable', 'integer'],
+            'channel_id' => ['nullable', 'integer'],
         ]);
 
-        $context = new InventoryContext(tenantId: $tenantId);
+        $context = new InventoryContext(
+            tenantId: $tenantId,
+            storeId: $data['store_id'] ?? null,
+            marketId: $data['market_id'] ?? null,
+            channelId: $data['channel_id'] ?? null
+        );
+
         $result = $service->reserve(
+            tenantId: $tenantId,
             reservationKey: $data['reservation_key'],
             productId: $data['product_id'],
             variantId: $data['variant_id'] ?? null,
@@ -134,31 +189,43 @@ Route::middleware(['api', 'auth:sanctum'])->prefix('api/v1/inventory')->name('ap
         ], 201);
     });
 
-    Route::post('reservations/release', function (Request $request, InventoryReservationServiceInterface $service) {
+    Route::post('reservations/release', function (Request $request, InventoryReservationServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.reserve') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate(['reservation_key' => ['required', 'string']]);
-        $success = $service->release($data['reservation_key'], $request->header('X-Idempotency-Key'));
+        $success = $service->release($tenantId, $data['reservation_key'], $request->header('X-Idempotency-Key'));
 
         return response()->json(['success' => $success]);
     });
 
-    Route::post('reservations/commit', function (Request $request, InventoryReservationServiceInterface $service) {
+    Route::post('reservations/commit', function (Request $request, InventoryReservationServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.reserve') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate(['reservation_key' => ['required', 'string']]);
-        $success = $service->commit($data['reservation_key'], $request->header('X-Idempotency-Key'));
+        $success = $service->commit($tenantId, $data['reservation_key'], $request->header('X-Idempotency-Key'));
 
         return response()->json(['success' => $success]);
     });
 
     // 6. Adjustments & Receiving
-    Route::post('adjustments', function (Request $request, InventoryAdjustmentServiceInterface $service) {
+    Route::post('adjustments', function (Request $request, InventoryAdjustmentServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.adjust') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate([
             'stock_item_id' => ['required', 'integer'],
             'delta' => ['required', 'string'],
-            'movement_type' => ['required', 'string'],
-            'reason' => ['nullable', 'string'],
+            'movement_type' => ['required', 'string', 'in:adjustment_in,adjustment_out,damaged,correction,recount'],
+            'reason' => ['nullable', 'string', 'max:255'],
         ]);
 
         /** @var StockItem $item */
-        $item = StockItem::findOrFail($data['stock_item_id']);
+        $item = StockItem::where('tenant_id', $tenantId)->findOrFail($data['stock_item_id']);
         $movement = $service->adjust(
             stockItem: $item,
             delta: Quantity::fromString($data['delta']),
@@ -170,15 +237,19 @@ Route::middleware(['api', 'auth:sanctum'])->prefix('api/v1/inventory')->name('ap
         return response()->json(['data' => $movement], 201);
     });
 
-    Route::post('receive', function (Request $request, InventoryAdjustmentServiceInterface $service) {
+    Route::post('receive', function (Request $request, InventoryAdjustmentServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.adjust') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate([
             'stock_item_id' => ['required', 'integer'],
             'quantity' => ['required', 'string'],
-            'reference' => ['nullable', 'string'],
+            'reference' => ['nullable', 'string', 'max:255'],
         ]);
 
         /** @var StockItem $item */
-        $item = StockItem::findOrFail($data['stock_item_id']);
+        $item = StockItem::where('tenant_id', $tenantId)->findOrFail($data['stock_item_id']);
         $movement = $service->receive(
             stockItem: $item,
             quantity: Quantity::fromString($data['quantity']),
@@ -190,34 +261,103 @@ Route::middleware(['api', 'auth:sanctum'])->prefix('api/v1/inventory')->name('ap
     });
 
     // 7. Movements
-    Route::get('movements', function () {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::get('movements', function () use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! request()->user()?->can('inventory.movements.view') && ! request()->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(['data' => InventoryMovement::where('tenant_id', $tenantId)->latest('created_at')->paginate(25)]);
     });
 
-    // 8. Transfers
-    Route::post('transfers/dispatch', function (Request $request, InventoryTransferServiceInterface $service) {
+    // 8. Transfers Lifecycle
+    Route::post('transfers/create', function (Request $request) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.transfer') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+        $data = $request->validate([
+            'transfer_number' => ['required', 'string', 'max:100'],
+            'source_warehouse_id' => ['required', 'integer'],
+            'destination_warehouse_id' => ['required', 'integer', 'different:source_warehouse_id'],
+            'items' => ['required', 'array', 'min:1'],
+            'items.*.product_id' => ['required', 'integer'],
+            'items.*.variant_id' => ['nullable', 'integer'],
+            'items.*.requested_quantity' => ['required', 'string'],
+        ]);
+
+        // Validate warehouse ownership
+        Warehouse::where('tenant_id', $tenantId)->findOrFail($data['source_warehouse_id']);
+        Warehouse::where('tenant_id', $tenantId)->findOrFail($data['destination_warehouse_id']);
+
+        $transfer = InventoryTransfer::create([
+            'tenant_id' => $tenantId,
+            'transfer_number' => $data['transfer_number'],
+            'source_warehouse_id' => $data['source_warehouse_id'],
+            'destination_warehouse_id' => $data['destination_warehouse_id'],
+            'status' => 'draft',
+        ]);
+
+        foreach ($data['items'] as $it) {
+            InventoryTransferItem::create([
+                'inventory_transfer_id' => $transfer->id,
+                'product_id' => $it['product_id'],
+                'product_variant_id' => $it['variant_id'] ?? null,
+                'requested_quantity' => $it['requested_quantity'],
+            ]);
+        }
+
+        return response()->json(['data' => $transfer->load('items')], 201);
+    });
+
+    Route::post('transfers/dispatch', function (Request $request, InventoryTransferServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.transfer') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate(['transfer_id' => ['required', 'integer']]);
         /** @var InventoryTransfer $transfer */
-        $transfer = InventoryTransfer::findOrFail($data['transfer_id']);
+        $transfer = InventoryTransfer::where('tenant_id', $tenantId)->findOrFail($data['transfer_id']);
         $success = $service->dispatch($transfer, $request->header('X-Idempotency-Key'));
 
         return response()->json(['success' => $success]);
     });
 
-    Route::post('transfers/receive', function (Request $request, InventoryTransferServiceInterface $service) {
+    Route::post('transfers/receive', function (Request $request, InventoryTransferServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.transfer') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+        $data = $request->validate([
+            'transfer_id' => ['required', 'integer'],
+            'received_quantities' => ['nullable', 'array'],
+        ]);
+        /** @var InventoryTransfer $transfer */
+        $transfer = InventoryTransfer::where('tenant_id', $tenantId)->findOrFail($data['transfer_id']);
+        $success = $service->receive($transfer, $data['received_quantities'] ?? [], $request->header('X-Idempotency-Key'));
+
+        return response()->json(['success' => $success]);
+    });
+
+    Route::post('transfers/cancel', function (Request $request, InventoryTransferServiceInterface $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('inventory.transfer') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $data = $request->validate(['transfer_id' => ['required', 'integer']]);
         /** @var InventoryTransfer $transfer */
-        $transfer = InventoryTransfer::findOrFail($data['transfer_id']);
-        $success = $service->receive($transfer, $request->header('X-Idempotency-Key'));
+        $transfer = InventoryTransfer::where('tenant_id', $tenantId)->findOrFail($data['transfer_id']);
+        $success = $service->cancel($transfer);
 
         return response()->json(['success' => $success]);
     });
 
     // 9. Reconciliation Preview
-    Route::get('reconciliation', function (InventoryReconciliationService $service) {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+    Route::get('reconciliation', function (InventoryReconciliationService $service) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! request()->user()?->can('inventory.reconcile') && ! request()->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(['data' => $service->reconcile($tenantId)]);
     });

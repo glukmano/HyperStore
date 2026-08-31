@@ -17,10 +17,7 @@ use Modules\Inventory\Models\Warehouse;
 beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'ats-test-tenant'],
-        ['name' => 'ATS Test Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'ats-test-tenant', 'name' => 'ATS Test Tenant', 'status' => 'active']);
 
     $this->physicalProduct = app(CreateProductAction::class)->execute(new ProductData(
         tenantId: $this->tenant->id,

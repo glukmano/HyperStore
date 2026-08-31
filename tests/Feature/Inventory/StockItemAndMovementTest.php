@@ -6,9 +6,14 @@ namespace Tests\Feature\Inventory;
 
 use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
+use Illuminate\Support\Facades\Event;
+use InvalidArgumentException;
+use LogicException;
 use Modules\Catalog\Actions\CreateProductAction;
 use Modules\Catalog\DTOs\ProductData;
 use Modules\Inventory\Contracts\InventoryAdjustmentServiceInterface;
+use Modules\Inventory\Events\InventoryAdjusted;
+use Modules\Inventory\Events\InventoryReceived;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
@@ -18,10 +23,7 @@ use Modules\Inventory\ValueObjects\Quantity;
 beforeEach(function (): void {
     $this->seed(ReferenceDataSeeder::class);
 
-    $this->tenant = Tenant::firstOrCreate(
-        ['slug' => 'stock-move-tenant'],
-        ['name' => 'Stock Movement Tenant', 'status' => 'active']
-    );
+    $this->tenant = Tenant::create(['slug' => 'stock-move-tenant', 'name' => 'Stock Movement Tenant', 'status' => 'active']);
 
     $this->product = app(CreateProductAction::class)->execute(new ProductData(
         tenantId: $this->tenant->id,
@@ -53,7 +55,8 @@ beforeEach(function (): void {
     ]);
 });
 
-test('InventoryAdjustmentService receives stock and logs immutable movement', function (): void {
+test('InventoryAdjustmentService receives stock and emits InventoryReceived event', function (): void {
+    Event::fake([InventoryReceived::class, InventoryAdjusted::class]);
     $service = app(InventoryAdjustmentServiceInterface::class);
 
     $movement = $service->receive(
@@ -70,26 +73,47 @@ test('InventoryAdjustmentService receives stock and logs immutable movement', fu
 
     $this->stockItem->refresh();
     expect($this->stockItem->on_hand)->toBe('50.0000');
+
+    Event::assertDispatched(InventoryReceived::class);
 });
 
-test('InventoryAdjustmentService applies adjustments with positive and negative deltas', function (): void {
+test('InventoryAdjustmentService rejects invalid arbitrary movement types', function (): void {
     $service = app(InventoryAdjustmentServiceInterface::class);
 
-    // Initial receive: 100
+    expect(fn () => $service->adjust(
+        stockItem: $this->stockItem,
+        delta: Quantity::fromString('10.0000'),
+        movementType: 'invalid_arbitrary_hack'
+    ))->toThrow(InvalidArgumentException::class);
+});
+
+test('InventoryMovement is immutable and rejects update or delete', function (): void {
+    $service = app(InventoryAdjustmentServiceInterface::class);
+    $movement = $service->receive($this->stockItem, Quantity::fromString('10.0000'));
+
+    expect(fn () => $movement->update(['reason' => 'Hacked reason']))->toThrow(LogicException::class);
+    expect(fn () => $movement->delete())->toThrow(LogicException::class);
+});
+
+test('InventoryAdjustmentService supports condition bucket transitions', function (): void {
+    $service = app(InventoryAdjustmentServiceInterface::class);
     $service->receive($this->stockItem, Quantity::fromString('100.0000'));
 
-    // Damage adjustment: -5
-    $service->adjust(
-        stockItem: $this->stockItem,
-        delta: Quantity::fromString('-5.0000'),
-        movementType: 'damaged',
-        reason: 'Broken in warehouse transit'
-    );
-
+    // Quarantine 10
+    $service->quarantine($this->stockItem, Quantity::fromString('10.0000'), 'Suspected batch defect');
     $this->stockItem->refresh();
-    expect($this->stockItem->on_hand)->toBe('95.0000');
+    expect($this->stockItem->quarantined)->toBe('10.0000')
+        ->and($this->stockItem->getAvailableToSellQuantity()->toString())->toBe('90.0000');
 
-    // Audit movements count = 2
-    $movements = InventoryMovement::where('stock_item_id', $this->stockItem->id)->get();
-    expect($movements)->toHaveCount(2);
+    // Release 5 from quarantine
+    $service->releaseQuarantine($this->stockItem, Quantity::fromString('5.0000'), 'Defect cleared for half');
+    $this->stockItem->refresh();
+    expect($this->stockItem->quarantined)->toBe('5.0000')
+        ->and($this->stockItem->getAvailableToSellQuantity()->toString())->toBe('95.0000');
+
+    // Mark 3 damaged
+    $service->markDamaged($this->stockItem, Quantity::fromString('3.0000'), 'Water damage');
+    $this->stockItem->refresh();
+    expect($this->stockItem->damaged)->toBe('3.0000')
+        ->and($this->stockItem->getAvailableToSellQuantity()->toString())->toBe('92.0000');
 });

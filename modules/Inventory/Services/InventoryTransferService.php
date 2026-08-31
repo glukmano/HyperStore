@@ -8,6 +8,8 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Modules\Inventory\Contracts\InventoryTransferServiceInterface;
+use Modules\Inventory\Events\StockTransferReceived;
+use Modules\Inventory\Events\StockTransferred;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\InventoryTransfer;
@@ -32,18 +34,25 @@ class InventoryTransferService implements InventoryTransferServiceInterface
             function () use ($transfer) {
                 return DB::transaction(function () use ($transfer) {
                     /** @var InventoryTransfer $lockedTransfer */
-                    $lockedTransfer = InventoryTransfer::query()->where('id', $transfer->id)->lockForUpdate()->firstOrFail();
+                    $lockedTransfer = InventoryTransfer::query()
+                        ->where('tenant_id', $transfer->tenant_id)
+                        ->where('id', $transfer->id)
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
                     if ($lockedTransfer->status !== 'draft' && $lockedTransfer->status !== 'requested') {
                         throw new InvalidArgumentException('Transfer must be in draft or requested status to dispatch.');
                     }
 
-                    // Source warehouse inventory source
                     $sourceInvSource = InventorySource::query()
                         ->where('tenant_id', $lockedTransfer->tenant_id)
                         ->where('warehouse_id', $lockedTransfer->source_warehouse_id)
                         ->firstOrFail();
 
-                    foreach ($lockedTransfer->items as $item) {
+                    // Sort transfer items deterministically by product_id
+                    $items = $lockedTransfer->items()->orderBy('product_id')->get();
+
+                    foreach ($items as $item) {
                         /** @var InventoryTransferItem $item */
                         /** @var StockItem $sourceStock */
                         $sourceStock = StockItem::query()
@@ -68,7 +77,6 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         $item->dispatched_quantity = $reqQty->toString();
                         $item->save();
 
-                        // Write transfer_out movement
                         InventoryMovement::create([
                             'tenant_id' => $lockedTransfer->tenant_id,
                             'stock_item_id' => $sourceStock->id,
@@ -89,13 +97,15 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                     $lockedTransfer->dispatched_at = Carbon::now();
                     $lockedTransfer->save();
 
+                    StockTransferred::dispatch($lockedTransfer);
+
                     return true;
                 });
             }
         );
     }
 
-    public function receive(InventoryTransfer $transfer, ?string $idempotencyKey = null): bool
+    public function receive(InventoryTransfer $transfer, array $receivedQuantities = [], ?string $idempotencyKey = null): bool
     {
         return $this->idempotencyService->execute(
             $transfer->tenant_id,
@@ -103,10 +113,15 @@ class InventoryTransferService implements InventoryTransferServiceInterface
             'receive_transfer',
             'inventory_transfers',
             (string) $transfer->id,
-            function () use ($transfer) {
-                return DB::transaction(function () use ($transfer) {
+            function () use ($transfer, $receivedQuantities) {
+                return DB::transaction(function () use ($transfer, $receivedQuantities) {
                     /** @var InventoryTransfer $lockedTransfer */
-                    $lockedTransfer = InventoryTransfer::query()->where('id', $transfer->id)->lockForUpdate()->firstOrFail();
+                    $lockedTransfer = InventoryTransfer::query()
+                        ->where('tenant_id', $transfer->tenant_id)
+                        ->where('id', $transfer->id)
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
                     if ($lockedTransfer->status !== 'in_transit') {
                         throw new InvalidArgumentException('Transfer must be in_transit to receive.');
                     }
@@ -116,9 +131,20 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         ->where('warehouse_id', $lockedTransfer->destination_warehouse_id)
                         ->firstOrFail();
 
-                    foreach ($lockedTransfer->items as $item) {
+                    $items = $lockedTransfer->items()->orderBy('product_id')->get();
+
+                    foreach ($items as $item) {
                         /** @var InventoryTransferItem $item */
                         $dispQty = Quantity::fromString((string) $item->dispatched_quantity);
+
+                        // If explicit quantity provided, validate partial/over-receipt
+                        $qtyToReceive = isset($receivedQuantities[$item->id])
+                            ? Quantity::fromString($receivedQuantities[$item->id])
+                            : $dispQty;
+
+                        if ($qtyToReceive->isGreaterThan($dispQty)) {
+                            throw new InvalidArgumentException("Received quantity [{$qtyToReceive->toString()}] cannot exceed dispatched quantity [{$dispQty->toString()}].");
+                        }
 
                         /** @var StockItem $destStock */
                         $destStock = StockItem::firstOrCreate([
@@ -134,10 +160,10 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         $lockedDestStock = StockItem::query()->where('id', $destStock->id)->lockForUpdate()->firstOrFail();
                         $currentOnHand = Quantity::fromString((string) $lockedDestStock->on_hand);
 
-                        $lockedDestStock->on_hand = $currentOnHand->add($dispQty)->toString();
+                        $lockedDestStock->on_hand = $currentOnHand->add($qtyToReceive)->toString();
                         $lockedDestStock->save();
 
-                        $item->received_quantity = $dispQty->toString();
+                        $item->received_quantity = $qtyToReceive->toString();
                         $item->save();
 
                         InventoryMovement::create([
@@ -146,7 +172,7 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                             'inventory_source_id' => $destInvSource->id,
                             'product_id' => $item->product_id,
                             'product_variant_id' => $item->product_variant_id,
-                            'quantity_delta' => $dispQty->toString(),
+                            'quantity_delta' => $qtyToReceive->toString(),
                             'resulting_on_hand' => $lockedDestStock->on_hand,
                             'movement_type' => 'transfer_in',
                             'reference_type' => 'inventory_transfer',
@@ -160,6 +186,8 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                     $lockedTransfer->received_at = Carbon::now();
                     $lockedTransfer->save();
 
+                    StockTransferReceived::dispatch($lockedTransfer);
+
                     return true;
                 });
             }
@@ -170,7 +198,12 @@ class InventoryTransferService implements InventoryTransferServiceInterface
     {
         return DB::transaction(function () use ($transfer) {
             /** @var InventoryTransfer $lockedTransfer */
-            $lockedTransfer = InventoryTransfer::query()->where('id', $transfer->id)->lockForUpdate()->firstOrFail();
+            $lockedTransfer = InventoryTransfer::query()
+                ->where('tenant_id', $transfer->tenant_id)
+                ->where('id', $transfer->id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
             if ($lockedTransfer->status === 'in_transit' || $lockedTransfer->status === 'received') {
                 throw new InvalidArgumentException('In-transit or received transfers cannot be cancelled.');
             }

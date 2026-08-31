@@ -17,7 +17,12 @@ class InventoryReconciliationManager extends Component
 
     public function runReconciliation(InventoryReconciliationService $service): void
     {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+        $tenant = app(ContextManager::class)->getTenant();
+        $tenantId = $tenant->getId();
+        if ($tenantId === null) {
+            throw new \RuntimeException('Tenant context required.');
+        }
+        $tenantId = (int) $tenantId;
         $this->report = $service->reconcile($tenantId);
     }
 

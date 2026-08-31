@@ -14,7 +14,12 @@ class StockItemManager extends Component
 {
     public function render(): View|Factory
     {
-        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+        $tenant = app(ContextManager::class)->getTenant();
+        $tenantId = $tenant->getId();
+        if ($tenantId === null) {
+            throw new \RuntimeException('Tenant context required.');
+        }
+        $tenantId = (int) $tenantId;
 
         return view('inventory::livewire.stock-item-manager', [
             'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product', 'productVariant', 'inventorySource'])->paginate(25),
