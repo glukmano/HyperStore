@@ -1,0 +1,58 @@
+# Environment
+.env
+.env.backup
+.env.production
+*.env
+
+# macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+Icon
+
+# IDE & Editors
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+
+# PHP & Composer
+/vendor/
+composer.phar
+.phpunit.result.cache
+.php-cs-fixer.cache
+
+# Node & Frontend
+/node_modules/
+/public/build/
+/public/hot
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Laravel Storage & Cache
+/storage/*.key
+/storage/app/*
+!/storage/app/.gitignore
+/storage/framework/cache/*
+!/storage/framework/cache/.gitignore
+/storage/framework/sessions/*
+!/storage/framework/sessions/.gitignore
+/storage/framework/testing/*
+!/storage/framework/testing/.gitignore
+/storage/framework/views/*
+!/storage/framework/views/.gitignore
+/storage/logs/*
+!/storage/logs/.gitignore
+
+# Testing & Coverage
+/coverage/
+.pest/
+
+# MinIO / Local storage artifacts
+/docker/data/
+/minio-data/
