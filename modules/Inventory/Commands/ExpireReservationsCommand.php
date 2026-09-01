@@ -18,12 +18,24 @@ class ExpireReservationsCommand extends Command
     public function handle(InventoryReservationServiceInterface $reservationService): int
     {
         $count = 0;
+        $now = Carbon::now();
 
+        // Fetch candidates: active reservations without an adoption owner (owner_type IS NULL)
+        // with an expires_at that has already passed.
+        // Adopted reservations (owner_type IS NOT NULL) are EXCLUDED by the Inventory-domain
+        // predicate `isEligibleForAutomaticExpiration` and never released here.
         InventoryReservation::query()
             ->where('status', 'active')
-            ->where('expires_at', '<=', Carbon::now())
-            ->chunkById(100, function ($batch) use ($reservationService, &$count) {
+            ->whereNull('owner_type')
+            ->where('expires_at', '<=', $now)
+            ->chunkById(100, function ($batch) use ($reservationService, &$count, $now) {
                 foreach ($batch as $res) {
+                    /** @var InventoryReservation $res */
+                    if (! $res->isEligibleForAutomaticExpiration($now)) {
+                        // Double-check domain predicate after chunk load
+                        continue;
+                    }
+
                     if ($reservationService->expire($res)) {
                         $count++;
                     }

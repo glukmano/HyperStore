@@ -9,13 +9,17 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\DTOs\InventoryContext;
+use Modules\Inventory\DTOs\ReservationAdoptionResultDTO;
 use Modules\Inventory\DTOs\ReservationResultDTO;
+use Modules\Inventory\Enums\ReservationOwnerType;
 use Modules\Inventory\Events\InventoryCommitted;
+use Modules\Inventory\Events\InventoryReservationAdopted;
 use Modules\Inventory\Events\InventoryReservationExpired;
 use Modules\Inventory\Events\InventoryReservationReleased;
 use Modules\Inventory\Events\InventoryReserved;
 use Modules\Inventory\Events\LowStockDetected;
 use Modules\Inventory\Events\OutOfStockDetected;
+use Modules\Inventory\Exceptions\ReservationAdoptionException;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventoryReservation;
 use Modules\Inventory\Models\InventoryReservationAllocation;
@@ -216,6 +220,116 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
                 });
             }
         );
+    }
+
+    /**
+     * Adopts an active reservation under an opaque typed owner.
+     *
+     * Transaction semantics (FOR UPDATE row lock):
+     *  1. Lock the reservation row.
+     *  2. Verify tenant ownership.
+     *  3. Same-owner replay → return wasAlreadyAdopted = true (idempotent).
+     *  4. Conflicting owner → throw ReservationAdoptionException::conflictingOwner().
+     *  5. Require status = active.
+     *  6. Require expires_at IS NULL OR expires_at > now (TTL-expiry gate):
+     *     an active reservation that has already passed its TTL is semantically
+     *     expired even if ExpireReservationsCommand has not yet processed it.
+     *     Such a reservation MUST NOT be rescued by adoption.
+     *  7. Write owner_type, owner_reference, adopted_at, expires_at = null.
+     *
+     * Idempotency:
+     *  The natural owner-key pair (reservationKey + ownerType + ownerReference) is
+     *  the idempotency fingerprint. There is no separate durable idempotency key
+     *  table entry for adopt(), because:
+     *   - The row lock + same-owner guard provides atomic, durable idempotency.
+     *   - The existing InventoryIdempotencyService stores MovementResult payloads;
+     *     ReservationAdoptionResultDTO is not serialisable into that schema.
+     *   - Release and commit do not use idempotency keys either (same convention).
+     *  The ?string $idempotencyKey parameter is intentionally absent from this method.
+     *  Callers requiring a higher-level idempotency envelope should implement it at
+     *  the calling layer (e.g. Order operation key table, PHASE-08 layer).
+     *
+     * Event dispatch:
+     *  InventoryReservationAdopted is dispatched inside the transaction, consistent
+     *  with all accepted Inventory events (InventoryReserved, InventoryReservationReleased,
+     *  InventoryCommitted, InventoryReservationExpired). This is the established project
+     *  convention. Consumers must be aware that synchronous listeners execute within
+     *  the transaction boundary.
+     *
+     * @throws ReservationAdoptionException
+     */
+    public function adopt(
+        int $tenantId,
+        string $reservationKey,
+        ReservationOwnerType $ownerType,
+        string $ownerReference
+    ): ReservationAdoptionResultDTO {
+        return DB::transaction(function () use ($tenantId, $reservationKey, $ownerType, $ownerReference) {
+            /** @var InventoryReservation|null $reservation */
+            $reservation = InventoryReservation::query()
+                ->where('tenant_id', $tenantId)
+                ->where('reservation_key', $reservationKey)
+                ->lockForUpdate()
+                ->first();
+
+            if ($reservation === null) {
+                throw ReservationAdoptionException::notActive($reservationKey, 'not_found');
+            }
+
+            // Guard 2: tenant integrity (belt-and-suspenders; WHERE clause already enforces this)
+            if ($reservation->tenant_id !== $tenantId) {
+                throw ReservationAdoptionException::crossTenant($reservationKey);
+            }
+
+            // Guard 3: idempotent same-owner replay
+            if ($reservation->isAdoptedBy($ownerType, $ownerReference)) {
+                return new ReservationAdoptionResultDTO(
+                    isSuccess: true,
+                    reservation: $reservation,
+                    message: 'Reservation already adopted by this owner.',
+                    wasAlreadyAdopted: true,
+                );
+            }
+
+            // Guard 4: conflicting owner
+            if ($reservation->isAdopted()) {
+                throw ReservationAdoptionException::conflictingOwner(
+                    $reservationKey,
+                    (string) $reservation->owner_type,
+                    (string) $reservation->owner_reference,
+                );
+            }
+
+            // Guard 5: status must be active
+            if ($reservation->status !== 'active') {
+                throw ReservationAdoptionException::notActive($reservationKey, $reservation->status);
+            }
+
+            // Guard 6: TTL-expiry gate — reject semantically expired reservations that have
+            // not yet been processed by ExpireReservationsCommand.
+            // We use the authoritative server timestamp captured inside the locked transaction
+            // to avoid any clock skew between application and DB.
+            $now = Carbon::now();
+            if ($reservation->expires_at !== null && $reservation->expires_at->lte($now)) {
+                throw ReservationAdoptionException::ttlExpired($reservationKey);
+            }
+
+            // Guard 7: adopt — transfer ownership; nullify TTL for indefinite retention
+            $reservation->owner_type = $ownerType->value;
+            $reservation->owner_reference = $ownerReference;
+            $reservation->adopted_at = $now;
+            $reservation->expires_at = null; // indefinitely retained until commit or release
+            $reservation->save();
+
+            InventoryReservationAdopted::dispatch($reservation);
+
+            return new ReservationAdoptionResultDTO(
+                isSuccess: true,
+                reservation: $reservation,
+                message: 'Reservation adopted successfully.',
+                wasAlreadyAdopted: false,
+            );
+        });
     }
 
     public function release(int $tenantId, string $reservationKey, ?string $idempotencyKey = null): bool
