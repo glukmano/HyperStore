@@ -146,6 +146,19 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
                 $packResult = $this->packingService->pack($items, $source->id);
                 $mode = $this->resolveFulfillmentMode($tenantId, $source->id);
 
+                $readiness = FulfillmentReadiness::READY;
+                foreach ($items as $it) {
+                    $k = $it->productId.'_'.($it->variantId ?? '0');
+                    $av = $availability[$source->id][$k] ?? null;
+                    if ($av !== null) {
+                        if ($av->readiness === SourceAvailabilityDTO::BACKORDERED && $readiness === FulfillmentReadiness::READY) {
+                            $readiness = FulfillmentReadiness::BACKORDERED;
+                        } elseif ($av->readiness === SourceAvailabilityDTO::PREORDER) {
+                            $readiness = FulfillmentReadiness::PREORDER;
+                        }
+                    }
+                }
+
                 return [new FulfillmentGroup(
                     groupKey: 'source:'.$source->id,
                     fulfillmentMode: $mode,
@@ -154,7 +167,7 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
                     items: $items,
                     packages: is_array($packResult) ? $packResult : $packResult->packages,
                     isShippable: true,
-                    readiness: FulfillmentReadiness::READY,
+                    readiness: $readiness,
                     splitReason: null
                 )];
             }
@@ -215,15 +228,21 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
                     break;
                 }
                 $avail = $availability[$source->id][$key] ?? null;
-                if ($avail === null || ! $avail->isReady()) {
-                    continue;
-                }
-                $availableAtSource = (int) floor((float) $avail->available->toString());
-                if ($availableAtSource <= 0) {
+                if ($avail === null) {
                     continue;
                 }
 
-                $allocateQty = min($remainingQty, $availableAtSource);
+                if ($avail->readiness === SourceAvailabilityDTO::BACKORDERED || $avail->readiness === SourceAvailabilityDTO::PREORDER) {
+                    $allocateQty = $remainingQty;
+                } elseif ($avail->isReady()) {
+                    $availableAtSource = (int) floor((float) $avail->available->toString());
+                    if ($availableAtSource <= 0) {
+                        continue;
+                    }
+                    $allocateQty = min($remainingQty, $availableAtSource);
+                } else {
+                    continue;
+                }
                 $allocatedLine = new FulfillmentItemLine(
                     productId: $item->productId,
                     variantId: $item->variantId,

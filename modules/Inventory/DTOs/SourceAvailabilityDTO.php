@@ -35,6 +35,10 @@ final readonly class SourceAvailabilityDTO
 
     public function canFulfillQuantity(int $requested): bool
     {
+        if ($this->readiness === self::BACKORDERED || $this->readiness === self::PREORDER) {
+            return true;
+        }
+
         return $this->readiness === self::READY
             && bccomp($this->available->toString(), (string) $requested, 4) >= 0;
     }

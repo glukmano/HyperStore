@@ -121,20 +121,20 @@ class InventorySourceQueryService implements InventorySourceQueryInterface
             );
         }
 
-        $onHand = $stockItem->on_hand_quantity ?? Quantity::zero();
-        $reserved = $stockItem->reserved_quantity ?? Quantity::zero();
+        $onHand = Quantity::fromString((string) ($stockItem->on_hand ?? 0));
+        $reserved = Quantity::fromString((string) ($stockItem->reserved ?? 0));
         $ats = $stockItem->getAvailableToSellQuantity();
         $hasStock = bccomp($ats->toString(), '0', 4) > 0;
 
         // Determine readiness
-        $backorderPolicy = $stockItem->backorder_policy ?? 'deny';
+        $backorderMode = $stockItem->backorder_mode ?? 'deny';
         $isPreorder = (bool) ($stockItem->is_preorder ?? false);
 
         if ($hasStock) {
             $readiness = SourceAvailabilityDTO::READY;
         } elseif ($isPreorder) {
             $readiness = SourceAvailabilityDTO::PREORDER;
-        } elseif ($backorderPolicy === 'allow') {
+        } elseif ($backorderMode === 'allow') {
             $readiness = SourceAvailabilityDTO::BACKORDERED;
         } else {
             $readiness = SourceAvailabilityDTO::UNAVAILABLE;

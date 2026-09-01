@@ -12,6 +12,9 @@ use Illuminate\Support\Facades\Route;
 use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
 use Modules\Catalog\Models\Product;
 use Modules\Catalog\Models\ProductVariant;
+use Modules\Fulfillment\Contracts\FulfillmentPlanningServiceInterface;
+use Modules\Fulfillment\DTOs\FulfillmentItemLine;
+use Modules\Fulfillment\DTOs\FulfillmentReadiness;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
@@ -75,7 +78,6 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             'lines.*.unit_weight' => ['nullable', 'string'],
             'lines.*.shipping_class_id' => ['nullable', 'integer'],
             'lines.*.inventory_source_id' => ['nullable', 'integer'],
-            'has_unfulfillable_items' => ['nullable', 'boolean'],
         ]);
 
         $resolvedContext = app(ContextManager::class);
@@ -102,6 +104,9 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         $capabilityResolver = app(ProductShippingCapabilityResolverInterface::class);
 
         $lines = [];
+        $fulfillmentLines = [];
+        $hasPhysicalLines = false;
+
         foreach ($data['lines'] as $l) {
             $productId = (int) $l['product_id'];
             $variantId = isset($l['variant_id']) ? (int) $l['variant_id'] : null;
@@ -129,18 +134,47 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
 
             // Catalog capability contract determines shippability (NO string comparison!)
             $isShippable = $capabilityResolver->requiresPhysicalShipping($product);
+            if ($isShippable) {
+                $hasPhysicalLines = true;
+            }
+
+            $weight = isset($l['unit_weight']) ? Weight::of((string) $l['unit_weight'], 'kg') : Weight::zero();
+            $unitPrice = MoneyValue::fromMinor((int) $l['unit_price'], $currency);
 
             $lines[] = [
                 'product_id' => $productId,
                 'variant_id' => $variantId,
                 'quantity' => (int) $l['quantity'],
-                'unit_price' => MoneyValue::fromMinor((int) $l['unit_price'], $currency),
-                'unit_weight' => isset($l['unit_weight']) ? Weight::of((string) $l['unit_weight'], 'kg') : Weight::zero(),
+                'unit_price' => $unitPrice,
+                'unit_weight' => $weight,
                 'dimensions' => null,
                 'shipping_class_id' => isset($l['shipping_class_id']) ? (int) $l['shipping_class_id'] : null,
                 'is_shippable' => $isShippable,
                 'inventory_source_id' => $sourceId,
             ];
+
+            $fulfillmentLines[] = new FulfillmentItemLine(
+                productId: $productId,
+                variantId: $variantId,
+                quantity: (int) $l['quantity'],
+                unitPrice: $unitPrice,
+                unitWeight: $weight,
+                isShippable: $isShippable
+            );
+        }
+
+        // Trusted Server-Side Fulfillment Readiness Evaluation (Pure, Read-Only, Zero Stock Reservation)
+        $hasUnfulfillableItems = false;
+        if ($hasPhysicalLines) {
+            /** @var FulfillmentPlanningServiceInterface $planner */
+            $planner = app(FulfillmentPlanningServiceInterface::class);
+            $plan = $planner->plan($tenantId, $fulfillmentLines, $context);
+            foreach ($plan->groups as $group) {
+                if ($group->readiness === FulfillmentReadiness::UNAVAILABLE) {
+                    $hasUnfulfillableItems = true;
+                    break;
+                }
+            }
         }
 
         $quoteRequest = new ShippingRateRequest(
@@ -148,7 +182,7 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             destination: $destination,
             lines: $lines,
             promotionBenefits: [],
-            hasUnfulfillableItems: $data['has_unfulfillable_items'] ?? null
+            hasUnfulfillableItems: $hasUnfulfillableItems
         );
 
         /** @var ShippingRateEngineInterface $engine */
@@ -339,7 +373,7 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             Market::where('tenant_id', $tenantId)->findOrFail((int) $data['market_id']);
         }
         if (isset($data['channel_id'])) {
-            Channel::findOrFail((int) $data['channel_id']);
+            Channel::where('is_active', true)->findOrFail((int) $data['channel_id']);
         }
 
         $assignment = ShippingZoneAssignment::create([

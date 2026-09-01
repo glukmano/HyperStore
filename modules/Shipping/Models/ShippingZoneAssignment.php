@@ -34,8 +34,8 @@ class ShippingZoneAssignment extends Model
                 }
                 if ($item->channel_id !== null) {
                     $channel = Channel::find($item->channel_id);
-                    if ($channel instanceof Channel && isset($channel->tenant_id) && (int) $channel->tenant_id !== (int) $zone->tenant_id) {
-                        throw new InvalidArgumentException("Channel tenant_id [{$channel->tenant_id}] does not match ShippingZone tenant_id [{$zone->tenant_id}].");
+                    if (! $channel instanceof Channel || ! $channel->is_active) {
+                        throw new InvalidArgumentException("Channel [{$item->channel_id}] is invalid or inactive.");
                     }
                 }
             }
