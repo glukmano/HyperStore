@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Tests\Feature\Fulfillment;
 
 use App\Core\Tenancy\Models\Tenant;
+use App\Models\User;
 use Database\Seeders\ReferenceDataSeeder;
+use Database\Seeders\ShippingPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Laravel\Sanctum\Sanctum;
 use Modules\Catalog\Actions\CreateProductAction;
 use Modules\Catalog\DTOs\ProductData;
 use Modules\Fulfillment\Contracts\FulfillmentPlanningServiceInterface;
@@ -32,6 +35,7 @@ class FulfillmentPlanningAndSplitTest extends TestCase
     {
         parent::setUp();
         $this->seed(ReferenceDataSeeder::class);
+        $this->seed(ShippingPermissionSeeder::class);
         $this->tenant = Tenant::create(['name' => 'Fulfillment Tenant', 'slug' => 'fulf-test', 'status' => 'active']);
         $this->planner = app(FulfillmentPlanningServiceInterface::class);
     }
@@ -186,5 +190,44 @@ class FulfillmentPlanningAndSplitTest extends TestCase
         $this->assertCount(1, $plan->groups);
         $this->assertSame(FulfillmentReadiness::UNAVAILABLE, $plan->groups[0]->readiness);
         $this->assertFalse($plan->groups[0]->isShippable);
+    }
+
+    public function test_fulfillment_api_endpoints_and_rbac(): void
+    {
+        $user = User::create([
+            'name' => 'Fulfillment Admin',
+            'email' => 'fulf@hyperstore.ch',
+            'password' => bcrypt('secret123'),
+            'tenant_id' => $this->tenant->id,
+        ]);
+
+        Sanctum::actingAs($user);
+        $user->givePermissionTo('fulfillment.sources.manage');
+        $user->givePermissionTo('fulfillment.strategies.manage');
+
+        $wh = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH_F_API', 'name' => 'WH F API', 'country_code' => 'CH', 'status' => 'active']);
+        $src = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $wh->id, 'code' => 'SRC_F_API', 'name' => 'SRC F API', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
+
+        // 1. Source Config CRUD
+        $configRes = $this->postJson('/api/v1/fulfillment/source-configurations', [
+            'inventory_source_id' => $src->id,
+            'fulfillment_mode' => 'own_stock',
+            'priority' => 15,
+        ], ['X-Tenant-ID' => (string) $this->tenant->id]);
+        $configRes->assertStatus(201);
+        $configId = $configRes->json('id');
+
+        $this->deleteJson("/api/v1/fulfillment/source-configurations/{$configId}", [], ['X-Tenant-ID' => (string) $this->tenant->id])
+            ->assertStatus(200);
+
+        // 2. Strategy CRUD
+        $stratRes = $this->postJson('/api/v1/fulfillment/strategies', [
+            'strategy_type' => 'cost_optimized',
+        ], ['X-Tenant-ID' => (string) $this->tenant->id]);
+        $stratRes->assertStatus(201);
+        $stratId = $stratRes->json('id');
+
+        $this->deleteJson("/api/v1/fulfillment/strategies/{$stratId}", [], ['X-Tenant-ID' => (string) $this->tenant->id])
+            ->assertStatus(200);
     }
 }

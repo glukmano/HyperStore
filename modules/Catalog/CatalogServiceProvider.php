@@ -7,6 +7,7 @@ namespace Modules\Catalog;
 use App\Core\Modular\ModuleServiceProvider;
 use Livewire\Livewire;
 use Modules\Catalog\Contracts\CategoryHierarchyValidatorInterface;
+use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
 use Modules\Catalog\Contracts\ProductTypeRegistryInterface;
 use Modules\Catalog\Contracts\VariantCombinatorInterface;
 use Modules\Catalog\Livewire\AttributeManager;
@@ -39,6 +40,7 @@ use Modules\Catalog\ProductTypes\TopUpProductType;
 use Modules\Catalog\ProductTypes\VariableProductType;
 use Modules\Catalog\ProductTypes\WholesaleProductType;
 use Modules\Catalog\Services\CategoryHierarchyService;
+use Modules\Catalog\Services\ProductShippingCapabilityResolver;
 use Modules\Catalog\Services\VariantCombinatorService;
 
 class CatalogServiceProvider extends ModuleServiceProvider
@@ -78,6 +80,7 @@ class CatalogServiceProvider extends ModuleServiceProvider
             return $registry;
         });
 
+        $this->app->singleton(ProductShippingCapabilityResolverInterface::class, ProductShippingCapabilityResolver::class);
         $this->app->singleton(CategoryHierarchyValidatorInterface::class, CategoryHierarchyService::class);
         $this->app->singleton(VariantCombinatorInterface::class, VariantCombinatorService::class);
     }

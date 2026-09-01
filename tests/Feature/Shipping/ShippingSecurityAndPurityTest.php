@@ -87,7 +87,8 @@ class ShippingSecurityAndPurityTest extends TestCase
         }
 
         $engine = app(ShippingRateEngineInterface::class);
-        $quotes = $engine->calculateQuotes($request);
+        $result = $engine->calculateQuotes($request);
+        $quotes = $result->quotes;
 
         $this->assertCount(1, $quotes);
 

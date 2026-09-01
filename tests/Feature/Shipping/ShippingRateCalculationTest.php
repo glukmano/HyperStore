@@ -23,6 +23,7 @@ use Modules\Shipping\Services\ShippingRestrictionEvaluator;
 use Modules\Shipping\ValueObjects\FreeShippingBenefitDTO;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\ShippingDestination;
+use Modules\Shipping\ValueObjects\ShippingRateOutcome;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
 use Modules\Shipping\ValueObjects\Weight;
 use Tests\TestCase;
@@ -111,12 +112,13 @@ class ShippingRateCalculationTest extends TestCase
             ]
         );
 
-        $quotes = $this->engine->calculateQuotes($request);
+        $result = $this->engine->calculateQuotes($request);
 
-        $this->assertCount(2, $quotes);
+        $this->assertSame(ShippingRateOutcome::SUCCESS, $result->outcome);
+        $this->assertCount(2, $result->quotes);
         // Priority 10 comes FIRST even though amount is higher
-        $this->assertSame('EXPRESS_HIGH_PRIO', $quotes[0]->methodCode);
-        $this->assertSame('STANDARD_LOW_PRIO', $quotes[1]->methodCode);
+        $this->assertSame('EXPRESS_HIGH_PRIO', $result->quotes[0]->methodCode);
+        $this->assertSame('STANDARD_LOW_PRIO', $result->quotes[1]->methodCode);
     }
 
     public function test_typed_free_shipping_promotion_benefit_contract(): void
@@ -154,13 +156,14 @@ class ShippingRateCalculationTest extends TestCase
             promotionBenefits: [$benefit]
         );
 
-        $quotes = $this->engine->calculateQuotes($request);
+        $result = $this->engine->calculateQuotes($request);
 
-        $this->assertCount(1, $quotes);
-        $this->assertSame(0, $quotes[0]->amount->getMinorAmount());
-        $this->assertSame(1700, $quotes[0]->breakdown->promotionDiscount->getMinorAmount());
-        $this->assertSame(1500, $quotes[0]->breakdown->baseRate->getMinorAmount());
-        $this->assertSame(200, $quotes[0]->breakdown->handlingFee->getMinorAmount());
+        $this->assertSame(ShippingRateOutcome::SUCCESS, $result->outcome);
+        $this->assertCount(1, $result->quotes);
+        $this->assertSame(0, $result->quotes[0]->amount->getMinorAmount());
+        $this->assertSame(1700, $result->quotes[0]->breakdown->promotionDiscount->getMinorAmount());
+        $this->assertSame(1500, $result->quotes[0]->breakdown->baseRate->getMinorAmount());
+        $this->assertSame(200, $result->quotes[0]->breakdown->handlingFee->getMinorAmount());
     }
 
     public function test_currency_conversion_preserves_every_breakdown_component(): void
@@ -203,10 +206,11 @@ class ShippingRateCalculationTest extends TestCase
             ]
         );
 
-        $quotes = $customEngine->calculateQuotes($request);
+        $result = $customEngine->calculateQuotes($request);
 
-        $this->assertCount(1, $quotes);
-        $quote = $quotes[0];
+        $this->assertSame(ShippingRateOutcome::SUCCESS, $result->outcome);
+        $this->assertCount(1, $result->quotes);
+        $quote = $result->quotes[0];
 
         // Base rate: 1000 EUR * 1.10 = 1100 CHF
         $this->assertSame(1100, $quote->breakdown->baseRate->getMinorAmount());
@@ -256,7 +260,9 @@ class ShippingRateCalculationTest extends TestCase
             destination: new ShippingDestination(countryCode: 'CH'),
             lines: [['product_id' => 1, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(1000, 'CHF'), 'unit_weight' => Weight::zero(), 'is_shippable' => true]]
         );
-        $this->assertEmpty($this->engine->calculateQuotes($reqStore2));
+        $resStore2 = $this->engine->calculateQuotes($reqStore2);
+        $this->assertSame(ShippingRateOutcome::NO_METHOD_AVAILABLE, $resStore2->outcome);
+        $this->assertTrue($resStore2->quotes->isEmpty());
 
         // Request with Store 1 -> Quote returned
         $reqStore1 = new ShippingRateRequest(
@@ -264,6 +270,8 @@ class ShippingRateCalculationTest extends TestCase
             destination: new ShippingDestination(countryCode: 'CH'),
             lines: [['product_id' => 1, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(1000, 'CHF'), 'unit_weight' => Weight::zero(), 'is_shippable' => true]]
         );
-        $this->assertCount(1, $this->engine->calculateQuotes($reqStore1));
+        $resStore1 = $this->engine->calculateQuotes($reqStore1);
+        $this->assertSame(ShippingRateOutcome::SUCCESS, $resStore1->outcome);
+        $this->assertCount(1, $resStore1->quotes);
     }
 }

@@ -7,6 +7,7 @@ namespace Tests\Feature\Shipping;
 use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Log;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\CarrierProviderInterface;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
@@ -19,16 +20,17 @@ use Modules\Shipping\Registries\CarrierRegistry;
 use Modules\Shipping\ValueObjects\CarrierRateResult;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\ShippingDestination;
+use Modules\Shipping\ValueObjects\ShippingRateOutcome;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
 use Modules\Shipping\ValueObjects\Weight;
 use RuntimeException;
 use Tests\TestCase;
 
-class FailingCarrierProvider implements CarrierProviderInterface
+class FailingCarrierProviderWithSecret implements CarrierProviderInterface
 {
     public function calculateRates(Carrier $carrier, ShippingRateRequest $request): array
     {
-        throw new RuntimeException('External Carrier API Timeout (504 Gateway Timeout)');
+        throw new RuntimeException('API Failed with SECRET_API_TOKEN_123 at endpoint https://api.carrier.com/v1/rates?token=SECRET_API_TOKEN_123');
     }
 }
 
@@ -62,47 +64,39 @@ class CarrierTimeoutAndFailureIsolationTest extends TestCase
         $this->tenant = Tenant::create(['name' => 'Timeout Tenant', 'slug' => 'timeout-tenant', 'status' => 'active']);
     }
 
-    public function test_static_rate_succeeds_even_when_carrier_provider_fails(): void
+    public function test_provider_exception_with_secret_token_is_redacted_and_never_leaks(): void
     {
         /** @var CarrierRegistry $carrierRegistry */
         $carrierRegistry = app(CarrierRegistry::class);
-        $carrierRegistry->register('failing_provider', FailingCarrierProvider::class, override: true);
+        $carrierRegistry->register('failing_secret_provider', FailingCarrierProviderWithSecret::class, override: true);
+
+        $loggedMessages = [];
+        Log::listen(function ($log) use (&$loggedMessages) {
+            $loggedMessages[] = $log->message.' '.json_encode($log->context);
+        });
 
         $carrier = Carrier::create([
             'tenant_id' => $this->tenant->id,
-            'code' => 'FAIL_CARRIER',
-            'name' => 'Failing Carrier',
-            'provider_code' => 'failing_provider',
+            'code' => 'SECRET_FAIL_CARRIER',
+            'name' => 'Secret Fail Carrier',
+            'provider_code' => 'failing_secret_provider',
             'status' => 'active',
         ]);
 
-        $zone = ShippingZone::create(['tenant_id' => $this->tenant->id, 'code' => 'CH_FAIL_TEST', 'name' => 'CH Fail Test', 'status' => 'active']);
+        $zone = ShippingZone::create(['tenant_id' => $this->tenant->id, 'code' => 'CH_SECRET_TEST', 'name' => 'CH Secret Test', 'status' => 'active']);
         ShippingZoneRule::create(['shipping_zone_id' => $zone->id, 'rule_type' => 'country', 'country_code' => 'CH']);
 
-        // Method 1: Failing Carrier calculated method
-        $failMethod = ShippingMethod::create([
+        $method = ShippingMethod::create([
             'tenant_id' => $this->tenant->id,
-            'code' => 'CARRIER_FAIL',
-            'name' => 'Carrier Fail Method',
+            'code' => 'CARRIER_SECRET_FAIL',
+            'name' => 'Carrier Secret Fail',
             'rate_calculator_type' => 'carrier_calculated',
             'currency' => 'CHF',
             'base_amount' => 0,
             'status' => 'active',
-            'metadata' => ['carrier_code' => 'FAIL_CARRIER'],
+            'metadata' => ['carrier_code' => 'SECRET_FAIL_CARRIER'],
         ]);
-        ShippingMethodZone::create(['shipping_method_id' => $failMethod->id, 'shipping_zone_id' => $zone->id]);
-
-        // Method 2: Flat rate static method
-        $flatMethod = ShippingMethod::create([
-            'tenant_id' => $this->tenant->id,
-            'code' => 'FLAT_BACKUP',
-            'name' => 'Flat Rate Backup',
-            'rate_calculator_type' => 'flat_rate',
-            'currency' => 'CHF',
-            'base_amount' => 1200,
-            'status' => 'active',
-        ]);
-        ShippingMethodZone::create(['shipping_method_id' => $flatMethod->id, 'shipping_zone_id' => $zone->id]);
+        ShippingMethodZone::create(['shipping_method_id' => $method->id, 'shipping_zone_id' => $zone->id]);
 
         $engine = app(ShippingRateEngineInterface::class);
 
@@ -114,17 +108,31 @@ class CarrierTimeoutAndFailureIsolationTest extends TestCase
             ]
         );
 
-        $quotes = $engine->calculateQuotes($request);
+        $result = $engine->calculateQuotes($request);
 
-        $this->assertCount(1, $quotes);
-        $this->assertSame('FLAT_BACKUP', $quotes->first()?->methodCode);
+        // 1. Result outcome is PROVIDER_FAILURE
+        $this->assertSame(ShippingRateOutcome::PROVIDER_FAILURE, $result->outcome);
+        $this->assertTrue($result->quotes->isEmpty());
+
+        // 2. Structured ProviderError contains safe sanitized message and never leaks SECRET_API_TOKEN_123
+        $this->assertNotEmpty($result->errors);
+        $error = $result->errors[0];
+        $this->assertSame('provider_internal_error', $error->errorCode);
+        $this->assertStringNotContainsString('SECRET_API_TOKEN_123', $error->safeMessage);
+        $this->assertStringNotContainsString('https://', $error->safeMessage);
+
+        // 3. Application logs NEVER contain the secret token
+        foreach ($loggedMessages as $msg) {
+            $this->assertStringNotContainsString('SECRET_API_TOKEN_123', $msg);
+            $this->assertStringNotContainsString('api.carrier.com', $msg);
+        }
     }
 
     public function test_provider_a_fails_provider_b_succeeds_and_static_succeeds(): void
     {
         /** @var CarrierRegistry $carrierRegistry */
         $carrierRegistry = app(CarrierRegistry::class);
-        $carrierRegistry->register('failing_provider_a', FailingCarrierProvider::class, override: true);
+        $carrierRegistry->register('failing_secret_provider', FailingCarrierProviderWithSecret::class, override: true);
         $carrierRegistry->register('working_provider_b', WorkingCarrierProvider::class, override: true);
 
         // Carrier A (failing)
@@ -132,7 +140,7 @@ class CarrierTimeoutAndFailureIsolationTest extends TestCase
             'tenant_id' => $this->tenant->id,
             'code' => 'CARRIER_A',
             'name' => 'Carrier A',
-            'provider_code' => 'failing_provider_a',
+            'provider_code' => 'failing_secret_provider',
             'status' => 'active',
         ]);
 
@@ -199,57 +207,14 @@ class CarrierTimeoutAndFailureIsolationTest extends TestCase
             ]
         );
 
-        $quotes = $engine->calculateQuotes($request);
+        $result = $engine->calculateQuotes($request);
 
-        // Expected: Method B (Carrier B) and Method C (Static) are returned. Method A (Carrier A) is safely omitted.
-        $this->assertCount(2, $quotes);
-        $methodCodes = $quotes->pluck('methodCode')->all();
+        // Overall outcome is SUCCESS because valid quotes were produced
+        $this->assertSame(ShippingRateOutcome::SUCCESS, $result->outcome);
+        $this->assertCount(2, $result->quotes);
+        $methodCodes = $result->quotes->pluck('methodCode')->all();
         $this->assertContains('METHOD_CARRIER_B', $methodCodes);
         $this->assertContains('METHOD_STATIC', $methodCodes);
         $this->assertNotContains('METHOD_CARRIER_A', $methodCodes);
-    }
-
-    public function test_all_providers_fail_returns_structured_safe_result_without_raw_exception_leakage(): void
-    {
-        /** @var CarrierRegistry $carrierRegistry */
-        $carrierRegistry = app(CarrierRegistry::class);
-        $carrierRegistry->register('failing_provider_all', FailingCarrierProvider::class, override: true);
-
-        Carrier::create([
-            'tenant_id' => $this->tenant->id,
-            'code' => 'ALL_FAIL',
-            'name' => 'All Fail Carrier',
-            'provider_code' => 'failing_provider_all',
-            'status' => 'active',
-        ]);
-
-        $zone = ShippingZone::create(['tenant_id' => $this->tenant->id, 'code' => 'CH_ALL_FAIL', 'name' => 'CH All Fail', 'status' => 'active']);
-        ShippingZoneRule::create(['shipping_zone_id' => $zone->id, 'rule_type' => 'country', 'country_code' => 'CH']);
-
-        $method = ShippingMethod::create([
-            'tenant_id' => $this->tenant->id,
-            'code' => 'ONLY_FAILING_METHOD',
-            'name' => 'Only Failing',
-            'rate_calculator_type' => 'carrier_calculated',
-            'currency' => 'CHF',
-            'base_amount' => 0,
-            'status' => 'active',
-            'metadata' => ['carrier_code' => 'ALL_FAIL'],
-        ]);
-        ShippingMethodZone::create(['shipping_method_id' => $method->id, 'shipping_zone_id' => $zone->id]);
-
-        $engine = app(ShippingRateEngineInterface::class);
-
-        $request = new ShippingRateRequest(
-            context: new ShippingContext(tenantId: $this->tenant->id, currency: 'CHF'),
-            destination: new ShippingDestination(countryCode: 'CH'),
-            lines: [
-                ['product_id' => 1, 'variant_id' => null, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(5000, 'CHF'), 'unit_weight' => Weight::zero(), 'dimensions' => null, 'shipping_class_id' => null, 'is_shippable' => true, 'inventory_source_id' => null],
-            ]
-        );
-
-        // Does NOT throw unhandled exception — returns empty collection safely
-        $quotes = $engine->calculateQuotes($request);
-        $this->assertEmpty($quotes);
     }
 }

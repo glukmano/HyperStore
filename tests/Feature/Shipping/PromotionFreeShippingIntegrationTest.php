@@ -62,7 +62,8 @@ class PromotionFreeShippingIntegrationTest extends TestCase
             ]
         );
 
-        $quotes = $this->engine->calculateQuotes($requestWithPromo);
+        $result = $this->engine->calculateQuotes($requestWithPromo);
+        $quotes = $result->quotes;
         $this->assertCount(1, $quotes);
 
         $quote = $quotes->first();
@@ -108,7 +109,8 @@ class PromotionFreeShippingIntegrationTest extends TestCase
             ]
         );
 
-        $quotes = $this->engine->calculateQuotes($requestWithPromo);
+        $result = $this->engine->calculateQuotes($requestWithPromo);
+        $quotes = $result->quotes;
         $this->assertEmpty($quotes); // Method remains restricted despite free shipping promotion
     }
 }

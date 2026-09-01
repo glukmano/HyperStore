@@ -28,6 +28,11 @@ class ConfigurableProductType extends ProductTypeDefinition
         return true;
     }
 
+    public function requiresShipping(): bool
+    {
+        return true;
+    }
+
     public function supportsVariants(): bool
     {
         return true;

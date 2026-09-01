@@ -4,17 +4,19 @@ declare(strict_types=1);
 
 namespace Modules\Shipping\Services;
 
-use Illuminate\Support\Collection;
 use Modules\Pricing\Contracts\CurrencyConversionInterface;
 use Modules\Pricing\ValueObjects\MoneyValue;
+use Modules\Shipping\Calculators\CarrierCalculatedRateCalculator;
 use Modules\Shipping\Contracts\ShippingPromotionBenefitInterface;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\Contracts\ShippingZoneMatcherInterface;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Registries\ShippingMethodTypeRegistry;
 use Modules\Shipping\ValueObjects\RateBreakdown;
+use Modules\Shipping\ValueObjects\ShippingRateOutcome;
 use Modules\Shipping\ValueObjects\ShippingRateQuote;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
+use Modules\Shipping\ValueObjects\ShippingRateResult;
 
 class ShippingRateEngine implements ShippingRateEngineInterface
 {
@@ -27,16 +29,21 @@ class ShippingRateEngine implements ShippingRateEngineInterface
 
     /**
      * Executes pure read-only rate calculation with zero side effects.
-     *
-     * @return Collection<int, ShippingRateQuote>
      */
-    public function calculateQuotes(ShippingRateRequest $request): Collection
+    public function calculateQuotes(ShippingRateRequest $request): ShippingRateResult
     {
+        CarrierCalculatedRateCalculator::clearErrors();
         $tenantId = $request->context->tenantId;
         $matchedZones = $this->zoneMatcher->match($request->destination, $request->context);
 
         if ($matchedZones->isEmpty()) {
-            return collect();
+            return new ShippingRateResult(
+                quotes: collect(),
+                outcome: ShippingRateOutcome::NO_METHOD_AVAILABLE,
+                errors: [],
+                warnings: ['No shipping zone matched destination.'],
+                matchedZones: collect()
+            );
         }
 
         $zoneIds = $matchedZones->pluck('id')->all();
@@ -50,7 +57,19 @@ class ShippingRateEngine implements ShippingRateEngineInterface
             ->orderBy('priority', 'desc')
             ->get();
 
+        if ($methods->isEmpty()) {
+            return new ShippingRateResult(
+                quotes: collect(),
+                outcome: ShippingRateOutcome::NO_METHOD_AVAILABLE,
+                errors: [],
+                warnings: ['No active shipping methods associated with matched zones.'],
+                matchedZones: $matchedZones
+            );
+        }
+
         $quotes = [];
+        $hasRestrictedMethods = false;
+        $carrierMethodsCount = 0;
 
         foreach ($methods as $method) {
             /** @var ShippingMethod $method */
@@ -66,12 +85,18 @@ class ShippingRateEngine implements ShippingRateEngineInterface
             // 3. Check restrictions via typed evaluator
             $restrictionResult = $this->restrictionEvaluator->evaluate($method, $matchedZone, $request);
             if ($restrictionResult->isRestricted) {
+                $hasRestrictedMethods = true;
+
                 continue;
             }
 
             // 4. Calculate rate using registered calculator
             if (! $this->methodTypeRegistry->has($method->rate_calculator_type)) {
                 continue;
+            }
+
+            if ($method->rate_calculator_type === 'carrier_calculated') {
+                $carrierMethodsCount++;
             }
 
             $calculator = $this->methodTypeRegistry->getCalculator($method->rate_calculator_type);
@@ -137,7 +162,27 @@ class ShippingRateEngine implements ShippingRateEngineInterface
             return strcmp($a->methodCode, $b->methodCode); // Code ASC
         });
 
-        return collect($quotes);
+        $quotesCollection = collect($quotes);
+        $errors = CarrierCalculatedRateCalculator::getErrors();
+
+        // Determine outcome
+        if ($quotesCollection->isNotEmpty()) {
+            $outcome = ShippingRateOutcome::SUCCESS;
+        } elseif (! empty($errors) && $carrierMethodsCount > 0) {
+            $outcome = ShippingRateOutcome::PROVIDER_FAILURE;
+        } elseif ($hasRestrictedMethods) {
+            $outcome = ShippingRateOutcome::DESTINATION_RESTRICTED;
+        } else {
+            $outcome = ShippingRateOutcome::NO_METHOD_AVAILABLE;
+        }
+
+        return new ShippingRateResult(
+            quotes: $quotesCollection,
+            outcome: $outcome,
+            errors: $errors,
+            warnings: [],
+            matchedZones: $matchedZones
+        );
     }
 
     /**

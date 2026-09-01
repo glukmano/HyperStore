@@ -23,6 +23,11 @@ class BundleProductType extends ProductTypeDefinition
         return 'Composite package of multiple individual catalog items.';
     }
 
+    public function requiresShipping(): bool
+    {
+        return true;
+    }
+
     public function supportsInventory(): bool
     {
         return true;

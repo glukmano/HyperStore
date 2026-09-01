@@ -68,7 +68,8 @@ class CrossTenantShippingSecurityTest extends TestCase
                 ['product_id' => 1, 'variant_id' => null, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(1000, 'CHF'), 'unit_weight' => Weight::zero(), 'dimensions' => null, 'shipping_class_id' => null, 'is_shippable' => true, 'inventory_source_id' => null],
             ]
         );
-        $quotesB = $engine->calculateQuotes($reqB);
+        $resultB = $engine->calculateQuotes($reqB);
+        $quotesB = $resultB->quotes;
         $this->assertEmpty($quotesB);
     }
 }

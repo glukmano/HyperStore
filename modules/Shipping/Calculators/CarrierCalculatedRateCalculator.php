@@ -11,12 +11,34 @@ use Modules\Shipping\Models\Carrier;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingZone;
 use Modules\Shipping\Registries\CarrierRegistry;
+use Modules\Shipping\Services\ProviderErrorNormalizer;
+use Modules\Shipping\ValueObjects\ProviderError;
 use Modules\Shipping\ValueObjects\RateBreakdown;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
+use Throwable;
 
 class CarrierCalculatedRateCalculator implements RateCalculatorInterface
 {
-    public function __construct(private readonly CarrierRegistry $carrierRegistry) {}
+    /** @var list<ProviderError> */
+    private static array $lastErrors = [];
+
+    public static function clearErrors(): void
+    {
+        self::$lastErrors = [];
+    }
+
+    /**
+     * @return list<ProviderError>
+     */
+    public static function getErrors(): array
+    {
+        return self::$lastErrors;
+    }
+
+    public function __construct(
+        private readonly CarrierRegistry $carrierRegistry,
+        private readonly ?ProviderErrorNormalizer $errorNormalizer = null
+    ) {}
 
     public function calculate(ShippingMethod $method, ShippingZone $zone, ShippingRateRequest $request): ?RateBreakdown
     {
@@ -29,15 +51,27 @@ class CarrierCalculatedRateCalculator implements RateCalculatorInterface
         }
 
         $providerCode = $carrier->provider_code ?? 'manual';
+        $normalizer = $this->errorNormalizer ?? new ProviderErrorNormalizer;
+
         try {
             $provider = $this->carrierRegistry->getProvider($providerCode);
             $rates = $provider->calculateRates($carrier, $request);
-        } catch (\Throwable $e) {
-            Log::warning('Carrier provider execution failed, isolating error', [
-                'carrier_code' => $carrier->code,
-                'provider_code' => $providerCode,
-                'error_class' => get_class($e),
-                'error_message' => $e->getMessage(),
+        } catch (Throwable $e) {
+            $normalizedError = $normalizer->normalize(
+                exception: $e,
+                carrierCode: $carrier->code,
+                providerCode: $providerCode
+            );
+
+            self::$lastErrors[] = $normalizedError;
+
+            // Log ONLY safe structured fields. Never log raw exception message, tokens, or payloads.
+            Log::warning('Carrier provider execution failed (isolated)', [
+                'carrier_code' => $normalizedError->carrierCode,
+                'provider_code' => $normalizedError->providerCode,
+                'error_code' => $normalizedError->errorCode,
+                'is_retryable' => $normalizedError->isRetryable,
+                'correlation_id' => $normalizedError->correlationId,
             ]);
 
             return null;

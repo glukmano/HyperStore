@@ -32,6 +32,8 @@ class ShippingPermissionSeeder extends Seeder
             'shipping.preview',
             'fulfillment.view',
             'fulfillment.manage',
+            'fulfillment.sources.manage',
+            'fulfillment.strategies.manage',
             'fulfillment.plan',
             'fulfillment.preview',
         ];

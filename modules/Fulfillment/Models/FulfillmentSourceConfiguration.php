@@ -34,19 +34,13 @@ class FulfillmentSourceConfiguration extends Model
         'tenant_id',
         'inventory_source_id',
         'fulfillment_mode',
-        'is_active',
         'priority',
-        'lead_time_days',
-        'cutoff_time',
-        'metadata',
+        'status',
         'created_at',
     ];
 
     protected $casts = [
-        'is_active' => 'boolean',
         'priority' => 'integer',
-        'lead_time_days' => 'integer',
-        'metadata' => 'array',
         'created_at' => 'datetime',
     ];
 
