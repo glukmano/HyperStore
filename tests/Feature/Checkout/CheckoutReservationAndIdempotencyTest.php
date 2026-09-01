@@ -21,6 +21,7 @@ use Modules\Catalog\Models\Product;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
+use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Inventory\Models\InventoryReservation;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
@@ -230,5 +231,102 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
         $this->assertSame($res1->checkoutSessionId, $res2->checkoutSessionId);
         $this->assertSame($res1->totals, $res2->totals);
         $this->assertSame($res1->finalizedAt->toIso8601String(), $res2->finalizedAt->toIso8601String());
+    }
+
+    public function test_direct_reserve_on_already_expired_checkout_transitions_durably_to_expired(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $this->wh1 = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH1', 'name' => 'WH 1', 'country_code' => 'CH', 'status' => 'active']);
+        $this->sourceA = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $this->wh1->id, 'code' => 'SRC1', 'name' => 'Source A', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
+        $this->stockItemA = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $this->product->id, 'on_hand' => 10, 'reserved' => 0]);
+
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->product->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(2)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u@example.com', 'U', '1'));
+        $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('U 1', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        // Manually set expiration in the past
+        $session->expires_at = now()->subMinute();
+        $session->save();
+
+        try {
+            $this->checkoutOrchestrator->reserveInventory($session);
+            $this->fail('Expected CheckoutExpiredException was not thrown.');
+        } catch (CheckoutExpiredException $e) {
+            $this->assertStringContainsString('CHECKOUT_EXPIRED', $e->getMessage());
+        }
+
+        $session->refresh();
+        $this->assertSame('expired', $session->state);
+        $this->assertSame('0.0000', (string) $this->stockItemA->fresh()->reserved);
+        $this->assertNull($session->reservation_references);
+    }
+
+    public function test_direct_recalculate_on_already_expired_checkout_transitions_durably_to_expired(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->product->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u@example.com', 'U', '1'));
+
+        $session->expires_at = now()->subMinute();
+        $session->save();
+
+        $this->expectException(CheckoutExpiredException::class);
+        $this->checkoutOrchestrator->recalculate($session);
+    }
+
+    public function test_direct_ready_on_already_expired_checkout_transitions_durably_to_expired(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->product->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u@example.com', 'U', '1'));
+
+        $session->expires_at = now()->subMinute();
+        $session->save();
+
+        $this->expectException(CheckoutExpiredException::class);
+        $this->checkoutOrchestrator->markReadyForOrder($session);
     }
 }

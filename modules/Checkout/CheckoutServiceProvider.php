@@ -8,6 +8,7 @@ use App\Core\Modular\ModuleServiceProvider;
 use Modules\Checkout\Commands\CleanupExpiredCheckoutsCommand;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Contracts\CheckoutPrerequisiteResolverInterface;
+use Modules\Checkout\Services\CheckoutExpirationService;
 use Modules\Checkout\Services\CheckoutIdempotencyService;
 use Modules\Checkout\Services\CheckoutInventoryReservationOrchestrator;
 use Modules\Checkout\Services\CheckoutOrchestrator;
@@ -34,6 +35,7 @@ class CheckoutServiceProvider extends ModuleServiceProvider
         $this->app->singleton(CheckoutInventoryReservationOrchestrator::class);
         $this->app->singleton(CheckoutIdempotencyService::class);
         $this->app->singleton(CheckoutStateMachineService::class);
+        $this->app->singleton(CheckoutExpirationService::class);
     }
 
     public function boot(): void

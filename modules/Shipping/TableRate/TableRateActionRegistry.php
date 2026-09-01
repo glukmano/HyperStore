@@ -11,7 +11,7 @@ use Modules\Shipping\Models\ShippingRateRule;
 class TableRateActionRegistry
 {
     /**
-     * @var array<string, callable(ShippingRateRule, string, array{total_items: int, total_weight_kg: numeric-string, package_count: int}): MoneyValue>
+     * @var array<string, callable(ShippingRateRule, string, array{total_items: numeric-string, total_weight_kg: numeric-string, package_count: int}): MoneyValue>
      */
     private array $handlers = [];
 
@@ -26,7 +26,7 @@ class TableRateActionRegistry
     }
 
     /**
-     * @param  array{total_items: int, total_weight_kg: numeric-string, package_count: int}  $context
+     * @param  array{total_items: numeric-string, total_weight_kg: numeric-string, package_count: int}  $context
      */
     public function calculate(ShippingRateRule $rule, string $currency, array $context): MoneyValue
     {
@@ -50,8 +50,9 @@ class TableRateActionRegistry
 
         $this->handlers['per_item'] = function (ShippingRateRule $rule, string $curr, array $ctx): MoneyValue {
             $perItem = (int) ($rule->action_payload['per_item'] ?? 0);
+            $perItemUnit = MoneyValue::fromMinor($perItem, $curr);
 
-            return MoneyValue::fromMinor($perItem * $ctx['total_items'], $curr);
+            return $perItemUnit->multiply((string) $ctx['total_items']);
         };
 
         $this->handlers['per_weight_step'] = function (ShippingRateRule $rule, string $curr, array $ctx): MoneyValue {

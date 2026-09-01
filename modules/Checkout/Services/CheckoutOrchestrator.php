@@ -25,7 +25,8 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
         private readonly CheckoutInventoryReservationOrchestrator $reservationOrchestrator,
         private readonly CheckoutIdempotencyService $idempotencyService,
         private readonly CheckoutStateMachineService $stateMachine,
-        private readonly CartServiceInterface $cartService
+        private readonly CartServiceInterface $cartService,
+        private readonly CheckoutExpirationService $expirationService
     ) {}
 
     public function createFromCart(Cart $cart, ?string $idempotencyKey = null): CheckoutSession
@@ -48,14 +49,15 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                     throw new RuntimeException('Cannot create CheckoutSession from empty Cart.');
                 }
 
-                // Check if an active session already exists for this cart
-                $existing = CheckoutSession::query()
-                    ->where('tenant_id', $cart->tenant_id)
-                    ->where('cart_id', $cart->id)
-                    ->whereNotIn('state', ['ready_for_order', 'expired', 'cancelled', 'failed'])
-                    ->lockForUpdate()
-                    ->first();
+                $findExisting = function () use ($cart): ?CheckoutSession {
+                    return CheckoutSession::query()
+                        ->where('tenant_id', $cart->tenant_id)
+                        ->where('cart_id', $cart->id)
+                        ->whereNotIn('state', ['ready_for_order', 'expired', 'cancelled', 'failed'])
+                        ->first();
+                };
 
+                $existing = $findExisting();
                 if ($existing !== null) {
                     return [
                         'session_id' => $existing->id,
@@ -63,24 +65,36 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                     ];
                 }
 
-                $session = CheckoutSession::create([
-                    'tenant_id' => $cart->tenant_id,
-                    'cart_id' => $cart->id,
-                    'user_id' => $cart->user_id,
-                    'guest_token_hash' => $cart->guest_token_hash,
-                    'store_id' => $cart->store_id,
-                    'market_id' => $cart->market_id,
-                    'channel_id' => $cart->channel_id,
-                    'currency' => $cart->currency,
-                    'state' => 'created',
-                    'evaluated_cart_version' => $cart->version,
-                    'expires_at' => now()->addMinutes(60),
-                ]);
+                try {
+                    $session = CheckoutSession::create([
+                        'tenant_id' => $cart->tenant_id,
+                        'cart_id' => $cart->id,
+                        'user_id' => $cart->user_id,
+                        'guest_token_hash' => $cart->guest_token_hash,
+                        'store_id' => $cart->store_id,
+                        'market_id' => $cart->market_id,
+                        'channel_id' => $cart->channel_id,
+                        'currency' => $cart->currency,
+                        'state' => 'created',
+                        'evaluated_cart_version' => $cart->version,
+                        'expires_at' => now()->addMinutes(60),
+                    ]);
 
-                return [
-                    'session_id' => $session->id,
-                    'uuid' => $session->uuid,
-                ];
+                    return [
+                        'session_id' => $session->id,
+                        'uuid' => $session->uuid,
+                    ];
+                } catch (\Throwable) {
+                    $existing = $findExisting();
+                    if ($existing !== null) {
+                        return [
+                            'session_id' => $existing->id,
+                            'uuid' => $existing->uuid,
+                        ];
+                    }
+
+                    throw new RuntimeException("Concurrent checkout creation conflict for cart [{$cart->id}].");
+                }
             }
         );
 
@@ -240,6 +254,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
     public function reserveInventory(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutSession
     {
+        $this->expirationService->expireIfNeeded($session);
         $this->assertFreshCart($session);
 
         $payload = [
@@ -291,6 +306,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
     public function recalculate(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutSession
     {
+        $this->expirationService->expireIfNeeded($session);
         $this->assertFreshCart($session);
 
         $payload = [
@@ -442,6 +458,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
     public function markReadyForOrder(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutReadyResult
     {
+        $this->expirationService->expireIfNeeded($session);
         $this->assertFreshCart($session);
 
         $payload = [

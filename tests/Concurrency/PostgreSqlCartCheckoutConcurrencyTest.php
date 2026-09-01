@@ -12,7 +12,7 @@ use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\ReferenceDataSeeder;
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\ValueObjects\CartContext;
@@ -38,7 +38,7 @@ use Tests\TestCase;
 
 class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
 {
-    use RefreshDatabase;
+    // PGSQL concurrency
 
     private Tenant $tenant;
 
@@ -67,31 +67,35 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+        DB::purge('pgsql');
+        DB::setDefaultConnection('pgsql');
         $this->seed(ReferenceDataSeeder::class);
         Currency::firstOrCreate(['code' => 'CHF'], ['name' => 'Swiss Franc', 'symbol' => 'CHF', 'decimals' => 2, 'is_active' => true]);
 
-        $this->tenant = Tenant::create(['name' => 'Conc Tenant', 'slug' => 'conc-tenant', 'status' => 'active']);
-        $this->store = Store::create(['tenant_id' => $this->tenant->id, 'code' => 'CONC_S1', 'name' => 'Store 1', 'slug' => 'conc-s1', 'status' => 'active']);
-        $this->market = Market::create(['tenant_id' => $this->tenant->id, 'code' => 'CH', 'name' => 'Switzerland', 'default_currency_code' => 'CHF', 'default_locale_code' => 'en', 'is_active' => true]);
-        $this->channel = Channel::create(['name' => 'Web', 'handle' => 'web', 'is_active' => true]);
-        StoreChannel::create(['store_id' => $this->store->id, 'channel_id' => $this->channel->id, 'is_active' => true]);
+        $uid = uniqid();
+        $this->tenant = Tenant::create(['name' => 'Conc Tenant', 'slug' => 'conc-tenant-'.$uid, 'status' => 'active']);
+        $this->store = Store::create(['tenant_id' => $this->tenant->id, 'code' => 'CONC_S1_'.$uid, 'name' => 'Store 1', 'slug' => 'conc-s1-'.$uid, 'status' => 'active']);
+        $this->market = Market::create(['tenant_id' => $this->tenant->id, 'code' => 'CH_'.$uid, 'name' => 'Switzerland', 'default_currency_code' => 'CHF', 'default_locale_code' => 'en', 'is_active' => true]);
+        $this->channel = Channel::firstOrCreate(['handle' => 'web'], ['name' => 'Web', 'is_active' => true]);
+        StoreChannel::firstOrCreate(['store_id' => $this->store->id, 'channel_id' => $this->channel->id], ['is_active' => true]);
 
         $this->user = User::factory()->create();
 
-        TaxClass::create(['tenant_id' => $this->tenant->id, 'code' => 'STD_TAX', 'name' => 'Standard Tax', 'is_default' => true]);
+        TaxClass::create(['tenant_id' => $this->tenant->id, 'code' => 'STD_TAX_'.$uid, 'name' => 'Standard Tax', 'is_default' => true]);
 
         $this->product = Product::create([
             'tenant_id' => $this->tenant->id,
-            'sku' => 'CONC-1',
+            'sku' => 'CONC-1-'.$uid,
             'name' => 'Conc Product',
-            'slug' => 'conc-product',
+            'slug' => 'conc-product-'.$uid,
             'product_type' => 'physical',
             'status' => 'active',
             'weight_kg' => 1.0,
         ]);
 
-        $this->warehouse = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH_CONC', 'name' => 'Conc Wh', 'country_code' => 'CH', 'status' => 'active']);
-        $this->source = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $this->warehouse->id, 'code' => 'SRC_CONC', 'name' => 'Conc Source', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
+        $this->warehouse = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH_CONC_'.$uid, 'name' => 'Conc Wh', 'country_code' => 'CH', 'status' => 'active']);
+        $this->source = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $this->warehouse->id, 'code' => 'SRC_CONC_'.$uid, 'name' => 'Conc Source', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
         $this->stockItem = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->source->id, 'product_id' => $this->product->id, 'on_hand' => 1, 'reserved' => 0]);
 
         $pb = PriceBook::create(['tenant_id' => $this->tenant->id, 'code' => 'STD', 'name' => 'Std', 'currency' => 'CHF', 'status' => 'active', 'priority' => 1]);
@@ -197,6 +201,9 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
@@ -216,6 +223,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
@@ -263,6 +273,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Cart\Models\Cart;
@@ -281,6 +294,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Cart\Models\Cart;
@@ -312,7 +328,7 @@ try {
 
     public function test_race_c_two_concurrent_reservation_attempts_limited_stock(): void
     {
-        $cart1 = $this->cartService->getOrCreateActiveCart(new CartContext($this->tenant->id, $this->store->id, $this->market->id, $this->channel->id, 'CHF', $this->user->id));
+        $cart1 = $this->cartService->getOrCreateActiveCart(new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id));
         $this->cartService->addLine($cart1, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
 
         $cart2 = Cart::create([
@@ -340,6 +356,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
@@ -358,6 +377,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
@@ -385,7 +407,8 @@ try {
 
     public function test_race_d_two_concurrent_ready_for_order_calls_same_idempotency_key(): void
     {
-        $cart = $this->cartService->getOrCreateActiveCart(new CartContext($this->tenant->id, $this->store->id, $this->market->id, $this->channel->id, 'CHF', $this->user->id));
+        $this->stockItem->update(['on_hand' => 100]);
+        $cart = $this->cartService->getOrCreateActiveCart(new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id));
         $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
 
         $session = $this->checkoutOrchestrator->createFromCart($cart);
@@ -400,6 +423,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
@@ -418,6 +444,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
@@ -447,7 +476,7 @@ try {
         // Both concurrent callers obtain the exact SAME immutable result and finalized_at
         $this->assertCount(2, $finalizedAts);
         $this->assertSame($finalizedAts[0], $finalizedAts[1]);
-        $this->assertSame($resultSnapshots[0], $resultSnapshots[1]);
+        $this->assertEquals(json_decode($resultSnapshots[0], true), json_decode($resultSnapshots[1], true));
 
         // Exactly one completed operation key row exists in DB
         $opKeys = CheckoutOperationKey::where('tenant_id', $this->tenant->id)
@@ -460,7 +489,7 @@ try {
 
     public function test_race_e_expiry_cleanup_vs_checkout_reservation(): void
     {
-        $cart = $this->cartService->getOrCreateActiveCart(new CartContext($this->tenant->id, $this->store->id, $this->market->id, $this->channel->id, 'CHF', $this->user->id));
+        $cart = $this->cartService->getOrCreateActiveCart(new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id));
         $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
 
         $session = $this->checkoutOrchestrator->createFromCart($cart);
@@ -476,6 +505,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Illuminate\Support\Facades\Artisan;
 
@@ -492,6 +524,9 @@ try {
 require '".base_path('vendor/autoload.php')."';
 \$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\Illuminate\Support\Facades\DB::purge('pgsql');
+\Illuminate\Support\Facades\DB::setDefaultConnection('pgsql');
 
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;

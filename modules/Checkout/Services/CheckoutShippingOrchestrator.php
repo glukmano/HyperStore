@@ -19,6 +19,11 @@ use Modules\Pricing\Contracts\PriceResolverInterface;
 use Modules\Pricing\DTOs\PricingContext;
 use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\ValueObjects\MoneyValue;
+use Modules\Promotions\DTOs\DiscountLine;
+use Modules\Promotions\DTOs\PromotionCartItem;
+use Modules\Promotions\DTOs\PromotionContext;
+use Modules\Promotions\Models\Promotion;
+use Modules\Promotions\Services\PromotionRuleEngine;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\ValueObjects\PackageCandidate;
 use Modules\Shipping\ValueObjects\ShippingContext;
@@ -34,6 +39,7 @@ class CheckoutShippingOrchestrator
         private readonly FulfillmentPlanningServiceInterface $fulfillmentService,
         private readonly ShippingRateEngineInterface $shippingRateEngine,
         private readonly PriceResolverInterface $priceResolver,
+        private readonly PromotionRuleEngine $promotionRuleEngine,
     ) {}
 
     /**
@@ -68,7 +74,6 @@ class CheckoutShippingOrchestrator
             $unitWeightStr = is_numeric($product->weight_kg ?? null) ? (string) $product->weight_kg : '0.0000';
             $unitWeight = Weight::of(bccomp($unitWeightStr, '0', 4) > 0 ? $unitWeightStr : '0.0001', 'kg');
             $isShippable = $this->shippingCapabilityResolver->requiresPhysicalShipping($product);
-            $dim = null;
             $shippingClassId = isset($product->shipping_class_id) ? (int) $product->shipping_class_id : null;
 
             $pItem = new PricingItem(
@@ -87,7 +92,7 @@ class CheckoutShippingOrchestrator
                 quantity: $qtyStr,
                 unitPrice: $priceRes->unitPrice,
                 unitWeight: $unitWeight,
-                dimensions: $dim,
+                dimensions: null,
                 shippingClassId: $shippingClassId,
                 isShippable: $isShippable
             );
@@ -218,24 +223,96 @@ class CheckoutShippingOrchestrator
         /** @var list<array{product_id: int, variant_id: int|null, quantity: string, unit_weight_kg: string, shipping_class_id: int|null}> $linesData */
         usort($linesData, fn (array $a, array $b): int => ($a['product_id'] <=> $b['product_id']) ?: (($a['variant_id'] ?? 0) <=> ($b['variant_id'] ?? 0)));
 
-        // 3. Packages Canonical List
+        // 3. Packages Canonical List with Complete Item Composition
         $packagesData = [];
         foreach ($plan->groups as $g) {
-            foreach ($g->packages as $pkg) {
+            foreach ($g->packages as $pkgIndex => $pkg) {
                 /** @var PackageCandidate $pkg */
+                $pkgItems = [];
+                foreach ($pkg->items as $pi) {
+                    $pkgItems[] = [
+                        'product_id' => (int) $pi['product_id'],
+                        'variant_id' => $pi['variant_id'],
+                        'quantity' => (string) $pi['quantity'],
+                        'unit_weight_kg' => $pi['weight']->toKg(),
+                        'shipping_class_id' => $pi['shipping_class_id'],
+                    ];
+                }
+                usort($pkgItems, fn (array $a, array $b): int => ($a['product_id'] <=> $b['product_id']) ?: (($a['variant_id'] ?? 0) <=> ($b['variant_id'] ?? 0)));
+
+                $pkgHash = hash('sha256', (string) json_encode($pkgItems));
+
                 $packagesData[] = [
-                    'weight_kg' => $pkg->totalWeight->toKg(),
-                    'items_count' => count($pkg->items),
+                    'package_index' => $pkgIndex,
                     'source_id' => $pkg->inventorySourceId,
+                    'package_type_id' => $pkg->packageTypeId,
+                    'weight_kg' => $pkg->totalWeight->toKg(),
+                    'dimensions' => $pkg->dimensions !== null ? [
+                        'length' => $pkg->dimensions->getLengthCm(),
+                        'width' => $pkg->dimensions->getWidthCm(),
+                        'height' => $pkg->dimensions->getHeightCm(),
+                    ] : null,
+                    'items' => $pkgItems,
+                    'package_fingerprint' => $pkgHash,
                 ];
             }
         }
 
-        // 4. Promotion Shipping Benefits
-        $shippingBenefits = [
+        // 4. Authoritative Promotion Shipping Benefits Evaluation
+        $promoItems = [];
+        $pricingCtx = new PricingContext(
+            tenantId: $cart->tenant_id,
+            currency: $cart->currency,
+            storeId: $cart->store_id,
+            marketId: $cart->market_id,
+            channelId: $cart->channel_id
+        );
+        foreach ($cart->lines as $line) {
+            $pRes = $this->priceResolver->resolve(new PricingItem($line->product_id, $line->variant_id, (string) $line->quantity), $pricingCtx);
+            if ($pRes !== null) {
+                $promoItems[] = new PromotionCartItem(
+                    productId: $line->product_id,
+                    variantId: $line->variant_id,
+                    quantity: (string) $line->quantity,
+                    unitPrice: $pRes->unitPrice,
+                    categoryIds: [],
+                    productType: $line->product->product_type
+                );
+            }
+        }
+
+        $promoCtx = new PromotionContext(
+            tenantId: $cart->tenant_id,
+            currency: $cart->currency,
+            items: $promoItems,
+            storeId: $cart->store_id,
+            marketId: $cart->market_id,
+            channelId: $cart->channel_id,
+            customerId: $cart->user_id,
+            couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
+        );
+
+        $promoResult = $this->promotionRuleEngine->evaluate($promoCtx);
+        $hasFreeShipping = false;
+        $shippingPromoIds = [];
+
+        foreach ($promoResult->discounts as $d) {
+            /** @var DiscountLine $d */
+            $promo = Promotion::find($d->promotionId);
+            if ($promo !== null && $promo->actions()->where('action_type', 'free_shipping')->exists()) {
+                $hasFreeShipping = true;
+                $shippingPromoIds[] = $d->promotionId;
+            }
+        }
+
+        $benefitSnapshot = [
             'coupon_code' => $cart->coupon_code,
-            'discount_minor' => $matchedQuote->breakdown->promotionDiscount->getMinorAmount(),
+            'has_free_shipping' => $hasFreeShipping,
+            'shipping_discount_minor' => $matchedQuote->breakdown->promotionDiscount->getMinorAmount(),
+            'applied_shipping_promotion_ids' => $shippingPromoIds,
         ];
+        $benefitFingerprint = hash('sha256', (string) json_encode($benefitSnapshot));
+        $benefitSnapshot['benefit_fingerprint'] = $benefitFingerprint;
 
         $rateRelevantInputs = [
             'tenant_id' => $cart->tenant_id,
@@ -251,7 +328,7 @@ class CheckoutShippingOrchestrator
             'physical_lines' => $linesData,
             'fulfillment_allocations' => $fulfillmentAllocations,
             'packages' => $packagesData,
-            'promotion_shipping_benefits' => $shippingBenefits,
+            'promotion_shipping_benefits' => $benefitSnapshot,
             'original_amount' => $originalAmountMinor,
             'final_amount' => $finalAmountMinor,
             'breakdown' => $breakdownArray,

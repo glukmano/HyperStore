@@ -65,10 +65,10 @@ class TableRateCalculator implements RateCalculatorInterface
                 $subtotalMinor += $lineSubtotal->getMinorAmount();
             }
         }
-        $totalItems = (int) ceil((float) $totalItemsExact);
+        $totalItems = $totalItemsExact;
 
         $evalContext = [
-            'total_items' => $totalItems,
+            'total_items' => $totalItemsExact,
             'total_weight_kg' => $totalWeightKg,
             'subtotal_minor' => $subtotalMinor,
             'package_count' => 1,

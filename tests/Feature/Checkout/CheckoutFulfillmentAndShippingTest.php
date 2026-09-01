@@ -14,6 +14,7 @@ use App\Models\User;
 use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Modules\Cart\Contracts\CartServiceInterface;
+use Modules\Cart\Models\Cart;
 use Modules\Cart\ValueObjects\CartContext;
 use Modules\Cart\ValueObjects\CartLineItemData;
 use Modules\Cart\ValueObjects\CartQuantity;
@@ -29,8 +30,11 @@ use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Pricing\Models\TaxClass;
+use Modules\Promotions\Models\Promotion;
+use Modules\Promotions\Models\PromotionAction;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
+use Modules\Shipping\Models\ShippingRateRule;
 use Modules\Shipping\Models\ShippingZone;
 use Modules\Shipping\Models\ShippingZoneRule;
 use Tests\TestCase;
@@ -362,5 +366,189 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         // Assert Source A reserved exactly 0.7500 and Source B reserved exactly 0.5000
         $this->assertSame('0.7500', (string) $this->stockItemA->fresh()->reserved);
         $this->assertSame('0.5000', (string) $this->stockItemB->fresh()->reserved);
+    }
+
+    public function test_table_rate_fractional_quantity_condition_exact_matching(): void
+    {
+        $tableMethod = ShippingMethod::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'TABLE_SHIP',
+            'name' => 'Table Shipping',
+            'rate_calculator_type' => 'table_rate',
+            'currency' => 'CHF',
+            'base_amount' => 500,
+            'status' => 'active',
+        ]);
+        ShippingMethodZone::create(['shipping_method_id' => $tableMethod->id, 'shipping_zone_id' => $this->zone->id]);
+
+        // Increase available inventory for fractionalProduct so 1.50 and 1.75 are fulfillable
+        StockItem::where('product_id', $this->fractionalProduct->id)->update(['on_hand' => 100]);
+
+        // Rule: min_quantity = 1.50 adds 300 minor fee
+        ShippingRateRule::create([
+            'shipping_method_id' => $tableMethod->id,
+            'name' => 'Min 1.5 Units Rule',
+            'condition_type' => 'min_quantity',
+            'action_type' => 'fixed_amount',
+            'conditions_payload' => ['min_quantity' => '1.5000'],
+            'action_payload' => ['amount' => 300],
+            'priority' => 10,
+        ]);
+
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+
+        // 1. Qty = 1.25 -> MUST NOT match rule (no quote returned)
+        $cart1 = Cart::create([
+            'tenant_id' => $this->tenant->id,
+            'guest_token_hash' => hash('sha256', 'guest-cart-tr1'),
+            'store_id' => $this->store->id,
+            'market_id' => $this->market->id,
+            'channel_id' => $this->channel->id,
+            'currency' => 'CHF',
+            'status' => 'active',
+        ]);
+        $this->cartService->addLine($cart1, new CartLineItemData($this->fractionalProduct->id, null, CartQuantity::fromString('1.25000000')));
+        $session1 = $this->checkoutOrchestrator->createFromCart($cart1);
+        $this->checkoutOrchestrator->setCustomerData($session1, new CheckoutCustomerData('u1@example.com', 'U', '1'));
+        $session1 = $this->checkoutOrchestrator->setAddresses($session1, new CheckoutAddress('U 1', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $rates1 = $this->checkoutOrchestrator->getShippingRates($session1);
+        $tableRate1 = collect($rates1['shipping_result']->quotes)->first(fn ($q) => $q->methodId === $tableMethod->id);
+        $this->assertNull($tableRate1, 'Table rate with min_quantity=1.50 must not match 1.25 quantity.');
+
+        // 2. Qty = 1.50 -> MUST match rule (base 500 + rule 300 = 800)
+        $cart2 = Cart::create([
+            'tenant_id' => $this->tenant->id,
+            'guest_token_hash' => hash('sha256', 'guest-cart-tr2'),
+            'store_id' => $this->store->id,
+            'market_id' => $this->market->id,
+            'channel_id' => $this->channel->id,
+            'currency' => 'CHF',
+            'status' => 'active',
+        ]);
+        $this->cartService->addLine($cart2, new CartLineItemData($this->fractionalProduct->id, null, CartQuantity::fromString('1.50000000')));
+        $session2 = $this->checkoutOrchestrator->createFromCart($cart2);
+        $this->checkoutOrchestrator->setCustomerData($session2, new CheckoutCustomerData('u2@example.com', 'U', '2'));
+        $session2 = $this->checkoutOrchestrator->setAddresses($session2, new CheckoutAddress('U 2', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $rates2 = $this->checkoutOrchestrator->getShippingRates($session2);
+        $tableRate2 = collect($rates2['shipping_result']->quotes)->first(fn ($q) => $q->methodId === $tableMethod->id);
+        $this->assertNotNull($tableRate2, 'Table rate with min_quantity=1.50 must match 1.50 quantity.');
+        $this->assertSame(800, $tableRate2->amount->getMinorAmount());
+
+        // 3. Qty = 1.75 -> MUST match rule (base 500 + rule 300 = 800)
+        $cart3 = Cart::create([
+            'tenant_id' => $this->tenant->id,
+            'guest_token_hash' => hash('sha256', 'guest-cart-tr3'),
+            'store_id' => $this->store->id,
+            'market_id' => $this->market->id,
+            'channel_id' => $this->channel->id,
+            'currency' => 'CHF',
+            'status' => 'active',
+        ]);
+        $this->cartService->addLine($cart3, new CartLineItemData($this->fractionalProduct->id, null, CartQuantity::fromString('1.75000000')));
+        $session3 = $this->checkoutOrchestrator->createFromCart($cart3);
+        $this->checkoutOrchestrator->setCustomerData($session3, new CheckoutCustomerData('u3@example.com', 'U', '3'));
+        $session3 = $this->checkoutOrchestrator->setAddresses($session3, new CheckoutAddress('U 3', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $rates3 = $this->checkoutOrchestrator->getShippingRates($session3);
+        $tableRate3 = collect($rates3['shipping_result']->quotes)->first(fn ($q) => $q->methodId === $tableMethod->id);
+        $this->assertNotNull($tableRate3, 'Table rate with min_quantity=1.50 must match 1.75 quantity.');
+        $this->assertSame(800, $tableRate3->amount->getMinorAmount());
+    }
+
+    public function test_package_item_composition_difference_changes_fingerprint(): void
+    {
+        $prod2 = Product::create([
+            'tenant_id' => $this->tenant->id,
+            'sku' => 'PHYS-2',
+            'name' => 'Book 2',
+            'slug' => 'book-2',
+            'product_type' => 'physical',
+            'status' => 'active',
+            'weight_kg' => 1.0,
+        ]);
+        $pb = PriceBook::where('tenant_id', $this->tenant->id)->firstOrFail();
+        Price::create(['tenant_id' => $this->tenant->id, 'price_book_id' => $pb->id, 'product_id' => $prod2->id, 'amount_minor' => 4000, 'currency' => 'CHF', 'status' => 'active']);
+        StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $prod2->id, 'on_hand' => 100, 'reserved' => 0]);
+
+        $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
+
+        // Cart A: 1 unit of Product 1 (1kg)
+        $cartA = Cart::create([
+            'tenant_id' => $this->tenant->id,
+            'guest_token_hash' => hash('sha256', 'guest-cart-a'),
+            'store_id' => $this->store->id,
+            'market_id' => $this->market->id,
+            'channel_id' => $this->channel->id,
+            'currency' => 'CHF',
+            'status' => 'active',
+        ]);
+        $this->cartService->addLine($cartA, new CartLineItemData($this->physicalProduct->id, null, CartQuantity::fromInt(1)));
+        $sessionA = $this->checkoutOrchestrator->createFromCart($cartA);
+        $this->checkoutOrchestrator->setCustomerData($sessionA, new CheckoutCustomerData('a@example.com', 'A', '1'));
+        $sessionA = $this->checkoutOrchestrator->setAddresses($sessionA, new CheckoutAddress('A 1', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $sessionA = $this->checkoutOrchestrator->selectShippingQuote($sessionA, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        // Cart B: 1 unit of Product 2 (1kg) -> Same total weight (1kg), same item count (1), same source, but DIFFERENT item composition
+        $cartB = Cart::create([
+            'tenant_id' => $this->tenant->id,
+            'guest_token_hash' => hash('sha256', 'guest-cart-b'),
+            'store_id' => $this->store->id,
+            'market_id' => $this->market->id,
+            'channel_id' => $this->channel->id,
+            'currency' => 'CHF',
+            'status' => 'active',
+        ]);
+        $this->cartService->addLine($cartB, new CartLineItemData($prod2->id, null, CartQuantity::fromInt(1)));
+        $sessionB = $this->checkoutOrchestrator->createFromCart($cartB);
+        $this->checkoutOrchestrator->setCustomerData($sessionB, new CheckoutCustomerData('b@example.com', 'B', '1'));
+        $sessionB = $this->checkoutOrchestrator->setAddresses($sessionB, new CheckoutAddress('B 1', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $sessionB = $this->checkoutOrchestrator->selectShippingQuote($sessionB, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        $this->assertNotSame(
+            $sessionA->selected_shipping_quote['fingerprint'],
+            $sessionB->selected_shipping_quote['fingerprint']
+        );
+    }
+
+    public function test_automatic_free_shipping_promotion_invalidates_selected_shipping_quote(): void
+    {
+        $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData($this->physicalProduct->id, null, CartQuantity::fromInt(1)));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('auto@example.com', 'Auto', 'User'));
+        $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Auto User', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        $this->assertNotNull($session->selected_shipping_quote);
+
+        // Create an automatic Free Shipping promotion (no coupon required)
+        $autoPromo = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Auto Free Shipping',
+            'code' => 'AUTO_FREE_SHIP',
+            'status' => 'active',
+            'priority' => 100,
+            'starts_at' => now()->subDay(),
+            'ends_at' => now()->addMonth(),
+        ]);
+        PromotionAction::create([
+            'promotion_id' => $autoPromo->id,
+            'action_type' => 'free_shipping',
+            'parameters' => [],
+        ]);
+
+        // Attempting to reserve without re-selection must detect stale shipping quote
+        $this->expectException(ShippingQuoteStaleException::class);
+        $this->expectExceptionMessage('SHIPPING_QUOTE_STALE');
+
+        $this->checkoutOrchestrator->reserveInventory($session);
     }
 }

@@ -36,9 +36,7 @@ class CheckoutIdempotencyService
 
         $fingerprint = hash('sha256', (string) json_encode($requestPayload));
 
-        // Step A: Durable claim transaction
-        /** @var CheckoutOperationKey $claim */
-        $claim = DB::transaction(function () use ($tenantId, $cartId, $checkoutSessionId, $operationType, $idempotencyKey, $fingerprint) {
+        $findClaim = function () use ($tenantId, $cartId, $checkoutSessionId, $operationType, $idempotencyKey): ?CheckoutOperationKey {
             $query = CheckoutOperationKey::query()
                 ->where('tenant_id', $tenantId)
                 ->where('operation_type', $operationType)
@@ -50,46 +48,58 @@ class CheckoutIdempotencyService
                 $query->where('checkout_session_id', $checkoutSessionId);
             }
 
-            /** @var CheckoutOperationKey|null $existing */
-            $existing = $query->lockForUpdate()->first();
+            return $query->first();
+        };
 
-            if ($existing !== null) {
-                if ($existing->request_fingerprint !== $fingerprint) {
-                    throw new RuntimeException("Idempotency key [{$idempotencyKey}] was previously used with a different request payload.");
-                }
+        // Step A: Durable claim resolution with race collision handling
+        /** @var CheckoutOperationKey|null $claim */
+        $claim = $findClaim();
 
-                if ($existing->status === 'completed') {
-                    return $existing;
-                }
-
-                if ($existing->status === 'processing') {
-                    // Check for abandoned lease (older than 30s)
-                    if ($existing->lease_expires_at && $existing->lease_expires_at->isFuture()) {
-                        throw new RuntimeException("Operation with idempotency key [{$idempotencyKey}] is currently processing.");
+        if ($claim === null) {
+            try {
+                $claim = DB::transaction(function () use ($tenantId, $cartId, $checkoutSessionId, $operationType, $idempotencyKey, $fingerprint, $findClaim) {
+                    $existing = $findClaim();
+                    if ($existing !== null) {
+                        return $existing;
                     }
-                    // Take over abandoned lease
-                    $existing->lease_expires_at = now()->addSeconds(30);
-                    $existing->save();
 
-                    return $existing;
-                }
+                    return CheckoutOperationKey::create([
+                        'tenant_id' => $tenantId,
+                        'cart_id' => $cartId,
+                        'checkout_session_id' => $checkoutSessionId,
+                        'operation_type' => $operationType,
+                        'idempotency_key' => $idempotencyKey,
+                        'request_fingerprint' => $fingerprint,
+                        'status' => 'processing',
+                        'lease_expires_at' => now()->addSeconds(30),
+                    ]);
+                });
+            } catch (Throwable) {
+                $claim = $findClaim();
             }
+        }
 
-            // Create new claim
-            return CheckoutOperationKey::create([
-                'tenant_id' => $tenantId,
-                'cart_id' => $cartId,
-                'checkout_session_id' => $checkoutSessionId,
-                'operation_type' => $operationType,
-                'idempotency_key' => $idempotencyKey,
-                'request_fingerprint' => $fingerprint,
-                'status' => 'processing',
-                'lease_expires_at' => now()->addSeconds(30),
-            ]);
-        });
+        if ($claim === null) {
+            throw new RuntimeException("Concurrent idempotency conflict for key [{$idempotencyKey}].");
+        }
+
+        if ($claim->request_fingerprint !== $fingerprint) {
+            throw new RuntimeException("Idempotency key [{$idempotencyKey}] was previously used with a different request payload.");
+        }
 
         if ($claim->status === 'completed') {
             return (array) ($claim->response_payload ?? []);
+        }
+
+        // If another worker claimed processing, wait briefly for completion
+        if ($claim->status === 'processing') {
+            for ($i = 0; $i < 60; $i++) {
+                usleep(50000); // 50ms (up to 3s)
+                $polled = CheckoutOperationKey::find($claim->id);
+                if ($polled !== null && $polled->status === 'completed') {
+                    return (array) ($polled->response_payload ?? []);
+                }
+            }
         }
 
         // Step B: Mutation + Completion in the SAME atomic transaction
@@ -97,6 +107,10 @@ class CheckoutIdempotencyService
             return DB::transaction(function () use ($claim, $callback) {
                 /** @var CheckoutOperationKey $lockedClaim */
                 $lockedClaim = CheckoutOperationKey::query()->where('id', $claim->id)->lockForUpdate()->firstOrFail();
+
+                if ($lockedClaim->status === 'completed') {
+                    return (array) ($lockedClaim->response_payload ?? []);
+                }
 
                 /** @var array<string, mixed> $result */
                 $result = $callback();

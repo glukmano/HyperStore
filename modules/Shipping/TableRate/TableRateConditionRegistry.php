@@ -11,7 +11,7 @@ use Modules\Shipping\ValueObjects\ShippingRateRequest;
 class TableRateConditionRegistry
 {
     /**
-     * @var array<string, callable(ShippingRateRule, array{total_items: int, total_weight_kg: numeric-string, subtotal_minor: int, request: ShippingRateRequest}): bool>
+     * @var array<string, callable(ShippingRateRule, array{total_items: numeric-string, total_weight_kg: numeric-string, subtotal_minor: int, request: ShippingRateRequest}): bool>
      */
     private array $evaluators = [];
 
@@ -26,7 +26,7 @@ class TableRateConditionRegistry
     }
 
     /**
-     * @param  array{total_items: int, total_weight_kg: numeric-string, subtotal_minor: int, request: ShippingRateRequest}  $context
+     * @param  array{total_items: numeric-string, total_weight_kg: numeric-string, subtotal_minor: int, request: ShippingRateRequest}  $context
      */
     public function evaluate(ShippingRateRule $rule, array $context): bool
     {
@@ -76,15 +76,21 @@ class TableRateConditionRegistry
         };
 
         $this->evaluators['min_quantity'] = function (ShippingRateRule $rule, array $ctx): bool {
-            $min = (int) ($rule->conditions_payload['min_quantity'] ?? 0);
+            /** @var numeric-string $min */
+            $min = (string) ($rule->conditions_payload['min_quantity'] ?? '0');
+            /** @var numeric-string $itemsStr */
+            $itemsStr = (string) $ctx['total_items'];
 
-            return $ctx['total_items'] >= $min;
+            return is_numeric($min) && bccomp($itemsStr, $min, 4) >= 0;
         };
 
         $this->evaluators['max_quantity'] = function (ShippingRateRule $rule, array $ctx): bool {
-            $max = (int) ($rule->conditions_payload['max_quantity'] ?? PHP_INT_MAX);
+            /** @var numeric-string $max */
+            $max = (string) ($rule->conditions_payload['max_quantity'] ?? '999999999');
+            /** @var numeric-string $itemsStr */
+            $itemsStr = (string) $ctx['total_items'];
 
-            return $ctx['total_items'] <= $max;
+            return is_numeric($max) && bccomp($itemsStr, $max, 4) <= 0;
         };
 
         $this->evaluators['shipping_class'] = function (ShippingRateRule $rule, array $ctx): bool {
