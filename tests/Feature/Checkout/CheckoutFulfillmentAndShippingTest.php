@@ -21,11 +21,13 @@ use Modules\Catalog\Models\Product;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
+use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
+use Modules\Pricing\Models\TaxClass;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingZone;
@@ -71,6 +73,8 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         StoreChannel::create(['store_id' => $this->store->id, 'channel_id' => $this->channel->id, 'is_active' => true]);
 
         $this->user = User::factory()->create();
+
+        TaxClass::create(['tenant_id' => $this->tenant->id, 'code' => 'STD_TAX', 'name' => 'Standard Tax', 'is_default' => true]);
 
         $this->digitalProduct = Product::create([
             'tenant_id' => $this->tenant->id,
@@ -204,5 +208,66 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
 
         $this->assertSame('ready_for_order', $ready->state);
         $this->assertSame(5000, $ready->totals['grand_total']); // 40.00 + 10.00 shipping = 50.00 CHF
+    }
+
+    public function test_get_shipping_rates_api_returns_fresh_typed_quotes(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->physicalProduct->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u@example.com', 'U', '1'));
+        $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('U 1', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+
+        $rates = $this->checkoutOrchestrator->getShippingRates($session);
+        $this->assertNotNull($rates['shipping_result']);
+        $this->assertNotEmpty($rates['shipping_result']->quotes);
+    }
+
+    public function test_expired_shipping_quote_blocks_ready_for_order_and_requires_requote(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->physicalProduct->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u@example.com', 'U', '1'));
+        $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('U 1', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+        $session = $this->checkoutOrchestrator->reserveInventory($session);
+
+        // Manually simulate expired quote
+        $quoteData = $session->selected_shipping_quote;
+        $quoteData['expires_at'] = now()->subHour()->toIso8601String();
+        $session->selected_shipping_quote = $quoteData;
+        $session->save();
+
+        $this->expectException(ShippingQuoteExpiredException::class);
+        $this->expectExceptionMessage("SHIPPING_QUOTE_EXPIRED: Selected shipping quote [{$this->method->id}] has expired");
+
+        $this->checkoutOrchestrator->markReadyForOrder($session);
     }
 }

@@ -31,6 +31,7 @@ use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
+use Modules\Pricing\Models\TaxClass;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingZone;
@@ -54,6 +55,8 @@ class CheckoutIdorAndFractionalQuantityTest extends TestCase
     private User $user2;
 
     private Product $fractionalProduct;
+
+    private StockItem $stockItem;
 
     private ShippingMethod $method;
 
@@ -80,6 +83,8 @@ class CheckoutIdorAndFractionalQuantityTest extends TestCase
         $this->user1 = User::factory()->create();
         $this->user2 = User::factory()->create();
 
+        $taxClass = TaxClass::create(['tenant_id' => $this->tenant->id, 'code' => 'STD_TAX', 'name' => 'Standard Tax', 'is_default' => true]);
+
         $this->fractionalProduct = Product::create([
             'tenant_id' => $this->tenant->id,
             'sku' => 'FRAC-FABRIC-1',
@@ -93,7 +98,7 @@ class CheckoutIdorAndFractionalQuantityTest extends TestCase
 
         $wh = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH_FRAC', 'name' => 'WH Frac', 'country_code' => 'CH', 'status' => 'active']);
         $source = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $wh->id, 'code' => 'SRC_FRAC', 'name' => 'Source Frac', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
-        StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $source->id, 'product_id' => $this->fractionalProduct->id, 'on_hand' => 100, 'reserved' => 0]);
+        $this->stockItem = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $source->id, 'product_id' => $this->fractionalProduct->id, 'on_hand' => 100, 'reserved' => 0]);
 
         $pb = PriceBook::create(['tenant_id' => $this->tenant->id, 'code' => 'STD', 'name' => 'Std', 'currency' => 'CHF', 'status' => 'active', 'priority' => 1]);
         Price::create(['tenant_id' => $this->tenant->id, 'price_book_id' => $pb->id, 'product_id' => $this->fractionalProduct->id, 'amount_minor' => 4000, 'currency' => 'CHF', 'status' => 'active']); // 40.00 CHF / meter
@@ -144,7 +149,7 @@ class CheckoutIdorAndFractionalQuantityTest extends TestCase
         $this->ownershipService->verifyOwnership($session);
     }
 
-    public function test_fractional_quantity_preservation_end_to_end(): void
+    public function test_fractional_quantity_end_to_end_exact_financial_and_reservation_calculation(): void
     {
         $ctx = new CartContext(
             tenantId: $this->tenant->id,
@@ -156,7 +161,7 @@ class CheckoutIdorAndFractionalQuantityTest extends TestCase
         );
         $cart = $this->cartService->getOrCreateActiveCart($ctx);
 
-        // Add 1.25 units
+        // Add 1.25 units of 40.00 CHF product (4000 minor * 1.25 = 5000 minor)
         $qty = CartQuantity::fromString('1.25000000');
         $this->cartService->addLine($cart, new CartLineItemData(
             productId: $this->fractionalProduct->id,
@@ -170,10 +175,18 @@ class CheckoutIdorAndFractionalQuantityTest extends TestCase
         $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
         $session = $this->checkoutOrchestrator->reserveInventory($session);
 
+        // Assert that stock reservation preserved exact fractional quantity (1.2500)
+        $this->assertSame('1.2500', (string) $this->stockItem->fresh()->reserved);
+
         $ready = $this->checkoutOrchestrator->markReadyForOrder($session);
 
         $this->assertSame('ready_for_order', $ready->state);
         $this->assertCount(1, $ready->lines);
         $this->assertSame('1.25', (string) $ready->lines[0]['quantity']);
+
+        // Assert exact merchandise subtotal is 5000 minor (50.00 CHF), NOT truncated to 4000
+        $this->assertSame(5000, $ready->totals['merchandise_subtotal']);
+        // Grand total: 5000 subtotal + 500 shipping = 5500 minor (55.00 CHF)
+        $this->assertSame(5500, $ready->totals['grand_total']);
     }
 }

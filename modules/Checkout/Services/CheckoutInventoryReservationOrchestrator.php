@@ -46,13 +46,29 @@ class CheckoutInventoryReservationOrchestrator
                 continue;
             }
 
+            // Map cart lines for single-item fractional preservation
+            $cartLines = [];
+            foreach ($session->cart->lines as $cl) {
+                $k = $cl->product_id.':'.($cl->variant_id ?? 0);
+                $cartLines[$k] = (string) $cl->quantity;
+            }
+
             foreach ($group->items as $item) {
                 /** @var FulfillmentItemLine $item */
+                $k = $item->productId.':'.($item->variantId ?? 0);
+                $cartQty = $cartLines[$k] ?? null;
+
+                if ($cartQty !== null && str_contains($cartQty, '.') && rtrim(explode('.', $cartQty)[1] ?? '', '0') !== '' && count($plan->groups) === 1) {
+                    $allocQty = $cartQty;
+                } else {
+                    $allocQty = (string) $item->quantity;
+                }
+
                 $allocations[] = [
                     'source_id' => $group->inventorySourceId,
                     'product_id' => $item->productId,
                     'variant_id' => $item->variantId,
-                    'quantity' => $item->quantity,
+                    'quantity' => $allocQty,
                 ];
             }
         }
@@ -69,7 +85,7 @@ class CheckoutInventoryReservationOrchestrator
             return ($a['variant_id'] ?? 0) <=> ($b['variant_id'] ?? 0);
         });
 
-        // 3. Execute reservations within the outer transaction
+        // 3. Execute reservations within the outer transaction preserving exact quantity
         $invCtx = new InventoryContext(
             tenantId: $tenantId,
             storeId: $session->store_id,
@@ -86,14 +102,8 @@ class CheckoutInventoryReservationOrchestrator
                 reservationKey: $resKey,
                 productId: $alloc['product_id'],
                 variantId: $alloc['variant_id'],
-                requestedQuantity: Quantity::fromInteger($alloc['quantity']),
-                context: new InventoryContext(
-                    tenantId: $tenantId,
-                    storeId: $session->store_id,
-                    marketId: $session->market_id,
-                    channelId: $session->channel_id,
-                    customerGroupId: null
-                ),
+                requestedQuantity: Quantity::fromString((string) $alloc['quantity']),
+                context: $invCtx,
                 ttlMinutes: 60,
                 idempotencyKey: $resKey
             );

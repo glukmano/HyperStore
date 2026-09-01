@@ -13,7 +13,7 @@ use Modules\Cart\ValueObjects\CartContext;
 use Modules\Cart\ValueObjects\CartLineItemData;
 use Modules\Cart\ValueObjects\CartQuantity;
 
-Route::prefix('v1/cart')->group(function () {
+Route::prefix('api/v1/cart')->group(function () {
 
     Route::get('/', function (Request $request, ContextManager $contextManager, CartServiceInterface $cartService, CartOwnershipService $ownershipService) {
         $tenantId = (int) $contextManager->getTenant()->getId();

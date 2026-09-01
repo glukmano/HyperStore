@@ -10,11 +10,13 @@ use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutTotals;
 use Modules\Checkout\DTOs\SelectedShippingQuote;
 use Modules\Checkout\Exceptions\PriceUnavailableException;
+use Modules\Checkout\Exceptions\TaxClassUnavailableException;
 use Modules\Pricing\Contracts\PriceResolverInterface;
 use Modules\Pricing\Contracts\TaxCalculatorInterface;
 use Modules\Pricing\DTOs\PricingContext;
 use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\DTOs\TaxContext;
+use Modules\Pricing\Models\TaxClass;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
@@ -55,20 +57,27 @@ class CheckoutPricingOrchestrator
             customerGroupId: null
         );
 
-        // 1. Calculate merchandise lines using PriceResolver (NO fake price fallback)
+        // 1. Calculate merchandise lines using PriceResolver with exact fractional quantity support
         $merchandiseSubtotalMinor = 0;
         $linePricingBreakdown = [];
         $promoItems = [];
         $lineTaxItems = [];
 
+        // Pre-fetch tenant default tax class in case products do not specify one explicitly
+        $defaultTaxClass = TaxClass::query()
+            ->where('tenant_id', $cart->tenant_id)
+            ->where('is_default', true)
+            ->first();
+
         foreach ($cart->lines as $line) {
             /** @var CartLine $line */
-            $qty = $line->getQuantityVO()->toInt();
+            $qtyStr = (string) $line->quantity;
+            $qtyInt = max(1, (int) ceil((float) $qtyStr));
 
             $pItem = new PricingItem(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
-                quantity: $qty
+                quantity: $qtyInt
             );
 
             $priceResult = $this->priceResolver->resolve($pItem, $pricingCtx);
@@ -78,7 +87,9 @@ class CheckoutPricingOrchestrator
 
             $unitPrice = $priceResult->unitPrice;
             $unitPriceMinor = $unitPrice->getMinorAmount();
-            $lineTotal = $unitPrice->multiply($qty);
+
+            // Exact multiplication with fractional quantity (e.g. 4000 * 1.25 = 5000 minor)
+            $lineTotal = $unitPrice->multiply($qtyStr);
             $lineTotalMinor = $lineTotal->getMinorAmount();
 
             $merchandiseSubtotalMinor += $lineTotalMinor;
@@ -87,7 +98,7 @@ class CheckoutPricingOrchestrator
                 'cart_line_id' => $line->id,
                 'product_id' => $line->product_id,
                 'variant_id' => $line->variant_id,
-                'quantity' => (string) $line->quantity,
+                'quantity' => $qtyStr,
                 'unit_price_minor' => $unitPriceMinor,
                 'line_total_minor' => $lineTotalMinor,
                 'currency' => $currency,
@@ -96,17 +107,23 @@ class CheckoutPricingOrchestrator
             $promoItems[] = new PromotionCartItem(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
-                quantity: $qty,
+                quantity: $qtyInt,
                 unitPrice: $unitPrice,
                 categoryIds: [],
                 brandId: null,
                 productType: (string) $line->product->product_type
             );
 
+            // Resolve tax class: product tax_class_id -> tenant default -> throw exception (no hardcoded fallback)
+            $taxClassId = $line->product->tax_class_id ?? ($defaultTaxClass !== null ? $defaultTaxClass->id : null);
+            if ($taxClassId === null) {
+                throw TaxClassUnavailableException::forProduct($line->product_id);
+            }
+
             $lineTaxItems[] = [
                 'line' => $line,
                 'total' => $lineTotal,
-                'tax_class_id' => (int) ($line->product->tax_class_id ?? 1),
+                'tax_class_id' => (int) $taxClassId,
             ];
         }
 
@@ -166,7 +183,7 @@ class CheckoutPricingOrchestrator
                 isTaxInclusive: false
             );
 
-            // Calculate per line preserving tax class
+            // Calculate per line preserving tax class and exact line totals
             foreach ($lineTaxItems as $taxItem) {
                 $lineTaxRes = $this->taxCalculator->calculate($taxItem['total'], $taxItem['tax_class_id'], $taxCtx);
                 $taxTotalMinor += $lineTaxRes->taxAmount->getMinorAmount();

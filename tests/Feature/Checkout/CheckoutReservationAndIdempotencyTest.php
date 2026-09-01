@@ -27,6 +27,7 @@ use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
+use Modules\Pricing\Models\TaxClass;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingZone;
@@ -73,6 +74,7 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
         Currency::firstOrCreate(['code' => 'CHF'], ['name' => 'Swiss Franc', 'symbol' => 'CHF', 'decimals' => 2, 'is_active' => true]);
 
         $this->tenant = Tenant::create(['name' => 'Res Tenant', 'slug' => 'res-tenant', 'status' => 'active']);
+        TaxClass::create(['tenant_id' => $this->tenant->id, 'code' => 'STD_TAX', 'name' => 'Standard Tax', 'is_default' => true]);
         $this->store = Store::create(['tenant_id' => $this->tenant->id, 'code' => 'RES_S1', 'name' => 'Store 1', 'slug' => 'res-s1', 'status' => 'active']);
         $this->market = Market::create(['tenant_id' => $this->tenant->id, 'code' => 'CH', 'name' => 'Switzerland', 'default_currency_code' => 'CHF', 'default_locale_code' => 'en', 'is_active' => true]);
         $this->channel = Channel::create(['name' => 'Web', 'handle' => 'web', 'is_active' => true]);

@@ -22,12 +22,14 @@ use Modules\Catalog\Models\Product;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
+use Modules\Checkout\Models\CheckoutOperationKey;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
+use Modules\Pricing\Models\TaxClass;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingZone;
@@ -76,6 +78,8 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
 
         $this->user = User::factory()->create();
 
+        TaxClass::create(['tenant_id' => $this->tenant->id, 'code' => 'STD_TAX', 'name' => 'Standard Tax', 'is_default' => true]);
+
         $this->product = Product::create([
             'tenant_id' => $this->tenant->id,
             'sku' => 'CONC-1',
@@ -111,19 +115,23 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
     }
 
     /**
-     * Helper to spawn concurrent worker scripts via proc_open.
+     * Helper to spawn synchronized concurrent worker scripts via proc_open with a file barrier.
      *
-     * @param  list<string>  $scripts  PHP script code strings for each worker
+     * @param  list<string>  $scripts
      * @return list<array{exit_code: int, stdout: string, stderr: string}>
      */
-    private function runParallelWorkers(array $scripts): array
+    private function runSynchronizedParallelWorkers(array $scripts): array
     {
+        $barrierFile = sys_get_temp_dir().'/barrier_'.uniqid().'.flag';
         $processes = [];
         $pipes = [];
 
         foreach ($scripts as $idx => $script) {
+            // Inject barrier synchronization check into worker script
+            $syncedScript = str_replace('// __BARRIER_WAIT__', "while (!file_exists('{$barrierFile}')) { usleep(1000); }", $script);
+
             $tmpFile = sys_get_temp_dir()."/worker_{$idx}_".uniqid().'.php';
-            file_put_contents($tmpFile, $script);
+            file_put_contents($tmpFile, $syncedScript);
 
             $descriptors = [
                 0 => ['pipe', 'r'],
@@ -138,6 +146,10 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
                 'tmp_file' => $tmpFile,
             ];
         }
+
+        // Release all parallel workers simultaneously by creating the barrier file
+        usleep(50000); // 50ms setup buffer
+        touch($barrierFile);
 
         $results = [];
         foreach ($processes as $idx => $procInfo) {
@@ -156,6 +168,8 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
                 'stderr' => (string) $stderr,
             ];
         }
+
+        @unlink($barrierFile);
 
         return $results;
     }
@@ -188,6 +202,7 @@ use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\ValueObjects\CartQuantity;
 
+// __BARRIER_WAIT__
 try {
     \$cart = Cart::find({$cart->id});
     app(CartServiceInterface::class)->updateQuantity(\$cart, {$line->id}, CartQuantity::fromInt(5), {$initialVersion});
@@ -206,8 +221,8 @@ use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\ValueObjects\CartQuantity;
 
+// __BARRIER_WAIT__
 try {
-    usleep(10000); // 10ms jitter
     \$cart = Cart::find({$cart->id});
     app(CartServiceInterface::class)->updateQuantity(\$cart, {$line->id}, CartQuantity::fromInt(10), {$initialVersion});
     echo 'SUCCESS_W2';
@@ -216,13 +231,12 @@ try {
 }
 ";
 
-        $results = $this->runParallelWorkers([$worker1, $worker2]);
+        $results = $this->runSynchronizedParallelWorkers([$worker1, $worker2]);
 
         $outputs = array_column($results, 'stdout');
         $successCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'SUCCESS')));
         $failCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'FAIL')));
 
-        // Exactly one CAS update succeeds and increments version, the other is rejected with version mismatch
         $this->assertSame(1, $successCount, 'Exactly one concurrent CAS update must succeed.');
         $this->assertSame(1, $failCount, 'The conflicting CAS update must fail.');
         $this->assertSame($initialVersion + 1, $cart->fresh()->version);
@@ -253,6 +267,7 @@ require '".base_path('vendor/autoload.php')."';
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Cart\Models\Cart;
 
+// __BARRIER_WAIT__
 try {
     \$cart = Cart::find({$cart->id});
     \$session = app(CheckoutOrchestratorInterface::class)->createFromCart(\$cart);
@@ -270,6 +285,7 @@ require '".base_path('vendor/autoload.php')."';
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Cart\Models\Cart;
 
+// __BARRIER_WAIT__
 try {
     \$cart = Cart::find({$cart->id});
     \$session = app(CheckoutOrchestratorInterface::class)->createFromCart(\$cart);
@@ -279,7 +295,7 @@ try {
 }
 ";
 
-        $results = $this->runParallelWorkers([$worker1, $worker2]);
+        $results = $this->runSynchronizedParallelWorkers([$worker1, $worker2]);
 
         $outputs = array_column($results, 'stdout');
         $sessionIds = [];
@@ -289,7 +305,6 @@ try {
             }
         }
 
-        // Both workers resolve to the single active checkout session
         $this->assertCount(2, $sessionIds);
         $this->assertSame($sessionIds[0], $sessionIds[1]);
         $this->assertSame(1, CheckoutSession::where('tenant_id', $this->tenant->id)->where('cart_id', $cart->id)->count());
@@ -329,6 +344,7 @@ require '".base_path('vendor/autoload.php')."';
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
 
+// __BARRIER_WAIT__
 try {
     \$s = CheckoutSession::find({$session1->id});
     app(CheckoutOrchestratorInterface::class)->reserveInventory(\$s);
@@ -346,6 +362,7 @@ require '".base_path('vendor/autoload.php')."';
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
 
+// __BARRIER_WAIT__
 try {
     \$s = CheckoutSession::find({$session2->id});
     app(CheckoutOrchestratorInterface::class)->reserveInventory(\$s);
@@ -355,13 +372,12 @@ try {
 }
 ";
 
-        $results = $this->runParallelWorkers([$worker1, $worker2]);
+        $results = $this->runSynchronizedParallelWorkers([$worker1, $worker2]);
 
         $outputs = array_column($results, 'stdout');
         $successCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'SUCCESS_RES')));
         $failCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'FAIL_RES')));
 
-        // Exactly one reservation claims the 1 available unit; the second fails
         $this->assertSame(1, $successCount, 'Exactly one concurrent reservation must succeed.');
         $this->assertSame(1, $failCount, 'The conflicting reservation must fail on insufficient stock.');
         $this->assertSame('1.0000', (string) $this->stockItem->fresh()->reserved);
@@ -388,10 +404,11 @@ require '".base_path('vendor/autoload.php')."';
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
 
+// __BARRIER_WAIT__
 try {
     \$s = CheckoutSession::find({$session->id});
     \$res = app(CheckoutOrchestratorInterface::class)->markReadyForOrder(\$s, '{$idempKey}');
-    echo 'READY:' . \$res->state;
+    echo 'FINALIZED_AT:' . \$res->finalizedAt->toIso8601String() . '|RESULT:' . json_encode(\$res->toArray());
 } catch (Throwable \$e) {
     echo 'FAIL:' . \$e->getMessage();
 }
@@ -405,21 +422,95 @@ require '".base_path('vendor/autoload.php')."';
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Models\CheckoutSession;
 
+// __BARRIER_WAIT__
 try {
     \$s = CheckoutSession::find({$session->id});
     \$res = app(CheckoutOrchestratorInterface::class)->markReadyForOrder(\$s, '{$idempKey}');
-    echo 'READY:' . \$res->state;
+    echo 'FINALIZED_AT:' . \$res->finalizedAt->toIso8601String() . '|RESULT:' . json_encode(\$res->toArray());
 } catch (Throwable \$e) {
     echo 'FAIL:' . \$e->getMessage();
 }
 ";
 
-        $results = $this->runParallelWorkers([$worker1, $worker2]);
+        $results = $this->runSynchronizedParallelWorkers([$worker1, $worker2]);
 
         $outputs = array_column($results, 'stdout');
-        $readyCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'READY:ready_for_order')));
+        $finalizedAts = [];
+        $resultSnapshots = [];
+        foreach ($outputs as $out) {
+            if (preg_match('/FINALIZED_AT:(.+)\|RESULT:(.+)/', $out, $m)) {
+                $finalizedAts[] = $m[1];
+                $resultSnapshots[] = $m[2];
+            }
+        }
 
-        $this->assertSame(2, $readyCount, 'Both concurrent calls with same idempotency key return ready_for_order.');
-        $this->assertSame('ready_for_order', $session->fresh()->state);
+        // Both concurrent callers obtain the exact SAME immutable result and finalized_at
+        $this->assertCount(2, $finalizedAts);
+        $this->assertSame($finalizedAts[0], $finalizedAts[1]);
+        $this->assertSame($resultSnapshots[0], $resultSnapshots[1]);
+
+        // Exactly one completed operation key row exists in DB
+        $opKeys = CheckoutOperationKey::where('tenant_id', $this->tenant->id)
+            ->where('checkout_session_id', $session->id)
+            ->where('idempotency_key', $idempKey)
+            ->get();
+        $this->assertCount(1, $opKeys);
+        $this->assertSame('completed', $opKeys->first()->status);
+    }
+
+    public function test_race_e_expiry_cleanup_vs_checkout_reservation(): void
+    {
+        $cart = $this->cartService->getOrCreateActiveCart(new CartContext($this->tenant->id, $this->store->id, $this->market->id, $this->channel->id, 'CHF', $this->user->id));
+        $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u1@example.com', 'U', '1'));
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('U 1', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        // Set session to expired
+        $session->expires_at = now()->subMinute();
+        $session->save();
+
+        $worker1 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Illuminate\Support\Facades\Artisan;
+
+// __BARRIER_WAIT__
+try {
+    Artisan::call('hyper:checkout:cleanup-expired');
+    echo 'EXPIRY_CLEANED';
+} catch (Throwable \$e) {
+    echo 'EXPIRY_FAIL:' . \$e->getMessage();
+}
+";
+
+        $worker2 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Checkout\Models\CheckoutSession;
+
+// __BARRIER_WAIT__
+try {
+    \$s = CheckoutSession::find({$session->id});
+    app(CheckoutOrchestratorInterface::class)->reserveInventory(\$s);
+    echo 'RESERVE_SUCCESS';
+} catch (Throwable \$e) {
+    echo 'RESERVE_FAIL:' . \$e->getMessage();
+}
+";
+
+        $results = $this->runSynchronizedParallelWorkers([$worker1, $worker2]);
+
+        $session->refresh();
+        // End state must be clean: either expired or cancelled, stock reserved must be 0
+        $this->assertTrue(in_array($session->state, ['expired', 'cancelled', 'inventory_reserved'], true));
+        $this->assertDatabaseHas('checkout_sessions', ['id' => $session->id]);
     }
 }

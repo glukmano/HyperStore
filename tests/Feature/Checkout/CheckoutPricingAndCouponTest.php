@@ -22,8 +22,10 @@ use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\Exceptions\PriceUnavailableException;
+use Modules\Checkout\Exceptions\TaxClassUnavailableException;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
+use Modules\Pricing\Models\TaxClass;
 use Modules\Promotions\Models\Coupon;
 use Modules\Promotions\Models\Promotion;
 use Modules\Promotions\Models\PromotionAction;
@@ -66,6 +68,8 @@ class CheckoutPricingAndCouponTest extends TestCase
         StoreChannel::create(['store_id' => $this->store->id, 'channel_id' => $this->channel->id, 'is_active' => true]);
 
         $this->user = User::factory()->create();
+
+        TaxClass::create(['tenant_id' => $this->tenant->id, 'code' => 'STD_TAX', 'name' => 'Standard Tax', 'is_default' => true]);
 
         $this->productA = Product::create([
             'tenant_id' => $this->tenant->id,
@@ -251,5 +255,34 @@ class CheckoutPricingAndCouponTest extends TestCase
         $promoSnapshot = $session->promotion_snapshot;
         $this->assertNotNull($promoSnapshot);
         $this->assertSame(2000, $promoSnapshot['total_discount_minor']); // 20.00 CHF
+    }
+
+    public function test_product_with_no_tax_class_and_no_tenant_default_fails_explicitly(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->productA->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('c@example.com', 'A', 'B'));
+
+        // Ensure no tax class or default exists for this tenant
+        TaxClass::query()->where('tenant_id', $this->tenant->id)->delete();
+
+        $this->expectException(TaxClassUnavailableException::class);
+        $this->expectExceptionMessage("TAX_CLASS_UNAVAILABLE: Product [{$this->productA->id}] has no tax class assigned");
+
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('A B', ['Bahnhofstrasse 1'], 'Zurich', 'CH', postalCode: '8001'));
     }
 }

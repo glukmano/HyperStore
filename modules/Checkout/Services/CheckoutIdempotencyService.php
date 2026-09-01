@@ -13,7 +13,7 @@ use Throwable;
 class CheckoutIdempotencyService
 {
     /**
-     * Executes an operation idempotently with durable isolated failure recording.
+     * Executes an operation idempotently with durable isolated failure recording and atomic mutation completion.
      *
      * @param  array<string, mixed>  $requestPayload
      * @return array<string, mixed>
@@ -36,8 +36,9 @@ class CheckoutIdempotencyService
 
         $fingerprint = hash('sha256', (string) json_encode($requestPayload));
 
-        // 1. Durable lease / claim check
-        $opKey = DB::transaction(function () use ($tenantId, $cartId, $checkoutSessionId, $operationType, $idempotencyKey, $fingerprint) {
+        // Step A: Durable claim transaction
+        /** @var CheckoutOperationKey $claim */
+        $claim = DB::transaction(function () use ($tenantId, $cartId, $checkoutSessionId, $operationType, $idempotencyKey, $fingerprint) {
             $query = CheckoutOperationKey::query()
                 ->where('tenant_id', $tenantId)
                 ->where('operation_type', $operationType)
@@ -87,31 +88,31 @@ class CheckoutIdempotencyService
             ]);
         });
 
-        if ($opKey->status === 'completed') {
-            return (array) ($opKey->response_payload ?? []);
+        if ($claim->status === 'completed') {
+            return (array) ($claim->response_payload ?? []);
         }
 
-        // 2. Execute mutation callback
+        // Step B: Mutation + Completion in the SAME atomic transaction
         try {
-            /** @var array<string, mixed> $result */
-            $result = $callback();
+            return DB::transaction(function () use ($claim, $callback) {
+                /** @var CheckoutOperationKey $lockedClaim */
+                $lockedClaim = CheckoutOperationKey::query()->where('id', $claim->id)->lockForUpdate()->firstOrFail();
 
-            // Mark completed
-            DB::transaction(function () use ($opKey, $result) {
-                $freshKey = CheckoutOperationKey::query()->where('id', $opKey->id)->lockForUpdate()->first();
-                if ($freshKey !== null) {
-                    $freshKey->status = 'completed';
-                    $freshKey->response_payload = $result;
-                    $freshKey->save();
-                }
+                /** @var array<string, mixed> $result */
+                $result = $callback();
+
+                $lockedClaim->status = 'completed';
+                $lockedClaim->response_payload = $result;
+                $lockedClaim->completed_at = now();
+                $lockedClaim->save();
+
+                return $result;
             });
-
-            return $result;
         } catch (Throwable $e) {
-            // Record failure in isolated transaction (no raw exception message, no PII/tokens)
+            // Step C: On failure (mutation rolled back), record failure in isolated durable transaction
             try {
-                DB::transaction(function () use ($opKey, $e) {
-                    $freshKey = CheckoutOperationKey::query()->where('id', $opKey->id)->lockForUpdate()->first();
+                DB::transaction(function () use ($claim, $e) {
+                    $freshKey = CheckoutOperationKey::query()->where('id', $claim->id)->lockForUpdate()->first();
                     if ($freshKey !== null) {
                         $freshKey->status = 'failed';
                         $freshKey->error_payload = [

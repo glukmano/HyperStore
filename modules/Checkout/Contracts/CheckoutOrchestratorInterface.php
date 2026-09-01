@@ -27,6 +27,15 @@ interface CheckoutOrchestratorInterface
 
     public function recalculate(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutSession;
 
+    public function applyCoupon(CheckoutSession $session, string $couponCode, ?string $idempotencyKey = null): CheckoutSession;
+
+    public function removeCoupon(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutSession;
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getShippingRates(CheckoutSession $session): array;
+
     public function markReadyForOrder(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutReadyResult;
 
     public function cancel(CheckoutSession $session, ?string $idempotencyKey = null): bool;

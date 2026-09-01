@@ -11,9 +11,11 @@ use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Checkout\Services\CheckoutInventoryReservationOrchestrator;
 use Modules\Checkout\Services\CheckoutOwnershipService;
+use Modules\Shipping\ValueObjects\ShippingRateQuote;
 
-Route::prefix('v1/checkout')->group(function () {
+Route::prefix('api/v1/checkout')->group(function () {
 
     Route::post('/', function (Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CartOwnershipService $cartOwnershipService) {
         $validated = $request->validate([
@@ -65,6 +67,45 @@ Route::prefix('v1/checkout')->group(function () {
             'evaluated_cart_version' => $session->evaluated_cart_version,
             'version' => $session->version,
             'expires_at' => $session->expires_at->toIso8601String(),
+        ]);
+    });
+
+    Route::get('/{id}/shipping-rates', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
+        $tenantId = (int) $contextManager->getTenant()->getId();
+        /** @var CheckoutSession $session */
+        $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
+
+        $quoteRes = $orchestrator->getShippingRates($session);
+        $shippingResult = $quoteRes['shipping_result'];
+
+        $quotesData = array_map(function (ShippingRateQuote $q): array {
+            return [
+                'method_id' => $q->methodId,
+                'method_code' => $q->methodCode,
+                'title' => $q->title,
+                'carrier_code' => $q->carrierCode,
+                'service_code' => $q->serviceCode,
+                'amount_minor' => $q->amount->getMinorAmount(),
+                'currency' => $q->amount->getCurrencyCode(),
+                'breakdown' => [
+                    'base_rate' => $q->breakdown->baseRate->getMinorAmount(),
+                    'per_item' => $q->breakdown->perItemAmount->getMinorAmount(),
+                    'per_weight' => $q->breakdown->perWeightAmount->getMinorAmount(),
+                    'handling_fee' => $q->breakdown->handlingFee->getMinorAmount(),
+                    'carrier_markup' => $q->breakdown->carrierMarkup->getMinorAmount(),
+                    'promotion_discount' => $q->breakdown->promotionDiscount->getMinorAmount(),
+                    'final_amount' => $q->breakdown->finalAmount->getMinorAmount(),
+                ],
+                'estimated_days_min' => $q->estimatedDaysMin,
+                'estimated_days_max' => $q->estimatedDaysMax,
+            ];
+        }, $shippingResult->quotes ?? []);
+
+        return response()->json([
+            'quotes' => $quotesData,
         ]);
     });
 
@@ -131,7 +172,6 @@ Route::prefix('v1/checkout')->group(function () {
     });
 
     Route::post('/{id}/shipping-selection', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
-        // Untrusted amounts removed: client submits only selection identity
         $validated = $request->validate([
             'method_id' => 'required|integer',
             'method_code' => 'required|string',
@@ -155,6 +195,48 @@ Route::prefix('v1/checkout')->group(function () {
             'message' => 'Shipping selected',
             'state' => $session->state,
             'selected_shipping_quote' => $session->selected_shipping_quote,
+        ]);
+    });
+
+    Route::post('/{id}/coupon', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
+        $validated = $request->validate([
+            'coupon_code' => 'required|string',
+        ]);
+
+        $tenantId = (int) $contextManager->getTenant()->getId();
+        /** @var CheckoutSession $session */
+        $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
+
+        $idempotencyKey = $request->header('Idempotency-Key');
+
+        $session = $orchestrator->applyCoupon($session, $validated['coupon_code'], is_string($idempotencyKey) ? $idempotencyKey : null);
+
+        return response()->json([
+            'message' => 'Coupon applied',
+            'promotion_snapshot' => $session->promotion_snapshot,
+            'pricing_snapshot' => $session->pricing_snapshot,
+        ]);
+    });
+
+    Route::delete('/{id}/coupon', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
+        $tenantId = (int) $contextManager->getTenant()->getId();
+        /** @var CheckoutSession $session */
+        $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
+
+        $idempotencyKey = $request->header('Idempotency-Key');
+
+        $session = $orchestrator->removeCoupon($session, is_string($idempotencyKey) ? $idempotencyKey : null);
+
+        return response()->json([
+            'message' => 'Coupon removed',
+            'promotion_snapshot' => $session->promotion_snapshot,
+            'pricing_snapshot' => $session->pricing_snapshot,
         ]);
     });
 
@@ -229,6 +311,60 @@ Route::prefix('v1/checkout')->group(function () {
 
         return response()->json([
             'message' => 'Checkout cancelled and reservations released',
+        ]);
+    });
+});
+
+// Control Center Diagnostic Endpoints with Tenant Isolation & Dedicated RBAC
+Route::prefix('api/v1/control-center/checkout')->middleware(['auth:sanctum'])->group(function () {
+
+    Route::get('/sessions', function (Request $request, ContextManager $contextManager) {
+        if (! $request->user()?->can('checkout.inspect')) {
+            abort(403, 'Unauthorized. Missing checkout.inspect permission.');
+        }
+
+        $tenantId = (int) $contextManager->getTenant()->getId();
+        $sessions = CheckoutSession::query()
+            ->where('tenant_id', $tenantId)
+            ->orderByDesc('id')
+            ->paginate((int) $request->input('per_page', 25));
+
+        return response()->json($sessions);
+    });
+
+    Route::get('/sessions/{id}', function (int $id, Request $request, ContextManager $contextManager) {
+        if (! $request->user()?->can('checkout.inspect')) {
+            abort(403, 'Unauthorized. Missing checkout.inspect permission.');
+        }
+
+        $tenantId = (int) $contextManager->getTenant()->getId();
+        /** @var CheckoutSession $session */
+        $session = CheckoutSession::query()
+            ->where('id', $id)
+            ->where('tenant_id', $tenantId)
+            ->firstOrFail();
+
+        return response()->json($session);
+    });
+
+    Route::post('/sessions/{id}/release-reservations', function (int $id, Request $request, ContextManager $contextManager, CheckoutInventoryReservationOrchestrator $reservationOrchestrator) {
+        if (! $request->user()?->can('checkout.reservations.release')) {
+            abort(403, 'Unauthorized. Missing checkout.reservations.release permission.');
+        }
+
+        $tenantId = (int) $contextManager->getTenant()->getId();
+        /** @var CheckoutSession $session */
+        $session = CheckoutSession::query()
+            ->where('id', $id)
+            ->where('tenant_id', $tenantId)
+            ->firstOrFail();
+
+        $reservationOrchestrator->releaseAll($session);
+        $session->reservation_references = null;
+        $session->save();
+
+        return response()->json([
+            'message' => 'Reservations manually released by operator',
         ]);
     });
 });
