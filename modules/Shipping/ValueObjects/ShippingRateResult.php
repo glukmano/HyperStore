@@ -18,6 +18,8 @@ final readonly class ShippingRateOutcome
     public const string DESTINATION_RESTRICTED = 'DESTINATION_RESTRICTED';
 
     public const string UNFULFILLABLE_ITEMS = 'UNFULFILLABLE_ITEMS';
+
+    public const string NO_SHIPPING_REQUIRED = 'NO_SHIPPING_REQUIRED';
 }
 
 final readonly class ShippingRateResult
@@ -38,6 +40,7 @@ final readonly class ShippingRateResult
 
     public function isSuccess(): bool
     {
-        return $this->outcome === ShippingRateOutcome::SUCCESS && $this->quotes->isNotEmpty();
+        return ($this->outcome === ShippingRateOutcome::SUCCESS && $this->quotes->isNotEmpty())
+            || $this->outcome === ShippingRateOutcome::NO_SHIPPING_REQUIRED;
     }
 }

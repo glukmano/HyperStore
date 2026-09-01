@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Shipping\Models;
 
 use App\Core\Channels\Models\Channel;
+use App\Core\Channels\Models\StoreChannel;
 use App\Core\Markets\Models\Market;
 use App\Core\Stores\Models\Store;
 use Illuminate\Database\Eloquent\Model;
@@ -36,6 +37,26 @@ class ShippingZoneAssignment extends Model
                     $channel = Channel::find($item->channel_id);
                     if (! $channel instanceof Channel || ! $channel->is_active) {
                         throw new InvalidArgumentException("Channel [{$item->channel_id}] is invalid or inactive.");
+                    }
+
+                    // Enforce store_channels eligibility
+                    if ($item->store_id !== null) {
+                        $isEligible = StoreChannel::where('store_id', $item->store_id)
+                            ->where('channel_id', $item->channel_id)
+                            ->where('is_active', true)
+                            ->exists();
+                        if (! $isEligible) {
+                            throw new InvalidArgumentException("Channel [{$item->channel_id}] is not enabled for Store [{$item->store_id}].");
+                        }
+                    } else {
+                        // Tenant/Market-wide channel assignment: must be enabled for at least one store in tenant
+                        $isEligible = StoreChannel::whereIn('store_id', Store::where('tenant_id', $zone->tenant_id)->select('id'))
+                            ->where('channel_id', $item->channel_id)
+                            ->where('is_active', true)
+                            ->exists();
+                        if (! $isEligible) {
+                            throw new InvalidArgumentException("Channel [{$item->channel_id}] is not enabled for any store in Tenant [{$zone->tenant_id}].");
+                        }
                     }
                 }
             }

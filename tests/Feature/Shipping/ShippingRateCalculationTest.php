@@ -64,6 +64,20 @@ class ShippingRateCalculationTest extends TestCase
         $this->engine = app(ShippingRateEngineInterface::class);
     }
 
+    public function test_outcome_no_shipping_required(): void
+    {
+        $request = new ShippingRateRequest(
+            context: new ShippingContext(tenantId: $this->tenant->id, currency: 'CHF'),
+            destination: new ShippingDestination(countryCode: 'CH'),
+            lines: []
+        );
+
+        $result = $this->engine->calculateQuotes($request);
+        $this->assertSame(ShippingRateOutcome::NO_SHIPPING_REQUIRED, $result->outcome);
+        $this->assertTrue($result->isSuccess());
+        $this->assertTrue($result->quotes->isEmpty());
+    }
+
     public function test_outcome_unfulfillable_items(): void
     {
         $request = new ShippingRateRequest(

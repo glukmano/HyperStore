@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Core\Channels\Models\Channel;
+use App\Core\Channels\Models\StoreChannel;
 use App\Core\Context\ContextManager;
 use App\Core\Context\Middleware\ResolveContextMiddleware;
 use App\Core\Markets\Models\Market;
@@ -36,12 +37,14 @@ use Modules\Shipping\Services\CarrierCredentialService;
 use Modules\Shipping\ValueObjects\ProviderError;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\ShippingDestination;
+use Modules\Shipping\ValueObjects\ShippingRateOutcome;
 use Modules\Shipping\ValueObjects\ShippingRateQuote;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
 use Modules\Shipping\ValueObjects\Weight;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\Exception\UnauthorizedHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', ResolveContextMiddleware::class])->group(function () {
     $getTenantId = function (): int {
@@ -103,7 +106,7 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
 
         $capabilityResolver = app(ProductShippingCapabilityResolverInterface::class);
 
-        $lines = [];
+        $shippingLines = [];
         $fulfillmentLines = [];
         $hasPhysicalLines = false;
 
@@ -134,24 +137,23 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
 
             // Catalog capability contract determines shippability (NO string comparison!)
             $isShippable = $capabilityResolver->requiresPhysicalShipping($product);
-            if ($isShippable) {
-                $hasPhysicalLines = true;
-            }
-
             $weight = isset($l['unit_weight']) ? Weight::of((string) $l['unit_weight'], 'kg') : Weight::zero();
             $unitPrice = MoneyValue::fromMinor((int) $l['unit_price'], $currency);
 
-            $lines[] = [
-                'product_id' => $productId,
-                'variant_id' => $variantId,
-                'quantity' => (int) $l['quantity'],
-                'unit_price' => $unitPrice,
-                'unit_weight' => $weight,
-                'dimensions' => null,
-                'shipping_class_id' => isset($l['shipping_class_id']) ? (int) $l['shipping_class_id'] : null,
-                'is_shippable' => $isShippable,
-                'inventory_source_id' => $sourceId,
-            ];
+            if ($isShippable) {
+                $hasPhysicalLines = true;
+                $shippingLines[] = [
+                    'product_id' => $productId,
+                    'variant_id' => $variantId,
+                    'quantity' => (int) $l['quantity'],
+                    'unit_price' => $unitPrice,
+                    'unit_weight' => $weight,
+                    'dimensions' => null,
+                    'shipping_class_id' => isset($l['shipping_class_id']) ? (int) $l['shipping_class_id'] : null,
+                    'is_shippable' => true,
+                    'inventory_source_id' => $sourceId,
+                ];
+            }
 
             $fulfillmentLines[] = new FulfillmentItemLine(
                 productId: $productId,
@@ -163,24 +165,37 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             );
         }
 
+        // Digital / Non-physical only requests do NOT enter shipping rate engine
+        if (! $hasPhysicalLines) {
+            return response()->json([
+                'tenant_id' => $tenantId,
+                'currency' => $currency,
+                'quotes' => [],
+                'matched_zones' => [],
+                'outcome' => ShippingRateOutcome::NO_SHIPPING_REQUIRED,
+                'is_success' => true,
+                'errors' => [],
+                'warnings' => ['No physical items require shipping.'],
+            ]);
+        }
+
         // Trusted Server-Side Fulfillment Readiness Evaluation (Pure, Read-Only, Zero Stock Reservation)
         $hasUnfulfillableItems = false;
-        if ($hasPhysicalLines) {
-            /** @var FulfillmentPlanningServiceInterface $planner */
-            $planner = app(FulfillmentPlanningServiceInterface::class);
-            $plan = $planner->plan($tenantId, $fulfillmentLines, $context);
-            foreach ($plan->groups as $group) {
-                if ($group->readiness === FulfillmentReadiness::UNAVAILABLE) {
-                    $hasUnfulfillableItems = true;
-                    break;
-                }
+        /** @var FulfillmentPlanningServiceInterface $planner */
+        $planner = app(FulfillmentPlanningServiceInterface::class);
+        $plan = $planner->plan($tenantId, $fulfillmentLines, $context);
+        foreach ($plan->groups as $group) {
+            if ($group->readiness === FulfillmentReadiness::UNAVAILABLE) {
+                $hasUnfulfillableItems = true;
+                break;
             }
         }
 
+        // ShippingRateRequest receives ONLY physical shippable lines
         $quoteRequest = new ShippingRateRequest(
             context: $context,
             destination: $destination,
-            lines: $lines,
+            lines: $shippingLines,
             promotionBenefits: [],
             hasUnfulfillableItems: $hasUnfulfillableItems
         );
@@ -201,6 +216,8 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
                 'currency' => $q->amount->getCurrencyCode(),
                 'breakdown' => [
                     'base_rate' => $q->breakdown->baseRate->getMinorAmount(),
+                    'per_item_amount' => $q->breakdown->perItemAmount->getMinorAmount(),
+                    'per_weight_amount' => $q->breakdown->perWeightAmount->getMinorAmount(),
                     'handling_fee' => $q->breakdown->handlingFee->getMinorAmount(),
                     'carrier_markup' => $q->breakdown->carrierMarkup->getMinorAmount(),
                     'promotion_discount' => $q->breakdown->promotionDiscount->getMinorAmount(),
@@ -373,7 +390,29 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             Market::where('tenant_id', $tenantId)->findOrFail((int) $data['market_id']);
         }
         if (isset($data['channel_id'])) {
-            Channel::where('is_active', true)->findOrFail((int) $data['channel_id']);
+            $channelId = (int) $data['channel_id'];
+            $channel = Channel::where('is_active', true)->find($channelId);
+            if (! $channel) {
+                throw new NotFoundHttpException("Channel [{$channelId}] not found or inactive.");
+            }
+            if (isset($data['store_id'])) {
+                $storeId = (int) $data['store_id'];
+                $isEligible = StoreChannel::where('store_id', $storeId)
+                    ->where('channel_id', $channelId)
+                    ->where('is_active', true)
+                    ->exists();
+                if (! $isEligible) {
+                    throw new UnprocessableEntityHttpException("Channel [{$channelId}] is not enabled for store [{$storeId}].");
+                }
+            } else {
+                $isEligible = StoreChannel::whereIn('store_id', Store::where('tenant_id', $tenantId)->select('id'))
+                    ->where('channel_id', $channelId)
+                    ->where('is_active', true)
+                    ->exists();
+                if (! $isEligible) {
+                    throw new UnprocessableEntityHttpException("Channel [{$channelId}] is not enabled for any store in tenant.");
+                }
+            }
         }
 
         $assignment = ShippingZoneAssignment::create([

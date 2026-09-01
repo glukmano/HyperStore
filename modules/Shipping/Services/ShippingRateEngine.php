@@ -35,6 +35,17 @@ class ShippingRateEngine implements ShippingRateEngineInterface
         CarrierCalculatedRateCalculator::clearErrors();
         $tenantId = $request->context->tenantId;
 
+        // Digital / Non-physical items only -> No physical shipping required
+        if (empty($request->lines)) {
+            return new ShippingRateResult(
+                quotes: collect(),
+                outcome: ShippingRateOutcome::NO_SHIPPING_REQUIRED,
+                errors: [],
+                warnings: ['No physical items require shipping.'],
+                matchedZones: collect()
+            );
+        }
+
         // 0. Pre-rating fulfillment readiness evaluation
         if ($request->hasUnfulfillableItems === true) {
             return new ShippingRateResult(
