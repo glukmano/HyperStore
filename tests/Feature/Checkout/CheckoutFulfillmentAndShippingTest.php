@@ -24,6 +24,7 @@ use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
 use Modules\Checkout\Exceptions\ShippingQuoteStaleException;
+use Modules\Checkout\Services\CheckoutShippingOrchestrator;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
@@ -50,6 +51,8 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
     private Market $market;
 
     private Channel $channel;
+
+    private CheckoutShippingOrchestrator $shippingOrchestrator;
 
     private User $user;
 
@@ -151,6 +154,7 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
 
         $this->cartService = app(CartServiceInterface::class);
         $this->checkoutOrchestrator = app(CheckoutOrchestratorInterface::class);
+        $this->shippingOrchestrator = app(CheckoutShippingOrchestrator::class);
     }
 
     public function test_digital_only_checkout_does_not_require_physical_shipping_or_address(): void
@@ -516,7 +520,7 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         );
     }
 
-    public function test_automatic_free_shipping_promotion_invalidates_selected_shipping_quote(): void
+    public function test_automatic_free_shipping_promotion_full_lifecycle_and_restrictions(): void
     {
         $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
         $cart = $this->cartService->getOrCreateActiveCart($ctx);
@@ -525,19 +529,26 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         $session = $this->checkoutOrchestrator->createFromCart($cart);
         $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('auto@example.com', 'Auto', 'User'));
         $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Auto User', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+
+        // Case A: Before promotion, quote is paid 1000 minor
+        $quotesRes = $this->shippingOrchestrator->quote($session->cart, CheckoutAddress::fromArray($session->shipping_address));
+        $initialQuote = $quotesRes['shipping_result']->quotes[0];
+        $this->assertSame(1000, $initialQuote->amount->getMinorAmount());
+        $this->assertSame(0, $initialQuote->breakdown->promotionDiscount->getMinorAmount());
+
+        // Select the paid quote
         $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+        $this->assertSame(1000, $session->selected_shipping_quote['final_amount']);
 
-        $this->assertNotNull($session->selected_shipping_quote);
-
-        // Create an automatic Free Shipping promotion (no coupon required)
+        // Enable automatic FreeShipping promotion
         $autoPromo = Promotion::create([
             'tenant_id' => $this->tenant->id,
             'name' => 'Auto Free Shipping',
             'code' => 'AUTO_FREE_SHIP',
             'status' => 'active',
             'priority' => 100,
-            'starts_at' => now()->subDay(),
-            'ends_at' => now()->addMonth(),
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
         ]);
         PromotionAction::create([
             'promotion_id' => $autoPromo->id,
@@ -545,10 +556,53 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
             'parameters' => [],
         ]);
 
-        // Attempting to reserve without re-selection must detect stale shipping quote
-        $this->expectException(ShippingQuoteStaleException::class);
-        $this->expectExceptionMessage('SHIPPING_QUOTE_STALE');
+        // Case B: Existing selected paid quote becomes stale
+        $thrownStale = false;
+        try {
+            $this->checkoutOrchestrator->reserveInventory($session);
+        } catch (ShippingQuoteStaleException $e) {
+            $thrownStale = true;
+        }
+        $this->assertTrue($thrownStale, 'Enabling automatic FreeShipping must invalidate stored paid quote.');
 
-        $this->checkoutOrchestrator->reserveInventory($session);
+        // Case C: Customer re-selects quote -> final amount is 0 and promotion_discount is 1000
+        $quotesResAfter = $this->shippingOrchestrator->quote($session->cart, CheckoutAddress::fromArray($session->shipping_address));
+        $freeQuote = $quotesResAfter['shipping_result']->quotes[0];
+        $this->assertSame(0, $freeQuote->amount->getMinorAmount());
+        $this->assertSame(1000, $freeQuote->breakdown->promotionDiscount->getMinorAmount());
+
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+        $this->assertSame(0, $session->selected_shipping_quote['final_amount']);
+        $this->assertSame(1000, $session->selected_shipping_quote['breakdown']['promotion_discount']);
+
+        // Case D: Disable automatic FreeShipping -> stored free quote becomes stale, fresh quote is 1000 again
+        $autoPromo->update(['status' => 'inactive']);
+
+        $thrownStaleAfterDisable = false;
+        try {
+            $this->checkoutOrchestrator->reserveInventory($session);
+        } catch (ShippingQuoteStaleException $e) {
+            $thrownStaleAfterDisable = true;
+        }
+        $this->assertTrue($thrownStaleAfterDisable, 'Disabling automatic FreeShipping must invalidate stored free quote.');
+
+        $quotesResReverted = $this->shippingOrchestrator->quote($session->cart, CheckoutAddress::fromArray($session->shipping_address));
+        $revertedQuote = $quotesResReverted['shipping_result']->quotes[0];
+        $this->assertSame(1000, $revertedQuote->amount->getMinorAmount());
+        $this->assertSame(0, $revertedQuote->breakdown->promotionDiscount->getMinorAmount());
+    }
+
+    public function test_checkout_source_contains_no_direct_promotion_model_inspection(): void
+    {
+        /** @var list<string> $checkoutFiles */
+        $checkoutFiles = glob(base_path('modules/Checkout/**/*.php')) ?: [];
+        $this->assertNotEmpty($checkoutFiles);
+        foreach ($checkoutFiles as $file) {
+            $content = (string) file_get_contents($file);
+            $this->assertStringNotContainsString('Promotion::find', $content, "File {$file} must not query Promotion::find");
+            $this->assertStringNotContainsString("actions()->where('action_type'", $content, "File {$file} must not inspect Promotion actions directly");
+            $this->assertStringNotContainsString("where('action_type', 'free_shipping')", $content, "File {$file} must not hardcode promotion action inspection");
+            $this->assertStringNotContainsString('PromotionAction::', $content, "File {$file} must not access PromotionAction models directly");
+        }
     }
 }

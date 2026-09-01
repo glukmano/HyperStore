@@ -13,6 +13,7 @@ use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\DTOs\CheckoutReadyResult;
 use Modules\Checkout\DTOs\SelectedShippingQuote;
+use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
 use RuntimeException;
@@ -262,42 +263,47 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
             'version' => $session->version,
         ];
 
-        $this->idempotencyService->execute(
-            tenantId: $session->tenant_id,
-            cartId: null,
-            checkoutSessionId: $session->id,
-            operationType: 'reserve',
-            idempotencyKey: $idempotencyKey,
-            requestPayload: $payload,
-            callback: function () use ($session) {
-                /** @var CheckoutSession $lockedSession */
-                $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
-                $this->assertFreshCart($lockedSession);
+        try {
+            $this->idempotencyService->execute(
+                tenantId: $session->tenant_id,
+                cartId: null,
+                checkoutSessionId: $session->id,
+                operationType: 'reserve',
+                idempotencyKey: $idempotencyKey,
+                requestPayload: $payload,
+                callback: function () use ($session) {
+                    /** @var CheckoutSession $lockedSession */
+                    $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                    $this->assertFreshCart($lockedSession);
 
-                $this->assertValidShippingQuote($lockedSession);
+                    $this->assertValidShippingQuote($lockedSession);
 
-                $dest = $lockedSession->shipping_address !== null
-                    ? CheckoutAddress::fromArray($lockedSession->shipping_address)
-                    : new CheckoutAddress(recipient: 'Customer', streetLines: ['Main St'], city: 'Zurich', countryCode: 'CH');
+                    $dest = $lockedSession->shipping_address !== null
+                        ? CheckoutAddress::fromArray($lockedSession->shipping_address)
+                        : new CheckoutAddress(recipient: 'Customer', streetLines: ['Main St'], city: 'Zurich', countryCode: 'CH');
 
-                $quoteRes = $this->shippingOrchestrator->quote($lockedSession->cart, $dest);
-                $plan = $quoteRes['fulfillment_plan'];
+                    $quoteRes = $this->shippingOrchestrator->quote($lockedSession->cart, $dest);
+                    $plan = $quoteRes['fulfillment_plan'];
 
-                $acquiredRefs = $this->reservationOrchestrator->reserve($lockedSession, $plan);
+                    $acquiredRefs = $this->reservationOrchestrator->reserve($lockedSession, $plan);
 
-                $lockedSession->reservation_references = $acquiredRefs;
+                    $lockedSession->reservation_references = $acquiredRefs;
 
-                if (in_array($lockedSession->state, ['shipping_ready', 'fulfillment_ready', 'address_ready', 'customer_info_ready'], true)) {
-                    $this->stateMachine->assertCanTransition($lockedSession, 'inventory_reserved');
-                    $lockedSession->state = 'inventory_reserved';
+                    if (in_array($lockedSession->state, ['shipping_ready', 'fulfillment_ready', 'address_ready', 'customer_info_ready'], true)) {
+                        $this->stateMachine->assertCanTransition($lockedSession, 'inventory_reserved');
+                        $lockedSession->state = 'inventory_reserved';
+                    }
+
+                    $lockedSession->version++;
+                    $lockedSession->save();
+
+                    return ['session_id' => $session->id];
                 }
-
-                $lockedSession->version++;
-                $lockedSession->save();
-
-                return ['session_id' => $session->id];
-            }
-        );
+            );
+        } catch (CheckoutExpiredException $e) {
+            $this->expirationService->expireIfNeeded($session);
+            throw $e;
+        }
 
         $session->refresh();
 
@@ -314,35 +320,40 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
             'version' => $session->version,
         ];
 
-        $this->idempotencyService->execute(
-            tenantId: $session->tenant_id,
-            cartId: null,
-            checkoutSessionId: $session->id,
-            operationType: 'recalculate',
-            idempotencyKey: $idempotencyKey,
-            requestPayload: $payload,
-            callback: function () use ($session) {
-                /** @var CheckoutSession $lockedSession */
-                $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
-                $this->assertFreshCart($lockedSession);
+        try {
+            $this->idempotencyService->execute(
+                tenantId: $session->tenant_id,
+                cartId: null,
+                checkoutSessionId: $session->id,
+                operationType: 'recalculate',
+                idempotencyKey: $idempotencyKey,
+                requestPayload: $payload,
+                callback: function () use ($session) {
+                    /** @var CheckoutSession $lockedSession */
+                    $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                    $this->assertFreshCart($lockedSession);
 
-                $this->assertValidShippingQuote($lockedSession);
+                    $this->assertValidShippingQuote($lockedSession);
 
-                $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
-                $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
+                    $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
+                    $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
 
-                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote);
+                    $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote);
 
-                $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
-                $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
-                $lockedSession->promotion_snapshot = $pricingRes['promotion_snapshot'];
+                    $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
+                    $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
+                    $lockedSession->promotion_snapshot = $pricingRes['promotion_snapshot'];
 
-                $lockedSession->version++;
-                $lockedSession->save();
+                    $lockedSession->version++;
+                    $lockedSession->save();
 
-                return ['session_id' => $session->id];
-            }
-        );
+                    return ['session_id' => $session->id];
+                }
+            );
+        } catch (CheckoutExpiredException $e) {
+            $this->expirationService->expireIfNeeded($session);
+            throw $e;
+        }
 
         $session->refresh();
 
@@ -467,76 +478,85 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
             'pricing_snapshot' => $session->pricing_snapshot,
         ];
 
-        $res = $this->idempotencyService->execute(
-            tenantId: $session->tenant_id,
-            cartId: null,
-            checkoutSessionId: $session->id,
-            operationType: 'ready',
-            idempotencyKey: $idempotencyKey,
-            requestPayload: $payload,
-            callback: function () use ($session) {
-                /** @var CheckoutSession $lockedSession */
-                $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
-                $this->assertFreshCart($lockedSession);
+        try {
+            $res = $this->idempotencyService->execute(
+                tenantId: $session->tenant_id,
+                cartId: null,
+                checkoutSessionId: $session->id,
+                operationType: 'ready',
+                idempotencyKey: $idempotencyKey,
+                requestPayload: $payload,
+                callback: function () use ($session) {
+                    /** @var CheckoutSession $lockedSession */
+                    $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                    if ($lockedSession->expires_at->isPast()) {
+                        throw new CheckoutExpiredException("CHECKOUT_EXPIRED: Checkout session [{$lockedSession->id}] has expired at [{$lockedSession->expires_at->toIso8601String()}].");
+                    }
 
-                $this->assertValidShippingQuote($lockedSession);
+                    $this->assertFreshCart($lockedSession);
 
-                $this->stateMachine->assertCanTransition($lockedSession, 'ready_for_order');
+                    $this->assertValidShippingQuote($lockedSession);
 
-                $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
-                $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
+                    $this->stateMachine->assertCanTransition($lockedSession, 'ready_for_order');
 
-                // Final authoritative recalculation
-                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote);
-                $totals = $pricingRes['totals'];
+                    $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
+                    $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
 
-                $lines = [];
-                foreach ($lockedSession->cart->lines as $line) {
-                    /** @var CartLine $line */
-                    $lines[] = [
-                        'product_id' => $line->product_id,
-                        'variant_id' => $line->variant_id,
-                        'quantity' => (string) $line->quantity,
-                        'options' => $line->options,
-                        'customizations' => $line->customizations,
-                    ];
+                    // Final authoritative recalculation
+                    $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote);
+                    $totals = $pricingRes['totals'];
+
+                    $lines = [];
+                    foreach ($lockedSession->cart->lines as $line) {
+                        /** @var CartLine $line */
+                        $lines[] = [
+                            'product_id' => $line->product_id,
+                            'variant_id' => $line->variant_id,
+                            'quantity' => (string) $line->quantity,
+                            'options' => $line->options,
+                            'customizations' => $line->customizations,
+                        ];
+                    }
+
+                    $readyResult = new CheckoutReadyResult(
+                        checkoutSessionId: $lockedSession->id,
+                        checkoutUuid: $lockedSession->uuid,
+                        tenantId: $lockedSession->tenant_id,
+                        cartId: $lockedSession->cart_id,
+                        cartVersion: $lockedSession->evaluated_cart_version,
+                        context: [
+                            'store_id' => $lockedSession->store_id,
+                            'market_id' => $lockedSession->market_id,
+                            'channel_id' => $lockedSession->channel_id,
+                            'currency' => $lockedSession->currency,
+                        ],
+                        customerData: $lockedSession->customer_data ?? [],
+                        shippingAddress: $lockedSession->shipping_address,
+                        billingAddress: $lockedSession->billing_address,
+                        lines: $lines,
+                        totals: $totals->toArray(),
+                        pricingSnapshot: $pricingRes['pricing_snapshot'],
+                        taxSnapshot: $pricingRes['tax_snapshot'],
+                        promotionSnapshot: $pricingRes['promotion_snapshot'],
+                        fulfillmentSnapshot: $lockedSession->fulfillment_snapshot,
+                        selectedShippingQuote: $lockedSession->selected_shipping_quote,
+                        reservationReferences: array_values((array) ($lockedSession->reservation_references ?? [])),
+                        state: 'ready_for_order',
+                        finalizedAt: now()
+                    );
+
+                    $lockedSession->state = 'ready_for_order';
+                    $lockedSession->ready_snapshot = $readyResult->toArray();
+                    $lockedSession->version++;
+                    $lockedSession->save();
+
+                    return $readyResult->toArray();
                 }
-
-                $readyResult = new CheckoutReadyResult(
-                    checkoutSessionId: $lockedSession->id,
-                    checkoutUuid: $lockedSession->uuid,
-                    tenantId: $lockedSession->tenant_id,
-                    cartId: $lockedSession->cart_id,
-                    cartVersion: $lockedSession->evaluated_cart_version,
-                    context: [
-                        'store_id' => $lockedSession->store_id,
-                        'market_id' => $lockedSession->market_id,
-                        'channel_id' => $lockedSession->channel_id,
-                        'currency' => $lockedSession->currency,
-                    ],
-                    customerData: $lockedSession->customer_data ?? [],
-                    shippingAddress: $lockedSession->shipping_address,
-                    billingAddress: $lockedSession->billing_address,
-                    lines: $lines,
-                    totals: $totals->toArray(),
-                    pricingSnapshot: $pricingRes['pricing_snapshot'],
-                    taxSnapshot: $pricingRes['tax_snapshot'],
-                    promotionSnapshot: $pricingRes['promotion_snapshot'],
-                    fulfillmentSnapshot: $lockedSession->fulfillment_snapshot,
-                    selectedShippingQuote: $lockedSession->selected_shipping_quote,
-                    reservationReferences: array_values((array) ($lockedSession->reservation_references ?? [])),
-                    state: 'ready_for_order',
-                    finalizedAt: now()
-                );
-
-                $lockedSession->state = 'ready_for_order';
-                $lockedSession->ready_snapshot = $readyResult->toArray();
-                $lockedSession->version++;
-                $lockedSession->save();
-
-                return $readyResult->toArray();
-            }
-        );
+            );
+        } catch (CheckoutExpiredException $e) {
+            $this->expirationService->expireIfNeeded($session);
+            throw $e;
+        }
 
         return new CheckoutReadyResult(
             checkoutSessionId: (int) $res['checkout_session_id'],

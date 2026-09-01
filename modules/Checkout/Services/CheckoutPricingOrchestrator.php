@@ -157,10 +157,7 @@ class CheckoutPricingOrchestrator
         $shippingOriginalMinor = $selectedShippingQuote !== null ? $selectedShippingQuote->originalAmount->getMinorAmount() : 0;
         $shippingFinalMinor = $selectedShippingQuote !== null ? $selectedShippingQuote->finalAmount->getMinorAmount() : 0;
 
-        // Apply FreeShipping promotion benefit if active in entitlements
-        if (isset($promoResult->entitlements['free_shipping']) && $promoResult->entitlements['free_shipping'] === true) {
-            $shippingFinalMinor = 0;
-        }
+        // Authoritative shipping amounts come directly from SelectedShippingQuote (calculated by ShippingRateEngine)
 
         $shippingDiscountMinor = max(0, $shippingOriginalMinor - $shippingFinalMinor);
 

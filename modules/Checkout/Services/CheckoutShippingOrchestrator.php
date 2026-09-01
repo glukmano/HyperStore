@@ -19,11 +19,9 @@ use Modules\Pricing\Contracts\PriceResolverInterface;
 use Modules\Pricing\DTOs\PricingContext;
 use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\ValueObjects\MoneyValue;
-use Modules\Promotions\DTOs\DiscountLine;
+use Modules\Promotions\Contracts\ShippingPromotionBenefitResolverInterface;
 use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
-use Modules\Promotions\Models\Promotion;
-use Modules\Promotions\Services\PromotionRuleEngine;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\ValueObjects\PackageCandidate;
 use Modules\Shipping\ValueObjects\ShippingContext;
@@ -39,7 +37,7 @@ class CheckoutShippingOrchestrator
         private readonly FulfillmentPlanningServiceInterface $fulfillmentService,
         private readonly ShippingRateEngineInterface $shippingRateEngine,
         private readonly PriceResolverInterface $priceResolver,
-        private readonly PromotionRuleEngine $promotionRuleEngine,
+        private readonly ShippingPromotionBenefitResolverInterface $promotionBenefitResolver,
     ) {}
 
     /**
@@ -65,6 +63,7 @@ class CheckoutShippingOrchestrator
 
         $fLines = [];
         $physicalShippingLines = [];
+        $promoItems = [];
 
         foreach ($cart->lines as $line) {
             /** @var CartLine $line */
@@ -108,6 +107,15 @@ class CheckoutShippingOrchestrator
                     'is_shippable' => true,
                 ];
             }
+
+            $promoItems[] = new PromotionCartItem(
+                productId: $line->product_id,
+                variantId: $line->variant_id,
+                quantity: $qtyStr,
+                unitPrice: $priceRes->unitPrice,
+                categoryIds: [],
+                productType: $product->product_type
+            );
         }
 
         $shippingCtx = new ShippingContext(
@@ -122,10 +130,24 @@ class CheckoutShippingOrchestrator
 
         $destVO = $destination->toShippingDestination();
 
+        $promoCtx = new PromotionContext(
+            tenantId: $cart->tenant_id,
+            currency: $cart->currency,
+            items: $promoItems,
+            storeId: $cart->store_id,
+            marketId: $cart->market_id,
+            channelId: $cart->channel_id,
+            customerId: $cart->user_id,
+            couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
+        );
+
+        $promotionBenefits = $this->promotionBenefitResolver->resolveBenefits($promoCtx);
+
         $shippingReq = new ShippingRateRequest(
             context: $shippingCtx,
             destination: $destVO,
-            lines: $physicalShippingLines
+            lines: $physicalShippingLines,
+            promotionBenefits: $promotionBenefits
         );
 
         $shippingResult = $this->shippingRateEngine->calculateQuotes($shippingReq);
@@ -208,10 +230,14 @@ class CheckoutShippingOrchestrator
         /** @var list<array{source_id: int|null, product_id: int, variant_id: int|null, quantity: string, readiness: string}> $fulfillmentAllocations */
         usort($fulfillmentAllocations, fn (array $a, array $b): int => (($a['source_id'] ?? 0) <=> ($b['source_id'] ?? 0)) ?: ($a['product_id'] <=> $b['product_id']));
 
-        // 2. Physical Lines Canonical List
+        // 2. Physical Lines Canonical List (Shippable physical lines only)
         $linesData = [];
         foreach ($cart->lines as $l) {
             /** @var CartLine $l */
+            if (! $this->shippingCapabilityResolver->requiresPhysicalShipping($l->product)) {
+                continue;
+            }
+
             $linesData[] = [
                 'product_id' => $l->product_id,
                 'variant_id' => $l->variant_id,
@@ -258,7 +284,7 @@ class CheckoutShippingOrchestrator
             }
         }
 
-        // 4. Authoritative Promotion Shipping Benefits Evaluation
+        // 4. Authoritative Promotion Shipping Benefits via typed contract
         $promoItems = [];
         $pricingCtx = new PricingContext(
             tenantId: $cart->tenant_id,
@@ -292,27 +318,21 @@ class CheckoutShippingOrchestrator
             couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
         );
 
-        $promoResult = $this->promotionRuleEngine->evaluate($promoCtx);
-        $hasFreeShipping = false;
-        $shippingPromoIds = [];
-
-        foreach ($promoResult->discounts as $d) {
-            /** @var DiscountLine $d */
-            $promo = Promotion::find($d->promotionId);
-            if ($promo !== null && $promo->actions()->where('action_type', 'free_shipping')->exists()) {
-                $hasFreeShipping = true;
-                $shippingPromoIds[] = $d->promotionId;
-            }
+        $resolvedBenefits = $this->promotionBenefitResolver->resolveBenefits($promoCtx);
+        $canonicalBenefits = [];
+        foreach ($resolvedBenefits as $b) {
+            $canonicalBenefits[] = [
+                'type' => $b->isFreeShipping() ? 'free_shipping' : 'shipping_discount',
+                'applicable_method_code' => $b->getApplicableMethodCode(),
+            ];
         }
 
         $benefitSnapshot = [
             'coupon_code' => $cart->coupon_code,
-            'has_free_shipping' => $hasFreeShipping,
+            'benefits' => $canonicalBenefits,
             'shipping_discount_minor' => $matchedQuote->breakdown->promotionDiscount->getMinorAmount(),
-            'applied_shipping_promotion_ids' => $shippingPromoIds,
+            'benefit_fingerprint' => hash('sha256', (string) json_encode($canonicalBenefits)),
         ];
-        $benefitFingerprint = hash('sha256', (string) json_encode($benefitSnapshot));
-        $benefitSnapshot['benefit_fingerprint'] = $benefitFingerprint;
 
         $rateRelevantInputs = [
             'tenant_id' => $cart->tenant_id,

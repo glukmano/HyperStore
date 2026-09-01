@@ -549,4 +549,51 @@ try {
         $this->assertSame('0.0000', (string) $this->stockItem->fresh()->reserved);
         $this->assertNull($session->reservation_references);
     }
+
+    public function test_race_f_deadline_crossing_during_reserve_inventory(): void
+    {
+        $this->stockItem->update(['on_hand' => 10]);
+        $cart = $this->cartService->getOrCreateActiveCart(new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id));
+        $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('cross@example.com', 'Cross', 'User'));
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Cross User', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        // Set expires_at to 1 second in the future
+        $session->update(['expires_at' => now()->addSecond()]);
+
+        $worker = "<?php
+require 'vendor/autoload.php';
+\$app = require_once 'bootstrap/app.php';
+\$app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap();
+config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\\Illuminate\\Support\\Facades\\DB::setDefaultConnection('pgsql');
+
+// Preflight sleep to allow deadline to cross before locked mutation predicate
+sleep(2);
+
+\$session = \\Modules\\Checkout\\Models\\CheckoutSession::find({$session->id});
+\$co = app(\\Modules\\Checkout\\Services\\CheckoutOrchestrator::class);
+
+try {
+    \$co->reserveInventory(\$session);
+    echo 'SUCCESS';
+} catch (\\Modules\\Checkout\\Exceptions\\CheckoutExpiredException \$e) {
+    echo 'EXPIRED_CAUGHT';
+} catch (\\Throwable \$e) {
+    echo 'FAIL:' . \$e->getMessage();
+}
+";
+
+        $res = $this->runSynchronizedParallelWorkers([$worker]);
+        $this->assertSame('EXPIRED_CAUGHT', trim($res[0]['stdout']));
+
+        // Verify final DB state
+        $freshSession = $session->fresh();
+        $this->assertSame('expired', $freshSession->state);
+        $this->assertNull($freshSession->reservation_references);
+        $this->assertSame('0.0000', (string) $this->stockItem->fresh()->reserved);
+    }
 }
