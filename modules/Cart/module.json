@@ -1,0 +1,7 @@
+{
+    "name": "Cart",
+    "description": "Cart domain module managing cart lifecycle and lines",
+    "provider": "Modules\\Cart\\CartServiceProvider",
+    "order": 70,
+    "enabled": true
+}

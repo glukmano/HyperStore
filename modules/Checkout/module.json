@@ -1,0 +1,7 @@
+{
+    "name": "Checkout",
+    "description": "Checkout orchestration module producing immutable ready handoffs",
+    "provider": "Modules\\Checkout\\CheckoutServiceProvider",
+    "order": 71,
+    "enabled": true
+}
