@@ -12,6 +12,7 @@ use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingZone;
 use Modules\Shipping\Registries\CarrierRegistry;
 use Modules\Shipping\Services\ProviderErrorNormalizer;
+use Modules\Shipping\ValueObjects\CarrierRateResult;
 use Modules\Shipping\ValueObjects\ProviderError;
 use Modules\Shipping\ValueObjects\RateBreakdown;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
@@ -44,6 +45,11 @@ class CarrierCalculatedRateCalculator implements RateCalculatorInterface
     {
         $carrierCode = $method->metadata['carrier_code'] ?? 'manual';
         $targetServiceCode = $method->metadata['service_code'] ?? null;
+
+        // Explicit Service Binding: Every carrier_calculated method MUST bind to an explicit service_code.
+        if (empty($targetServiceCode) || ! is_string($targetServiceCode)) {
+            return null;
+        }
 
         $carrier = Carrier::where('tenant_id', $method->tenant_id)->where('code', $carrierCode)->first();
         if (! $carrier || $carrier->status !== 'active') {
@@ -81,33 +87,43 @@ class CarrierCalculatedRateCalculator implements RateCalculatorInterface
             return null;
         }
 
-        // Explicit service matching instead of arbitrary rates[0]
+        // Explicit service matching only — never select rate based on provider array order.
         $selectedRate = null;
-        if ($targetServiceCode !== null) {
-            foreach ($rates as $rate) {
-                if ($rate->serviceCode === $targetServiceCode) {
-                    $selectedRate = $rate;
-                    break;
-                }
+        foreach ($rates as $rate) {
+            if ($rate instanceof CarrierRateResult && $rate->serviceCode === $targetServiceCode) {
+                $selectedRate = $rate;
+                break;
             }
-        } else {
-            $selectedRate = $rates[0];
         }
 
         if ($selectedRate === null) {
             return null;
         }
 
-        $currency = $request->context->currency;
+        $currency = $method->currency ?? $request->context->currency;
         $baseRate = $selectedRate->rateAmount;
         $handling = MoneyValue::fromMinor((int) $method->handling_fee, $currency);
         $zero = MoneyValue::fromMinor(0, $currency);
 
-        // Carrier Markup calculation (markup_amount + markup_percentage)
-        $markupAmountMinor = isset($method->metadata['markup_amount']) ? (int) $method->metadata['markup_amount'] : 0;
-        $markupPct = isset($method->metadata['markup_percentage']) ? (float) $method->metadata['markup_percentage'] : 0.0;
-        $pctAmountMinor = (int) round($baseRate->getMinorAmount() * ($markupPct / 100.0));
-        $carrierMarkup = MoneyValue::fromMinor($markupAmountMinor + $pctAmountMinor, $currency);
+        // Exact decimal & integer BCMath markup arithmetic (NO binary floats)
+        $fixedMarkupMinor = isset($method->metadata['markup_amount']) && is_numeric($method->metadata['markup_amount'])
+            ? (int) $method->metadata['markup_amount']
+            : 0;
+
+        $markupPctStr = isset($method->metadata['markup_percentage']) && is_numeric($method->metadata['markup_percentage'])
+            ? (string) $method->metadata['markup_percentage']
+            : '0.0000';
+
+        $baseMinorStr = (string) $baseRate->getMinorAmount();
+        // Calculate pctAmountMinor using exact BCMath with half-up integer rounding
+        $pctProduct = bcmul($baseMinorStr, $markupPctStr, 6);
+        $pctMinorDecimal = bcdiv($pctProduct, '100', 4);
+        $intPart = (int) $pctMinorDecimal;
+        $fraction = bcsub($pctMinorDecimal, (string) $intPart, 4);
+        $pctMinor = (bccomp($fraction, '0.5000', 4) >= 0) ? $intPart + 1 : $intPart;
+
+        $totalMarkupMinor = $fixedMarkupMinor + $pctMinor;
+        $carrierMarkup = MoneyValue::fromMinor($totalMarkupMinor, $currency);
 
         $finalAmount = $baseRate->add($handling)->add($carrierMarkup);
 

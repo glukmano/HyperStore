@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Shipping;
 
 use App\Core\Tenancy\Models\Tenant;
+use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
@@ -13,6 +14,7 @@ use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingRestriction;
 use Modules\Shipping\Models\ShippingZone;
 use Modules\Shipping\Models\ShippingZoneRule;
+use Modules\Shipping\ValueObjects\FreeShippingBenefitDTO;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\ShippingDestination;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
@@ -30,6 +32,7 @@ class PromotionFreeShippingIntegrationTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->seed(ReferenceDataSeeder::class);
         $this->tenant = Tenant::create(['name' => 'Promo Shipping Tenant', 'slug' => 'promo-ship', 'status' => 'active']);
         $this->engine = app(ShippingRateEngineInterface::class);
     }
@@ -58,7 +61,7 @@ class PromotionFreeShippingIntegrationTest extends TestCase
                 ['product_id' => 1, 'variant_id' => null, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(4000, 'CHF'), 'unit_weight' => Weight::zero(), 'dimensions' => null, 'shipping_class_id' => null, 'is_shippable' => true, 'inventory_source_id' => null],
             ],
             promotionBenefits: [
-                ['type' => 'free_shipping', 'promotion_id' => 42],
+                new FreeShippingBenefitDTO('EXPRESS_CH'),
             ]
         );
 
@@ -67,6 +70,7 @@ class PromotionFreeShippingIntegrationTest extends TestCase
         $this->assertCount(1, $quotes);
 
         $quote = $quotes->first();
+        $this->assertNotNull($quote);
         $this->assertSame(0, $quote->amount->getMinorAmount());
         $this->assertSame(1700, $quote->breakdown->promotionDiscount->getMinorAmount());
         $this->assertSame(1500, $quote->breakdown->baseRate->getMinorAmount());
@@ -105,7 +109,7 @@ class PromotionFreeShippingIntegrationTest extends TestCase
                 ['product_id' => 1, 'variant_id' => null, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(4000, 'CHF'), 'unit_weight' => Weight::zero(), 'dimensions' => null, 'shipping_class_id' => null, 'is_shippable' => true, 'inventory_source_id' => null],
             ],
             promotionBenefits: [
-                ['type' => 'free_shipping'],
+                new FreeShippingBenefitDTO('RESTRICTED_METHOD'),
             ]
         );
 

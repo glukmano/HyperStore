@@ -34,6 +34,18 @@ class ShippingRateEngine implements ShippingRateEngineInterface
     {
         CarrierCalculatedRateCalculator::clearErrors();
         $tenantId = $request->context->tenantId;
+
+        // 0. Pre-rating fulfillment readiness evaluation
+        if ($request->hasUnfulfillableItems === true) {
+            return new ShippingRateResult(
+                quotes: collect(),
+                outcome: ShippingRateOutcome::UNFULFILLABLE_ITEMS,
+                errors: [],
+                warnings: ['One or more items in the request are unfulfillable (no inventory stock / fulfillment source).'],
+                matchedZones: collect()
+            );
+        }
+
         $matchedZones = $this->zoneMatcher->match($request->destination, $request->context);
 
         if ($matchedZones->isEmpty()) {
@@ -129,7 +141,7 @@ class ShippingRateEngine implements ShippingRateEngineInterface
                 );
             }
 
-            // 6. Apply Promotion FreeShipping Benefit if provided (typed contract & array adapter)
+            // 6. Apply Promotion FreeShipping Benefit via typed interface only
             $finalBreakdown = $this->applyPromotionBenefits($breakdown, $method->code, $request->promotionBenefits, $request->context->currency);
 
             $quotes[] = new ShippingRateQuote(
@@ -186,7 +198,7 @@ class ShippingRateEngine implements ShippingRateEngineInterface
     }
 
     /**
-     * @param  array<int, mixed>  $benefits
+     * @param  array<int, ShippingPromotionBenefitInterface>  $benefits
      */
     private function applyPromotionBenefits(
         RateBreakdown $breakdown,
@@ -200,14 +212,8 @@ class ShippingRateEngine implements ShippingRateEngineInterface
 
         $isFreeShipping = false;
         foreach ($benefits as $benefit) {
-            if ($benefit instanceof ShippingPromotionBenefitInterface && $benefit->isFreeShipping()) {
+            if ($benefit->isFreeShipping()) {
                 $applicableCode = $benefit->getApplicableMethodCode();
-                if ($applicableCode === null || $applicableCode === $methodCode) {
-                    $isFreeShipping = true;
-                    break;
-                }
-            } elseif (is_array($benefit) && ($benefit['type'] ?? '') === 'free_shipping') {
-                $applicableCode = $benefit['applicable_method_code'] ?? null;
                 if ($applicableCode === null || $applicableCode === $methodCode) {
                     $isFreeShipping = true;
                     break;

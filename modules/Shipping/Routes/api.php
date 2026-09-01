@@ -2,8 +2,11 @@
 
 declare(strict_types=1);
 
+use App\Core\Channels\Models\Channel;
 use App\Core\Context\ContextManager;
 use App\Core\Context\Middleware\ResolveContextMiddleware;
+use App\Core\Markets\Models\Market;
+use App\Core\Stores\Models\Store;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
@@ -72,6 +75,7 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             'lines.*.unit_weight' => ['nullable', 'string'],
             'lines.*.shipping_class_id' => ['nullable', 'integer'],
             'lines.*.inventory_source_id' => ['nullable', 'integer'],
+            'has_unfulfillable_items' => ['nullable', 'boolean'],
         ]);
 
         $resolvedContext = app(ContextManager::class);
@@ -142,7 +146,9 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         $quoteRequest = new ShippingRateRequest(
             context: $context,
             destination: $destination,
-            lines: $lines
+            lines: $lines,
+            promotionBenefits: [],
+            hasUnfulfillableItems: $data['has_unfulfillable_items'] ?? null
         );
 
         /** @var ShippingRateEngineInterface $engine */
@@ -303,9 +309,12 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         return response()->json(['deleted' => true]);
     });
 
-    // Zone Assignments
+    // Zone Assignments (With Strict Tenant-Ownership Validation for Store, Market, Channel)
     Route::get('zones/{id}/assignments', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.zones.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $zone = ShippingZone::where('tenant_id', $tenantId)->findOrFail($id);
 
         return response()->json($zone->assignments);
@@ -322,6 +331,16 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             'market_id' => ['nullable', 'integer'],
             'channel_id' => ['nullable', 'integer'],
         ]);
+
+        if (isset($data['store_id'])) {
+            Store::where('tenant_id', $tenantId)->findOrFail((int) $data['store_id']);
+        }
+        if (isset($data['market_id'])) {
+            Market::where('tenant_id', $tenantId)->findOrFail((int) $data['market_id']);
+        }
+        if (isset($data['channel_id'])) {
+            Channel::findOrFail((int) $data['channel_id']);
+        }
 
         $assignment = ShippingZoneAssignment::create([
             'shipping_zone_id' => $zone->id,
@@ -371,6 +390,7 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             'base_amount' => ['required', 'integer'],
             'handling_fee' => ['nullable', 'integer'],
             'priority' => ['nullable', 'integer'],
+            'metadata' => ['nullable', 'array'],
         ]);
 
         $method = ShippingMethod::create([
@@ -383,6 +403,7 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             'handling_fee' => $data['handling_fee'] ?? 0,
             'priority' => $data['priority'] ?? 0,
             'status' => 'active',
+            'metadata' => $data['metadata'] ?? [],
         ]);
 
         return response()->json($method, 201);
@@ -412,6 +433,7 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
             'handling_fee' => ['nullable', 'integer'],
             'priority' => ['nullable', 'integer'],
             'status' => ['nullable', 'string', 'in:active,inactive'],
+            'metadata' => ['nullable', 'array'],
         ]);
 
         $method->update(array_filter($data, fn ($v) => $v !== null));
@@ -467,6 +489,9 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
     // Rate Rules
     Route::get('methods/{id}/rate-rules', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.rates.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $method = ShippingMethod::where('tenant_id', $tenantId)->findOrFail($id);
 
         return response()->json($method->rateRules);
@@ -590,6 +615,9 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
     // Carrier Services
     Route::get('carriers/{id}/services', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.carriers.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
         $carrier = Carrier::where('tenant_id', $tenantId)->findOrFail($id);
 
         return response()->json($carrier->services);
@@ -677,13 +705,16 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
     // ==========================================
     Route::get('classes', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.classes.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(ShippingClass::where('tenant_id', $tenantId)->get());
     });
 
     Route::post('classes', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.classes.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $data = $request->validate([
@@ -702,9 +733,33 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         return response()->json($class, 201);
     });
 
+    Route::get('classes/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.classes.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(ShippingClass::where('tenant_id', $tenantId)->findOrFail($id));
+    });
+
+    Route::patch('classes/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.classes.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+        $class = ShippingClass::where('tenant_id', $tenantId)->findOrFail($id);
+        $data = $request->validate([
+            'name' => ['nullable', 'string', 'max:255'],
+            'description' => ['nullable', 'string'],
+        ]);
+        $class->update(array_filter($data, fn ($v) => $v !== null));
+
+        return response()->json($class);
+    });
+
     Route::delete('classes/{id}', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.classes.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $class = ShippingClass::where('tenant_id', $tenantId)->findOrFail($id);
@@ -713,15 +768,19 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         return response()->json(['deleted' => true]);
     });
 
+    // Package Types
     Route::get('package-types', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.package_types.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(PackageType::where('tenant_id', $tenantId)->get());
     });
 
     Route::post('package-types', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.package_types.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $data = $request->validate([
@@ -741,9 +800,34 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         return response()->json($type, 201);
     });
 
+    Route::get('package-types/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.package_types.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(PackageType::where('tenant_id', $tenantId)->findOrFail($id));
+    });
+
+    Route::patch('package-types/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.package_types.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+        $type = PackageType::where('tenant_id', $tenantId)->findOrFail($id);
+        $data = $request->validate([
+            'name' => ['nullable', 'string', 'max:255'],
+            'max_weight_kg' => ['nullable', 'string'],
+            'status' => ['nullable', 'string', 'in:active,inactive'],
+        ]);
+        $type->update(array_filter($data, fn ($v) => $v !== null));
+
+        return response()->json($type);
+    });
+
     Route::delete('package-types/{id}', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.package_types.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $type = PackageType::where('tenant_id', $tenantId)->findOrFail($id);
@@ -757,13 +841,16 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
     // ==========================================
     Route::get('pickup-locations', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.pickup_locations.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(PickupLocation::where('tenant_id', $tenantId)->get());
     });
 
     Route::post('pickup-locations', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.pickup_locations.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $data = $request->validate([
@@ -791,9 +878,34 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         return response()->json($loc, 201);
     });
 
+    Route::get('pickup-locations/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.pickup_locations.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(PickupLocation::where('tenant_id', $tenantId)->findOrFail($id));
+    });
+
+    Route::patch('pickup-locations/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.pickup_locations.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+        $loc = PickupLocation::where('tenant_id', $tenantId)->findOrFail($id);
+        $data = $request->validate([
+            'name' => ['nullable', 'string', 'max:255'],
+            'fee_amount' => ['nullable', 'integer'],
+            'status' => ['nullable', 'string', 'in:active,inactive'],
+        ]);
+        $loc->update(array_filter($data, fn ($v) => $v !== null));
+
+        return response()->json($loc);
+    });
+
     Route::delete('pickup-locations/{id}', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.pickup_locations.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $loc = PickupLocation::where('tenant_id', $tenantId)->findOrFail($id);
@@ -805,6 +917,9 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
     // Restrictions
     Route::get('restrictions', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.restrictions.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(ShippingRestriction::where('tenant_id', $tenantId)->get());
     });
@@ -841,6 +956,15 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         return response()->json($res, 201);
     });
 
+    Route::get('restrictions/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.restrictions.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(ShippingRestriction::where('tenant_id', $tenantId)->findOrFail($id));
+    });
+
     Route::delete('restrictions/{id}', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
         if (! $request->user()?->can('shipping.restrictions.manage') && ! $request->user()?->is_super_admin) {
@@ -855,13 +979,16 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
     // Source Method Mappings
     Route::get('source-method-mappings', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.mappings.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
 
         return response()->json(ShippingSourceMethodMapping::where('tenant_id', $tenantId)->get());
     });
 
     Route::post('source-method-mappings', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.mappings.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $data = $request->validate([
@@ -883,9 +1010,18 @@ Route::prefix('api/v1/shipping')->middleware(['api', 'auth:sanctum,web', Resolve
         return response()->json($map, 201);
     });
 
+    Route::get('source-method-mappings/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('shipping.mappings.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(ShippingSourceMethodMapping::where('tenant_id', $tenantId)->findOrFail($id));
+    });
+
     Route::delete('source-method-mappings/{id}', function (Request $request, int $id) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('shipping.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('shipping.mappings.manage') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $map = ShippingSourceMethodMapping::where('tenant_id', $tenantId)->findOrFail($id);

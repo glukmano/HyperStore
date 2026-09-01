@@ -6,6 +6,8 @@ namespace Tests\Feature\Shipping;
 
 use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
 use Modules\Catalog\Models\Product;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use Tests\TestCase;
 
 class ShippingArchitectureAndCapabilityTest extends TestCase
@@ -33,7 +35,7 @@ class ShippingArchitectureAndCapabilityTest extends TestCase
         ];
 
         foreach ($directories as $dir) {
-            $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($dir));
+            $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir));
             foreach ($files as $file) {
                 if ($file->isFile() && $file->getExtension() === 'php') {
                     $content = file_get_contents($file->getPathname());
@@ -47,6 +49,28 @@ class ShippingArchitectureAndCapabilityTest extends TestCase
                 }
             }
         }
+    }
+
+    public function test_no_provider_order_array_selection_rates_0_in_shipping_calculators(): void
+    {
+        $calcFile = file_get_contents(base_path('modules/Shipping/Calculators/CarrierCalculatedRateCalculator.php'));
+        $this->assertStringNotContainsString('$rates[0]', $calcFile);
+        $this->assertStringNotContainsString('$rates[1]', $calcFile);
+    }
+
+    public function test_no_binary_float_arithmetic_in_carrier_markup_calculation(): void
+    {
+        $calcFile = file_get_contents(base_path('modules/Shipping/Calculators/CarrierCalculatedRateCalculator.php'));
+        $this->assertStringNotContainsString('(float)', $calcFile);
+        $this->assertStringNotContainsString('100.0', $calcFile);
+    }
+
+    public function test_shipping_rate_engine_contains_no_array_promotion_sniffing(): void
+    {
+        $engineFile = file_get_contents(base_path('modules/Shipping/Services/ShippingRateEngine.php'));
+        $this->assertStringNotContainsString('is_array($benefit)', $engineFile);
+        $this->assertStringNotContainsString("['type' => 'free_shipping']", $engineFile);
+        $this->assertStringNotContainsString('is_array($benefit)', $engineFile);
     }
 
     public function test_catalog_capability_resolver_derives_shippability_for_all_product_types(): void

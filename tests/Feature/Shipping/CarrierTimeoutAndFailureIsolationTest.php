@@ -94,7 +94,7 @@ class CarrierTimeoutAndFailureIsolationTest extends TestCase
             'currency' => 'CHF',
             'base_amount' => 0,
             'status' => 'active',
-            'metadata' => ['carrier_code' => 'SECRET_FAIL_CARRIER'],
+            'metadata' => ['carrier_code' => 'SECRET_FAIL_CARRIER', 'service_code' => 'STD'],
         ]);
         ShippingMethodZone::create(['shipping_method_id' => $method->id, 'shipping_zone_id' => $zone->id]);
 
@@ -166,7 +166,7 @@ class CarrierTimeoutAndFailureIsolationTest extends TestCase
             'base_amount' => 0,
             'priority' => 10,
             'status' => 'active',
-            'metadata' => ['carrier_code' => 'CARRIER_A'],
+            'metadata' => ['carrier_code' => 'CARRIER_A', 'service_code' => 'STD'],
         ]);
         ShippingMethodZone::create(['shipping_method_id' => $methodA->id, 'shipping_zone_id' => $zone->id]);
 

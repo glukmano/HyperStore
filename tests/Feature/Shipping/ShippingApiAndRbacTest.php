@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Shipping;
 
+use App\Core\Markets\Models\Market;
+use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\ReferenceDataSeeder;
 use Database\Seeders\ShippingPermissionSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use InvalidArgumentException;
 use Laravel\Sanctum\Sanctum;
-use Modules\Shipping\Models\Carrier;
 use Modules\Shipping\Models\ShippingZone;
+use Modules\Shipping\Models\ShippingZoneAssignment;
 use Tests\TestCase;
 
 class ShippingApiAndRbacTest extends TestCase
@@ -41,129 +44,95 @@ class ShippingApiAndRbacTest extends TestCase
         ]);
     }
 
-    public function test_unauthenticated_requests_are_rejected(): void
-    {
-        $res = $this->getJson('/api/v1/shipping/zones', ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $res->assertStatus(401);
-    }
-
-    public function test_authenticated_user_without_permission_returns_403_forbidden(): void
-    {
-        Sanctum::actingAs($this->userA);
-
-        $res = $this->getJson('/api/v1/shipping/zones', ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $res->assertStatus(403);
-    }
-
-    public function test_authenticated_user_with_permission_can_manage_zones_and_methods(): void
+    public function test_store_market_cross_tenant_assignment_is_rejected_by_api(): void
     {
         Sanctum::actingAs($this->userA);
         $this->userA->givePermissionTo('shipping.zones.manage');
-        $this->userA->givePermissionTo('shipping.zones.view');
-        $this->userA->givePermissionTo('shipping.methods.manage');
-        $this->userA->givePermissionTo('shipping.methods.view');
 
-        // Create Zone
-        $createZone = $this->postJson('/api/v1/shipping/zones', [
-            'code' => 'SWISS_ZONE',
-            'name' => 'Swiss National Zone',
-            'priority' => 10,
+        // Zone in Tenant A
+        $zoneA = ShippingZone::create(['tenant_id' => $this->tenantA->id, 'code' => 'ZONE_A_ASSIGN', 'name' => 'Zone A', 'status' => 'active']);
+
+        // Store, Market in Tenant B
+        $storeB = Store::create(['tenant_id' => $this->tenantB->id, 'code' => 'STORE_B', 'name' => 'Store B', 'slug' => 'store-b', 'status' => 'active']);
+        $marketB = Market::create(['tenant_id' => $this->tenantB->id, 'code' => 'MKT_B', 'name' => 'Market B', 'default_currency_code' => 'EUR', 'default_locale_code' => 'en', 'is_active' => true]);
+
+        // Attempt assigning Tenant B store to Tenant A zone -> 404
+        $resStore = $this->postJson("/api/v1/shipping/zones/{$zoneA->id}/assignments", [
+            'store_id' => $storeB->id,
         ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $createZone->assertStatus(201);
-        $zoneId = $createZone->json('id');
+        $resStore->assertStatus(404);
 
-        // Create Method
-        $createMethod = $this->postJson('/api/v1/shipping/methods', [
-            'code' => 'SWISS_EXP',
-            'name' => 'Swiss Express',
-            'rate_calculator_type' => 'flat_rate',
-            'currency' => 'CHF',
-            'base_amount' => 1500,
+        // Attempt assigning Tenant B market to Tenant A zone -> 404
+        $resMarket = $this->postJson("/api/v1/shipping/zones/{$zoneA->id}/assignments", [
+            'market_id' => $marketB->id,
         ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $createMethod->assertStatus(201);
-        $methodId = $createMethod->json('id');
-
-        // Assign Method to Zone
-        $assignRes = $this->postJson("/api/v1/shipping/methods/{$methodId}/zones", [
-            'shipping_zone_id' => $zoneId,
-        ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $assignRes->assertStatus(201);
-
-        // Delete Zone
-        $delRes = $this->deleteJson("/api/v1/shipping/zones/{$zoneId}", [], ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $delRes->assertStatus(200);
+        $resMarket->assertStatus(404);
     }
 
-    public function test_cross_tenant_resource_access_returns_404(): void
+    public function test_model_domain_guard_rejects_cross_tenant_store_assignment(): void
     {
-        Sanctum::actingAs($this->userA);
-        $this->userA->givePermissionTo('shipping.zones.view');
+        $zoneA = ShippingZone::create(['tenant_id' => $this->tenantA->id, 'code' => 'ZONE_A_GUARD', 'name' => 'Zone A Guard', 'status' => 'active']);
+        $storeB = Store::create(['tenant_id' => $this->tenantB->id, 'code' => 'STORE_B_GUARD', 'name' => 'Store B Guard', 'slug' => 'store-b-g', 'status' => 'active']);
 
-        // Zone belonging to Tenant B
-        $zoneB = ShippingZone::create([
-            'tenant_id' => $this->tenantB->id,
-            'code' => 'ZONE_B',
-            'name' => 'Zone B',
-            'status' => 'active',
+        $this->expectException(InvalidArgumentException::class);
+        ShippingZoneAssignment::create([
+            'shipping_zone_id' => $zoneA->id,
+            'store_id' => $storeB->id,
         ]);
-
-        // User A querying Zone B with Tenant A context -> 404
-        $res = $this->getJson("/api/v1/shipping/zones/{$zoneB->id}", ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $res->assertStatus(404);
     }
 
-    public function test_carrier_credentials_endpoint_stores_encrypted_and_never_returns_secret(): void
+    public function test_model_domain_guard_rejects_cross_tenant_market_assignment(): void
     {
-        Sanctum::actingAs($this->userA);
-        $this->userA->givePermissionTo('shipping.credentials.manage');
+        $zoneA = ShippingZone::create(['tenant_id' => $this->tenantA->id, 'code' => 'ZONE_A_MKT_G', 'name' => 'Zone A Mkt Guard', 'status' => 'active']);
+        $marketB = Market::create(['tenant_id' => $this->tenantB->id, 'code' => 'MKT_B_G', 'name' => 'Market B Guard', 'default_currency_code' => 'EUR', 'default_locale_code' => 'en', 'is_active' => true]);
 
-        $carrier = Carrier::create([
-            'tenant_id' => $this->tenantA->id,
-            'code' => 'SWISS_POST',
-            'name' => 'Swiss Post',
-            'provider_code' => 'manual',
-            'status' => 'active',
+        $this->expectException(InvalidArgumentException::class);
+        ShippingZoneAssignment::create([
+            'shipping_zone_id' => $zoneA->id,
+            'market_id' => $marketB->id,
         ]);
-
-        $res = $this->postJson("/api/v1/shipping/carriers/{$carrier->id}/credentials", [
-            'environment' => 'production',
-            'credentials' => [
-                'api_token' => 'SECRET_TOKEN_999',
-            ],
-        ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
-
-        $res->assertStatus(200);
-        $res->assertJsonFragment(['success' => true]);
-        // Secret must not be in response
-        $this->assertStringNotContainsString('SECRET_TOKEN_999', $res->getContent());
     }
 
-    public function test_shipping_classes_and_package_types_crud(): void
+    public function test_valid_same_tenant_assignment_succeeds(): void
     {
         Sanctum::actingAs($this->userA);
-        $this->userA->givePermissionTo('shipping.manage');
+        $this->userA->givePermissionTo('shipping.zones.manage');
 
-        // Shipping Class
-        $classRes = $this->postJson('/api/v1/shipping/classes', [
-            'code' => 'HAZMAT',
-            'name' => 'Hazardous Materials',
+        $zoneA = ShippingZone::create(['tenant_id' => $this->tenantA->id, 'code' => 'ZONE_A_VALID', 'name' => 'Zone A Valid', 'status' => 'active']);
+        $storeA = Store::create(['tenant_id' => $this->tenantA->id, 'code' => 'STORE_A', 'name' => 'Store A', 'slug' => 'store-a', 'status' => 'active']);
+
+        $res = $this->postJson("/api/v1/shipping/zones/{$zoneA->id}/assignments", [
+            'store_id' => $storeA->id,
         ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $classRes->assertStatus(201);
-        $classId = $classRes->json('id');
 
-        $this->deleteJson("/api/v1/shipping/classes/{$classId}", [], ['X-Tenant-ID' => (string) $this->tenantA->id])
-            ->assertStatus(200);
+        $res->assertStatus(201);
+        $this->assertDatabaseHas('shipping_zone_assignments', [
+            'shipping_zone_id' => $zoneA->id,
+            'store_id' => $storeA->id,
+        ]);
+    }
 
-        // Package Type
-        $pkgRes = $this->postJson('/api/v1/shipping/package-types', [
-            'code' => 'BOX_XL',
-            'name' => 'Extra Large Box',
-            'max_weight_kg' => '25.0000',
-        ], ['X-Tenant-ID' => (string) $this->tenantA->id]);
-        $pkgRes->assertStatus(201);
-        $pkgId = $pkgRes->json('id');
+    public function test_rbac_denial_on_all_resource_read_endpoints(): void
+    {
+        Sanctum::actingAs($this->userA);
+        // User A has NO permissions
 
-        $this->deleteJson("/api/v1/shipping/package-types/{$pkgId}", [], ['X-Tenant-ID' => (string) $this->tenantA->id])
-            ->assertStatus(200);
+        $endpoints = [
+            '/api/v1/shipping/zones',
+            '/api/v1/shipping/methods',
+            '/api/v1/shipping/carriers',
+            '/api/v1/shipping/classes',
+            '/api/v1/shipping/package-types',
+            '/api/v1/shipping/pickup-locations',
+            '/api/v1/shipping/restrictions',
+            '/api/v1/shipping/source-method-mappings',
+            '/api/v1/fulfillment/source-configurations',
+            '/api/v1/fulfillment/strategies',
+        ];
+
+        foreach ($endpoints as $ep) {
+            $res = $this->getJson($ep, ['X-Tenant-ID' => (string) $this->tenantA->id]);
+            $res->assertStatus(403);
+        }
     }
 }

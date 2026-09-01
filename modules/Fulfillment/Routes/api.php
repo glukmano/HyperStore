@@ -120,7 +120,7 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
     // 2. Fulfillment Source Configurations CRUD
     Route::get('source-configurations', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('fulfillment.sources.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('fulfillment.sources.view') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
 
@@ -135,10 +135,8 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
 
         $data = $request->validate([
             'inventory_source_id' => ['required', 'integer'],
-            'fulfillment_mode' => ['required', 'string', 'in:own_stock,dropship,3pl,non_physical'],
-            'is_active' => ['nullable', 'boolean'],
+            'fulfillment_mode' => ['required', 'string', 'in:own_stock,vendor_stock,dropship,3pl,digital'],
             'priority' => ['nullable', 'integer'],
-            'lead_time_days' => ['nullable', 'integer'],
         ]);
 
         InventorySource::where('tenant_id', $tenantId)->findOrFail((int) $data['inventory_source_id']);
@@ -152,6 +150,32 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
         ]);
 
         return response()->json($config, 201);
+    });
+
+    Route::get('source-configurations/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('fulfillment.sources.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(FulfillmentSourceConfiguration::where('tenant_id', $tenantId)->findOrFail($id));
+    });
+
+    Route::patch('source-configurations/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('fulfillment.sources.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        $config = FulfillmentSourceConfiguration::where('tenant_id', $tenantId)->findOrFail($id);
+        $data = $request->validate([
+            'fulfillment_mode' => ['nullable', 'string', 'in:own_stock,vendor_stock,dropship,3pl,digital'],
+            'priority' => ['nullable', 'integer'],
+            'status' => ['nullable', 'string', 'in:active,inactive'],
+        ]);
+        $config->update(array_filter($data, fn ($v) => $v !== null));
+
+        return response()->json($config);
     });
 
     Route::delete('source-configurations/{id}', function (Request $request, int $id) use ($getTenantId) {
@@ -169,7 +193,7 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
     // 3. Fulfillment Strategies CRUD
     Route::get('strategies', function (Request $request) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('fulfillment.strategies.manage') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('fulfillment.strategies.view') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
 
@@ -193,6 +217,31 @@ Route::prefix('api/v1/fulfillment')->middleware(['api', 'auth:sanctum,web', Reso
         ]);
 
         return response()->json($strat, 201);
+    });
+
+    Route::get('strategies/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('fulfillment.strategies.view') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        return response()->json(FulfillmentStrategy::where('tenant_id', $tenantId)->findOrFail($id));
+    });
+
+    Route::patch('strategies/{id}', function (Request $request, int $id) use ($getTenantId) {
+        $tenantId = $getTenantId();
+        if (! $request->user()?->can('fulfillment.strategies.manage') && ! $request->user()?->is_super_admin) {
+            throw new AccessDeniedHttpException('Permission denied.');
+        }
+
+        $strat = FulfillmentStrategy::where('tenant_id', $tenantId)->findOrFail($id);
+        $data = $request->validate([
+            'strategy_type' => ['nullable', 'string'],
+            'is_default' => ['nullable', 'boolean'],
+        ]);
+        $strat->update(array_filter($data, fn ($v) => $v !== null));
+
+        return response()->json($strat);
     });
 
     Route::delete('strategies/{id}', function (Request $request, int $id) use ($getTenantId) {
