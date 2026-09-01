@@ -22,12 +22,15 @@ use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
+use Modules\Promotions\DTOs\PromotionResult;
 use Modules\Promotions\Services\PromotionRuleEngine;
+use Modules\Shipping\Contracts\ShippingPromotionBenefitInterface;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\ValueObjects\PackageCandidate;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\ShippingRateQuote;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
+use Modules\Shipping\ValueObjects\ShippingRateResult;
 use Modules\Shipping\ValueObjects\Weight;
 use RuntimeException;
 
@@ -46,7 +49,10 @@ class CheckoutShippingOrchestrator
      *
      * @return array{
      *     fulfillment_plan: FulfillmentPlan,
-     *     shipping_result: mixed
+     *     shipping_result: ShippingRateResult,
+     *     promotion_result: PromotionResult,
+     *     shipping_benefits: list<ShippingPromotionBenefitInterface>,
+     *     canonical_benefits_snapshot: list<array{promotion_id: int, type: string, applicable_method_code: string|null, coupon_code: string|null}>
      * }
      */
     public function quote(Cart $cart, CheckoutAddress $destination): array
@@ -142,8 +148,20 @@ class CheckoutShippingOrchestrator
             couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
         );
 
+        // Single authoritative promotion evaluation per quote flow
         $promoResult = $this->promotionRuleEngine->evaluate($promoCtx);
         $promotionBenefits = CheckoutPromotionBenefitAdapter::adapt($promoResult->benefits);
+
+        $canonicalBenefits = [];
+        foreach ($promoResult->benefits as $b) {
+            $canonicalBenefits[] = [
+                'promotion_id' => $b->promotionId,
+                'type' => $b->type,
+                'applicable_method_code' => isset($b->parameters['applicable_method_code']) ? (string) $b->parameters['applicable_method_code'] : null,
+                'coupon_code' => $b->couponCode,
+            ];
+        }
+        usort($canonicalBenefits, fn (array $a, array $b): int => ($a['promotion_id'] <=> $b['promotion_id']) ?: strcmp($a['type'], $b['type']));
 
         $shippingReq = new ShippingRateRequest(
             context: $shippingCtx,
@@ -152,36 +170,50 @@ class CheckoutShippingOrchestrator
             promotionBenefits: $promotionBenefits
         );
 
-        $shippingResult = $this->shippingRateEngine->calculateQuotes($shippingReq);
+        $shippingRes = $this->shippingRateEngine->calculateQuotes($shippingReq);
 
         return [
             'fulfillment_plan' => $plan,
-            'shipping_result' => $shippingResult,
+            'shipping_result' => $shippingRes,
+            'promotion_result' => $promoResult,
+            'shipping_benefits' => $promotionBenefits,
+            'canonical_benefits_snapshot' => $canonicalBenefits,
         ];
     }
 
     /**
-     * Re-quotes and derives an authoritative server-calculated SelectedShippingQuote with full canonical fingerprint.
+     * Builds authoritative SelectedShippingQuote with exact cryptographic fingerprint.
      *
-     * @param  array<string, mixed>  $clientSelection
+     * @param  array<string, mixed>|string|int  $selectedMethod
      */
     public function buildAuthoritativeSelectedQuote(
         Cart $cart,
         CheckoutAddress $destination,
-        array $clientSelection
+        array|string|int $selectedMethod
     ): SelectedShippingQuote {
-        $quoteRes = $this->quote($cart, $destination);
-        $plan = $quoteRes['fulfillment_plan'];
-        $shippingResult = $quoteRes['shipping_result'];
+        $cart->loadMissing('lines.product');
 
-        $methodId = (int) $clientSelection['method_id'];
-        $carrierCode = isset($clientSelection['carrier_code']) ? (string) $clientSelection['carrier_code'] : null;
-        $serviceCode = isset($clientSelection['service_code']) ? (string) $clientSelection['service_code'] : null;
+        $methodId = is_array($selectedMethod)
+            ? (isset($selectedMethod['method_id']) ? (int) $selectedMethod['method_id'] : null)
+            : (is_int($selectedMethod) ? $selectedMethod : null);
+        $methodCode = is_array($selectedMethod)
+            ? (isset($selectedMethod['method_code']) ? (string) $selectedMethod['method_code'] : null)
+            : (is_string($selectedMethod) ? $selectedMethod : null);
+        $carrierCode = is_array($selectedMethod) && isset($selectedMethod['carrier_code']) ? (string) $selectedMethod['carrier_code'] : null;
+        $serviceCode = is_array($selectedMethod) && isset($selectedMethod['service_code']) ? (string) $selectedMethod['service_code'] : null;
+
+        $quoteRes = $this->quote($cart, $destination);
+        /** @var FulfillmentPlan $plan */
+        $plan = $quoteRes['fulfillment_plan'];
+        /** @var ShippingRateResult $shippingResult */
+        $shippingResult = $quoteRes['shipping_result'];
+        /** @var list<array{promotion_id: int, type: string, applicable_method_code: string|null, coupon_code: string|null}> $canonicalBenefits */
+        $canonicalBenefits = $quoteRes['canonical_benefits_snapshot'];
 
         /** @var ShippingRateQuote|null $matchedQuote */
         $matchedQuote = null;
         foreach ($shippingResult->quotes as $q) {
-            if ((int) $q->methodId === $methodId) {
+            if ($methodId !== null && (int) $q->methodId === $methodId) {
                 if ($carrierCode !== null && $q->carrierCode !== $carrierCode) {
                     continue;
                 }
@@ -191,10 +223,15 @@ class CheckoutShippingOrchestrator
                 $matchedQuote = $q;
                 break;
             }
+            if ($methodCode !== null && $q->methodCode === $methodCode) {
+                $matchedQuote = $q;
+                break;
+            }
         }
 
         if ($matchedQuote === null) {
-            throw new RuntimeException("Selected shipping method [{$methodId}] is not eligible or available for this checkout.");
+            $identifier = $methodCode ?? (string) $methodId;
+            throw new RuntimeException("Selected shipping method [{$identifier}] is not available for this checkout destination/items.");
         }
 
         $currency = $cart->currency;
@@ -286,50 +323,7 @@ class CheckoutShippingOrchestrator
             }
         }
 
-        // 4. Authoritative Promotion Shipping Benefits via typed contract
-        $promoItems = [];
-        $pricingCtx = new PricingContext(
-            tenantId: $cart->tenant_id,
-            currency: $cart->currency,
-            storeId: $cart->store_id,
-            marketId: $cart->market_id,
-            channelId: $cart->channel_id
-        );
-        foreach ($cart->lines as $line) {
-            $pRes = $this->priceResolver->resolve(new PricingItem($line->product_id, $line->variant_id, (string) $line->quantity), $pricingCtx);
-            if ($pRes !== null) {
-                $promoItems[] = new PromotionCartItem(
-                    productId: $line->product_id,
-                    variantId: $line->variant_id,
-                    quantity: (string) $line->quantity,
-                    unitPrice: $pRes->unitPrice,
-                    categoryIds: [],
-                    productType: $line->product->product_type
-                );
-            }
-        }
-
-        $promoCtx = new PromotionContext(
-            tenantId: $cart->tenant_id,
-            currency: $cart->currency,
-            items: $promoItems,
-            storeId: $cart->store_id,
-            marketId: $cart->market_id,
-            channelId: $cart->channel_id,
-            customerId: $cart->user_id,
-            couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
-        );
-
-        $promoResult = $this->promotionRuleEngine->evaluate($promoCtx);
-        $resolvedBenefits = CheckoutPromotionBenefitAdapter::adapt($promoResult->benefits);
-        $canonicalBenefits = [];
-        foreach ($resolvedBenefits as $b) {
-            $canonicalBenefits[] = [
-                'type' => $b->isFreeShipping() ? 'free_shipping' : 'shipping_discount',
-                'applicable_method_code' => $b->getApplicableMethodCode(),
-            ];
-        }
-
+        // 4. Exact Authoritative Promotion Shipping Benefits Snapshot from quote()
         $benefitSnapshot = [
             'coupon_code' => $cart->coupon_code,
             'benefits' => $canonicalBenefits,

@@ -18,6 +18,7 @@ use Modules\Cart\Models\Cart;
 use Modules\Cart\ValueObjects\CartContext;
 use Modules\Cart\ValueObjects\CartLineItemData;
 use Modules\Cart\ValueObjects\CartQuantity;
+use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
 use Modules\Catalog\Models\Product;
 use Modules\Checkout\Adapters\CheckoutPromotionBenefitAdapter;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
@@ -26,19 +27,24 @@ use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
 use Modules\Checkout\Exceptions\ShippingQuoteStaleException;
 use Modules\Checkout\Services\CheckoutShippingOrchestrator;
+use Modules\Fulfillment\Contracts\FulfillmentPlanningServiceInterface;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
+use Modules\Pricing\Contracts\PriceResolverInterface;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Pricing\Models\TaxClass;
 use Modules\Pricing\ValueObjects\MoneyValue;
+use Modules\Promotions\DTOs\PromotionBenefitDTO;
 use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
+use Modules\Promotions\DTOs\PromotionResult;
 use Modules\Promotions\Models\Coupon;
 use Modules\Promotions\Models\Promotion;
 use Modules\Promotions\Models\PromotionAction;
 use Modules\Promotions\Services\PromotionRuleEngine;
+use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingRateRule;
@@ -802,5 +808,107 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         $this->assertContains($exclusivePromo->id, $res6->appliedPromotionIds);
         $this->assertNotContains($promo->id, $res6->appliedPromotionIds);
         $this->assertEmpty(CheckoutPromotionBenefitAdapter::adapt($res6->benefits));
+    }
+
+    public function test_shipping_quote_evaluates_promotions_exactly_once_and_matches_rate_inputs(): void
+    {
+        $promoEngineMock = $this->createMock(PromotionRuleEngine::class);
+        $promoEngineMock->expects($this->once())
+            ->method('evaluate')
+            ->willReturn(new PromotionResult(
+                subtotal: MoneyValue::fromMinor(4000, 'CHF'),
+                totalDiscount: MoneyValue::zero('CHF'),
+                finalTotal: MoneyValue::fromMinor(4000, 'CHF'),
+                benefits: [
+                    new PromotionBenefitDTO(
+                        promotionId: 999,
+                        type: 'free_shipping',
+                        parameters: ['applicable_method_code' => 'STD_SHIP'],
+                        description: 'Mock Free Shipping',
+                        couponCode: 'TESTCOUPON'
+                    ),
+                ]
+            ));
+
+        $orchestrator = new CheckoutShippingOrchestrator(
+            shippingCapabilityResolver: app(ProductShippingCapabilityResolverInterface::class),
+            fulfillmentService: app(FulfillmentPlanningServiceInterface::class),
+            shippingRateEngine: app(ShippingRateEngineInterface::class),
+            priceResolver: app(PriceResolverInterface::class),
+            promotionRuleEngine: $promoEngineMock
+        );
+
+        $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData($this->physicalProduct->id, null, CartQuantity::fromInt(1)));
+        $cart->coupon_code = 'TESTCOUPON';
+        $cart->save();
+
+        $dest = new CheckoutAddress('User', ['Street 1'], 'Zurich', 'CH', postalCode: '8000');
+
+        // Execute buildAuthoritativeSelectedQuote which calls quote()
+        $selectedQuote = $orchestrator->buildAuthoritativeSelectedQuote($cart, $dest, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        // Assert amount is 0 and promotion discount is 1000
+        $this->assertSame(0, $selectedQuote->finalAmount->getMinorAmount());
+
+        // Assert rateRelevantInputs contains the exact promotion benefit snapshot from the single evaluation
+        $benefitSnapshot = $selectedQuote->rateRelevantInputs['promotion_shipping_benefits']['benefits'];
+        $this->assertCount(1, $benefitSnapshot);
+        $this->assertSame(999, $benefitSnapshot[0]['promotion_id']);
+        $this->assertSame('free_shipping', $benefitSnapshot[0]['type']);
+        $this->assertSame('STD_SHIP', $benefitSnapshot[0]['applicable_method_code']);
+        $this->assertSame('TESTCOUPON', $benefitSnapshot[0]['coupon_code']);
+    }
+
+    public function test_differing_promotion_ids_or_coupons_produce_differing_fingerprints(): void
+    {
+        $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData($this->physicalProduct->id, null, CartQuantity::fromInt(1)));
+        $dest = new CheckoutAddress('User', ['Street 1'], 'Zurich', 'CH', postalCode: '8000');
+
+        // Promotion A: Auto Free Shipping (ID A)
+        $promoA = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Promo A',
+            'code' => 'PROMO_A',
+            'status' => 'active',
+            'priority' => 100,
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+        ]);
+        PromotionAction::create([
+            'promotion_id' => $promoA->id,
+            'action_type' => 'free_shipping',
+            'parameters' => ['applicable_method_code' => 'STD_SHIP'],
+        ]);
+
+        $quoteA = $this->shippingOrchestrator->buildAuthoritativeSelectedQuote($cart, $dest, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+        $this->assertNull($quoteA->rateRelevantInputs['promotion_shipping_benefits']['benefits'][0]['coupon_code']);
+        $this->assertSame($promoA->id, $quoteA->rateRelevantInputs['promotion_shipping_benefits']['benefits'][0]['promotion_id']);
+
+        // Disable Promo A, enable Promo B with different ID
+        $promoA->update(['status' => 'inactive']);
+        $promoB = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Promo B',
+            'code' => 'PROMO_B',
+            'status' => 'active',
+            'priority' => 100,
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+        ]);
+        PromotionAction::create([
+            'promotion_id' => $promoB->id,
+            'action_type' => 'free_shipping',
+            'parameters' => ['applicable_method_code' => 'STD_SHIP'],
+        ]);
+
+        $quoteB = $this->shippingOrchestrator->buildAuthoritativeSelectedQuote($cart, $dest, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+        $this->assertSame($promoB->id, $quoteB->rateRelevantInputs['promotion_shipping_benefits']['benefits'][0]['promotion_id']);
+
+        // Assert fingerprints differ even though both quote 0 CHF
+        $this->assertNotEquals($quoteA->fingerprint, $quoteB->fingerprint);
     }
 }
