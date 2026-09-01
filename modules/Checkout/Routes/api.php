@@ -6,14 +6,16 @@ use App\Core\Context\ContextManager;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use Modules\Cart\Models\Cart;
+use Modules\Cart\Services\CartOwnershipService;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Checkout\Services\CheckoutOwnershipService;
 
 Route::prefix('v1/checkout')->group(function () {
 
-    Route::post('/', function (Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/', function (Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CartOwnershipService $cartOwnershipService) {
         $validated = $request->validate([
             'cart_id' => 'required|integer',
         ]);
@@ -21,6 +23,9 @@ Route::prefix('v1/checkout')->group(function () {
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var Cart $cart */
         $cart = Cart::query()->where('id', $validated['cart_id'])->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Cart-Token') ?? $request->header('X-Guest-Token');
+        $cartOwnershipService->verifyOwnership($cart, is_string($guestToken) ? $guestToken : null);
 
         $idempotencyKey = $request->header('Idempotency-Key');
 
@@ -37,10 +42,13 @@ Route::prefix('v1/checkout')->group(function () {
         ], 201);
     });
 
-    Route::get('/{id}', function (int $id, ContextManager $contextManager) {
+    Route::get('/{id}', function (int $id, Request $request, ContextManager $contextManager, CheckoutOwnershipService $ownershipService) {
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
 
         return response()->json([
             'id' => $session->id,
@@ -60,7 +68,7 @@ Route::prefix('v1/checkout')->group(function () {
         ]);
     });
 
-    Route::post('/{id}/customer', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/{id}/customer', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
         $validated = $request->validate([
             'email' => 'required|email',
             'first_name' => 'required|string',
@@ -72,6 +80,9 @@ Route::prefix('v1/checkout')->group(function () {
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
 
         $idempotencyKey = $request->header('Idempotency-Key');
         $custData = CheckoutCustomerData::fromArray($validated);
@@ -85,7 +96,7 @@ Route::prefix('v1/checkout')->group(function () {
         ]);
     });
 
-    Route::post('/{id}/addresses', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/{id}/addresses', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
         $validated = $request->validate([
             'shipping' => 'required|array',
             'shipping.recipient' => 'required|string',
@@ -102,6 +113,9 @@ Route::prefix('v1/checkout')->group(function () {
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
 
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
+
         $shippingAddr = CheckoutAddress::fromArray($validated['shipping']);
         $billingAddr = isset($validated['billing']) ? CheckoutAddress::fromArray($validated['billing']) : null;
         $idempotencyKey = $request->header('Idempotency-Key');
@@ -116,20 +130,22 @@ Route::prefix('v1/checkout')->group(function () {
         ]);
     });
 
-    Route::post('/{id}/shipping-selection', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/{id}/shipping-selection', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
+        // Untrusted amounts removed: client submits only selection identity
         $validated = $request->validate([
             'method_id' => 'required|integer',
             'method_code' => 'required|string',
             'carrier_code' => 'nullable|string',
             'service_code' => 'nullable|string',
-            'original_amount' => 'required|integer',
-            'final_amount' => 'required|integer',
-            'breakdown' => 'nullable|array',
+            'quote_fingerprint' => 'nullable|string',
         ]);
 
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
 
         $idempotencyKey = $request->header('Idempotency-Key');
 
@@ -142,10 +158,13 @@ Route::prefix('v1/checkout')->group(function () {
         ]);
     });
 
-    Route::post('/{id}/reserve', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/{id}/reserve', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
 
         $idempotencyKey = $request->header('Idempotency-Key');
 
@@ -158,10 +177,13 @@ Route::prefix('v1/checkout')->group(function () {
         ]);
     });
 
-    Route::post('/{id}/recalculate', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/{id}/recalculate', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
 
         $idempotencyKey = $request->header('Idempotency-Key');
 
@@ -175,10 +197,13 @@ Route::prefix('v1/checkout')->group(function () {
         ]);
     });
 
-    Route::post('/{id}/ready', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/{id}/ready', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
 
         $idempotencyKey = $request->header('Idempotency-Key');
 
@@ -190,10 +215,13 @@ Route::prefix('v1/checkout')->group(function () {
         ]);
     });
 
-    Route::post('/{id}/cancel', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator) {
+    Route::post('/{id}/cancel', function (int $id, Request $request, ContextManager $contextManager, CheckoutOrchestratorInterface $orchestrator, CheckoutOwnershipService $ownershipService) {
         $tenantId = (int) $contextManager->getTenant()->getId();
         /** @var CheckoutSession $session */
         $session = CheckoutSession::query()->where('id', $id)->where('tenant_id', $tenantId)->firstOrFail();
+
+        $guestToken = $request->header('X-Checkout-Token') ?? $request->header('X-Guest-Token') ?? $request->header('X-Cart-Token');
+        $ownershipService->verifyOwnership($session, is_string($guestToken) ? $guestToken : null);
 
         $idempotencyKey = $request->header('Idempotency-Key');
 

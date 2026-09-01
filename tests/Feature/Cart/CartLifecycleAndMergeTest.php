@@ -6,6 +6,9 @@ namespace Tests\Feature\Cart;
 
 use App\Core\Channels\Models\Channel;
 use App\Core\Channels\Models\StoreChannel;
+use App\Core\Context\ContextManager;
+use App\Core\Context\DTOs\TenantContext;
+use App\Core\Context\DTOs\UserContext;
 use App\Core\Markets\Models\Market;
 use App\Core\ReferenceData\Models\Currency;
 use App\Core\Stores\Models\Store;
@@ -15,6 +18,8 @@ use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use InvalidArgumentException;
 use Modules\Cart\Contracts\CartServiceInterface;
+use Modules\Cart\Exceptions\CartAccessDeniedException;
+use Modules\Cart\Services\CartOwnershipService;
 use Modules\Cart\ValueObjects\CartContext;
 use Modules\Cart\ValueObjects\CartLineItemData;
 use Modules\Cart\ValueObjects\CartQuantity;
@@ -33,13 +38,19 @@ class CartLifecycleAndMergeTest extends TestCase
 
     private Channel $channel;
 
-    private User $user;
+    private User $user1;
+
+    private User $user2;
 
     private Product $physicalProduct;
 
     private Product $digitalProduct;
 
     private CartServiceInterface $cartService;
+
+    private CartOwnershipService $ownershipService;
+
+    private ContextManager $contextManager;
 
     protected function setUp(): void
     {
@@ -53,13 +64,14 @@ class CartLifecycleAndMergeTest extends TestCase
         $this->channel = Channel::create(['name' => 'Web', 'handle' => 'web', 'is_active' => true]);
         StoreChannel::create(['store_id' => $this->store->id, 'channel_id' => $this->channel->id, 'is_active' => true]);
 
-        $this->user = User::factory()->create();
+        $this->user1 = User::factory()->create();
+        $this->user2 = User::factory()->create();
 
         $this->physicalProduct = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'TSHIRT-1',
             'name' => 'T-Shirt',
             'slug' => 't-shirt',
-            'sku' => 'TSHIRT-1',
             'product_type' => 'physical',
             'status' => 'active',
             'weight_kg' => 0.5,
@@ -67,19 +79,21 @@ class CartLifecycleAndMergeTest extends TestCase
 
         $this->digitalProduct = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'EBOOK-1',
             'name' => 'E-Book',
             'slug' => 'e-book',
-            'sku' => 'EBOOK-1',
             'product_type' => 'digital',
             'status' => 'active',
         ]);
 
         $this->cartService = app(CartServiceInterface::class);
+        $this->contextManager = app(ContextManager::class);
+        $this->ownershipService = app(CartOwnershipService::class);
     }
 
     public function test_guest_cart_creation_hashes_token_at_rest_and_never_stores_plaintext(): void
     {
-        $rawToken = bin2hex(random_bytes(32)); // 64-char hex
+        $rawToken = bin2hex(random_bytes(32));
         $ctx = new CartContext(
             tenantId: $this->tenant->id,
             storeId: $this->store->id,
@@ -97,6 +111,46 @@ class CartLifecycleAndMergeTest extends TestCase
         $this->assertDatabaseHas('carts', ['guest_token_hash' => hash('sha256', $rawToken)]);
     }
 
+    public function test_same_tenant_idor_protection_for_customer_cart(): void
+    {
+        $ctx1 = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user1->id
+        );
+        $cart1 = $this->cartService->getOrCreateActiveCart($ctx1);
+
+        // User 2 context in same tenant
+        $this->contextManager->setTenant(TenantContext::from($this->tenant->id));
+        $this->contextManager->setUser(UserContext::from($this->user2->id, 'u2@example.com'));
+
+        $this->expectException(CartAccessDeniedException::class);
+        $this->ownershipService->verifyOwnership($cart1);
+    }
+
+    public function test_same_tenant_idor_protection_for_guest_cart(): void
+    {
+        $rawToken1 = 'valid-guest-token-12345';
+        $ctx1 = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            guestToken: $rawToken1
+        );
+        $guestCart = $this->cartService->getOrCreateActiveCart($ctx1);
+
+        $this->contextManager->setTenant(TenantContext::from($this->tenant->id));
+
+        // Attempt verification with attacker's token
+        $this->expectException(CartAccessDeniedException::class);
+        $this->ownershipService->verifyOwnership($guestCart, 'attacker-token-999');
+    }
+
     public function test_authenticated_customer_cart_uniqueness(): void
     {
         $ctx = new CartContext(
@@ -105,7 +159,7 @@ class CartLifecycleAndMergeTest extends TestCase
             marketId: $this->market->id,
             channelId: $this->channel->id,
             currency: 'CHF',
-            userId: $this->user->id
+            userId: $this->user1->id
         );
 
         $cart1 = $this->cartService->getOrCreateActiveCart($ctx);
@@ -124,7 +178,7 @@ class CartLifecycleAndMergeTest extends TestCase
             marketId: $this->market->id,
             channelId: $disabledChannel->id,
             currency: 'CHF',
-            userId: $this->user->id
+            userId: $this->user1->id
         );
 
         $this->expectException(InvalidArgumentException::class);
@@ -141,7 +195,7 @@ class CartLifecycleAndMergeTest extends TestCase
             marketId: $this->market->id,
             channelId: $this->channel->id,
             currency: 'CHF',
-            userId: $this->user->id
+            userId: $this->user1->id
         );
         $cart = $this->cartService->getOrCreateActiveCart($ctx);
 
@@ -156,7 +210,7 @@ class CartLifecycleAndMergeTest extends TestCase
             productId: $this->physicalProduct->id,
             variantId: null,
             quantity: CartQuantity::fromInt(3),
-            options: ['size' => 'L', 'color' => 'blue'] // different order, same signature
+            options: ['size' => 'L', 'color' => 'blue']
         );
 
         $line1 = $this->cartService->addLine($cart, $item1);
@@ -175,7 +229,7 @@ class CartLifecycleAndMergeTest extends TestCase
             marketId: $this->market->id,
             channelId: $this->channel->id,
             currency: 'CHF',
-            userId: $this->user->id
+            userId: $this->user1->id
         );
         $cart = $this->cartService->getOrCreateActiveCart($ctx);
 
@@ -200,7 +254,7 @@ class CartLifecycleAndMergeTest extends TestCase
         $this->assertCount(2, $cart->fresh()->lines);
     }
 
-    public function test_guest_to_customer_cart_merge(): void
+    public function test_guest_to_customer_cart_merge_with_ownership_verification(): void
     {
         $rawGuestToken = bin2hex(random_bytes(32));
         $guestCtx = new CartContext(
@@ -226,7 +280,7 @@ class CartLifecycleAndMergeTest extends TestCase
             marketId: $this->market->id,
             channelId: $this->channel->id,
             currency: 'CHF',
-            userId: $this->user->id
+            userId: $this->user1->id
         );
         $custCart = $this->cartService->getOrCreateActiveCart($custCtx);
 

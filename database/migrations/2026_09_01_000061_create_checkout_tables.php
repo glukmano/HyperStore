@@ -32,6 +32,7 @@ return new class extends Migration
             $table->jsonb('tax_snapshot')->nullable();
             $table->jsonb('promotion_snapshot')->nullable();
             $table->jsonb('reservation_references')->nullable();
+            $table->jsonb('fulfillment_snapshot')->nullable();
             $table->jsonb('ready_snapshot')->nullable();
             $table->unsignedInteger('evaluated_cart_version')->default(1);
             $table->unsignedInteger('version')->default(1);

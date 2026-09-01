@@ -21,6 +21,7 @@ use Modules\Catalog\Models\Product;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
+use Modules\Checkout\Exceptions\PriceUnavailableException;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Promotions\Models\Coupon;
@@ -46,6 +47,8 @@ class CheckoutPricingAndCouponTest extends TestCase
 
     private Product $productB;
 
+    private Product $productNoPrice;
+
     private CartServiceInterface $cartService;
 
     private CheckoutOrchestratorInterface $checkoutOrchestrator;
@@ -66,9 +69,9 @@ class CheckoutPricingAndCouponTest extends TestCase
 
         $this->productA = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'PROD-A',
             'name' => 'Product A',
             'slug' => 'product-a',
-            'sku' => 'PROD-A',
             'product_type' => 'physical',
             'status' => 'active',
             'weight_kg' => 1.0,
@@ -76,12 +79,22 @@ class CheckoutPricingAndCouponTest extends TestCase
 
         $this->productB = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'PROD-B',
             'name' => 'Product B',
             'slug' => 'product-b',
-            'sku' => 'PROD-B',
             'product_type' => 'physical',
             'status' => 'active',
             'weight_kg' => 2.0,
+        ]);
+
+        $this->productNoPrice = Product::create([
+            'tenant_id' => $this->tenant->id,
+            'sku' => 'PROD-NO-PRICE',
+            'name' => 'Product No Price',
+            'slug' => 'product-no-price',
+            'product_type' => 'physical',
+            'status' => 'active',
+            'weight_kg' => 1.0,
         ]);
 
         // Standard Price Book
@@ -140,9 +153,46 @@ class CheckoutPricingAndCouponTest extends TestCase
         $this->assertSame(10000, $pricingSnapshot['subtotal_minor']);
     }
 
+    public function test_missing_price_throws_price_unavailable_and_prevents_fake_price_fallback(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->productNoPrice->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData(
+            email: 'customer@example.com',
+            firstName: 'John',
+            lastName: 'Doe'
+        ));
+
+        $this->expectException(PriceUnavailableException::class);
+        $this->expectExceptionMessage("PRICE_UNAVAILABLE: Price could not be authoritatively resolved for product [{$this->productNoPrice->id}]");
+
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress(
+            recipient: 'John Doe',
+            streetLines: ['Bahnhofstrasse 1'],
+            city: 'Zurich',
+            countryCode: 'CH',
+            postalCode: '8001'
+        ));
+    }
+
     public function test_coupon_application_and_discount_calculation(): void
     {
-        // Create 20% discount coupon
         $promo = Promotion::create([
             'tenant_id' => $this->tenant->id,
             'name' => '20% Off',

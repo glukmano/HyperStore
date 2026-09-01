@@ -28,7 +28,10 @@ final readonly class CartQuantity
             throw new InvalidArgumentException("Cart quantity must be a positive number, [{$value}] given.");
         }
 
-        return new self($trimmed);
+        /** @var numeric-string $val */
+        $val = $trimmed;
+
+        return new self($val);
     }
 
     public static function fromInt(int $value): self
@@ -40,18 +43,6 @@ final readonly class CartQuantity
         return new self((string) $value);
     }
 
-    public static function fromFloat(float $value): self
-    {
-        if ($value <= 0.0) {
-            throw new InvalidArgumentException("Cart quantity must be greater than zero, [{$value}] given.");
-        }
-
-        /** @var numeric-string $val */
-        $val = rtrim(rtrim(sprintf('%.8f', $value), '0'), '.');
-
-        return new self($val);
-    }
-
     /**
      * Validates quantity against Catalog product type capability / UOM capability.
      */
@@ -59,8 +50,10 @@ final readonly class CartQuantity
     {
         $typeRegistry = $registry ?? app(ProductTypeRegistryInterface::class);
 
-        $allowsFractional = false;
-        if ($typeRegistry->has((string) $product->product_type)) {
+        $allowsFractional = (bool) ($product->metadata['allows_fractional_quantity'] ?? false)
+            || (bool) ($product->metadata['allow_fractional'] ?? false);
+
+        if (! $allowsFractional && $typeRegistry->has((string) $product->product_type)) {
             $type = $typeRegistry->get((string) $product->product_type);
             $caps = $type->getCapabilities();
             $allowsFractional = (bool) ($caps['allows_fractional_quantity'] ?? false);
@@ -90,11 +83,6 @@ final readonly class CartQuantity
     public function value(): string
     {
         return $this->value;
-    }
-
-    public function toFloat(): float
-    {
-        return (float) $this->value;
     }
 
     public function toInt(): int

@@ -74,18 +74,18 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
 
         $this->digitalProduct = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'DIGI-1',
             'name' => 'Digital E-Book',
             'slug' => 'digital-ebook',
-            'sku' => 'DIGI-1',
             'product_type' => 'digital',
             'status' => 'active',
         ]);
 
         $this->physicalProduct = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'PHYS-1',
             'name' => 'Physical Book',
             'slug' => 'physical-book',
-            'sku' => 'PHYS-1',
             'product_type' => 'physical',
             'status' => 'active',
             'weight_kg' => 1.0,
@@ -149,7 +149,7 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         $this->assertSame(2000, $ready->totals['grand_total']);
     }
 
-    public function test_physical_checkout_requires_shipping_address_and_quote_selection(): void
+    public function test_anti_tamper_shipping_selection_rejects_client_amounts_and_uses_authoritative_server_quote(): void
     {
         $ctx = new CartContext(
             tenantId: $this->tenant->id,
@@ -182,19 +182,27 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
             postalCode: '3000'
         ));
 
-        $session = $this->checkoutOrchestrator->selectShippingQuote($session, [
+        // Client attempts to submit final_amount = 1 (tampering)
+        $tamperedSelection = [
             'method_id' => $this->method->id,
             'method_code' => $this->method->code,
-            'original_amount' => 1000,
-            'final_amount' => 1000,
-        ]);
+            'final_amount' => 1,
+            'original_amount' => 1,
+        ];
+
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, $tamperedSelection);
+
+        // Assert server persisted actual authoritative quote amount (1000 minor = 10.00 CHF), ignoring client's 1 minor
+        $selected = $session->selected_shipping_quote;
+        $this->assertNotNull($selected);
+        $this->assertSame(1000, $selected['original_amount']);
+        $this->assertSame(1000, $selected['final_amount']);
 
         $session = $this->checkoutOrchestrator->reserveInventory($session);
 
         $ready = $this->checkoutOrchestrator->markReadyForOrder($session);
 
         $this->assertSame('ready_for_order', $ready->state);
-        $this->assertNotNull($ready->selectedShippingQuote);
         $this->assertSame(5000, $ready->totals['grand_total']); // 40.00 + 10.00 shipping = 50.00 CHF
     }
 }

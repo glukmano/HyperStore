@@ -20,14 +20,18 @@ use Modules\Cart\ValueObjects\CartLineItemData;
 use Modules\Cart\ValueObjects\CartQuantity;
 use Modules\Catalog\Models\Product;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
+use Modules\Checkout\Models\CheckoutSession;
+use Modules\Inventory\Models\InventorySource;
+use Modules\Inventory\Models\StockItem;
+use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingZone;
 use Modules\Shipping\Models\ShippingZoneRule;
-use RuntimeException;
 use Tests\TestCase;
 
 class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
@@ -45,6 +49,14 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
     private User $user;
 
     private Product $product;
+
+    private Warehouse $warehouse;
+
+    private InventorySource $source;
+
+    private StockItem $stockItem;
+
+    private ShippingMethod $method;
 
     private CartServiceInterface $cartService;
 
@@ -66,20 +78,24 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
 
         $this->product = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'CONC-1',
             'name' => 'Conc Product',
             'slug' => 'conc-product',
-            'sku' => 'CONC-1',
             'product_type' => 'physical',
             'status' => 'active',
             'weight_kg' => 1.0,
         ]);
+
+        $this->warehouse = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH_CONC', 'name' => 'Conc Wh', 'country_code' => 'CH', 'status' => 'active']);
+        $this->source = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $this->warehouse->id, 'code' => 'SRC_CONC', 'name' => 'Conc Source', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
+        $this->stockItem = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->source->id, 'product_id' => $this->product->id, 'on_hand' => 1, 'reserved' => 0]);
 
         $pb = PriceBook::create(['tenant_id' => $this->tenant->id, 'code' => 'STD', 'name' => 'Std', 'currency' => 'CHF', 'status' => 'active', 'priority' => 1]);
         Price::create(['tenant_id' => $this->tenant->id, 'price_book_id' => $pb->id, 'product_id' => $this->product->id, 'amount_minor' => 1000, 'currency' => 'CHF', 'status' => 'active']);
 
         $zone = ShippingZone::create(['tenant_id' => $this->tenant->id, 'code' => 'CH_ZONE', 'name' => 'CH Zone', 'status' => 'active']);
         ShippingZoneRule::create(['shipping_zone_id' => $zone->id, 'rule_type' => 'country', 'country_code' => 'CH']);
-        $method = ShippingMethod::create([
+        $this->method = ShippingMethod::create([
             'tenant_id' => $this->tenant->id,
             'code' => 'FLAT',
             'name' => 'Flat Rate',
@@ -88,13 +104,63 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
             'base_amount' => 500,
             'status' => 'active',
         ]);
-        ShippingMethodZone::create(['shipping_method_id' => $method->id, 'shipping_zone_id' => $zone->id]);
+        ShippingMethodZone::create(['shipping_method_id' => $this->method->id, 'shipping_zone_id' => $zone->id]);
 
         $this->cartService = app(CartServiceInterface::class);
         $this->checkoutOrchestrator = app(CheckoutOrchestratorInterface::class);
     }
 
-    public function test_concurrent_cart_mutation_optimistic_cas_only_one_version_wins(): void
+    /**
+     * Helper to spawn concurrent worker scripts via proc_open.
+     *
+     * @param  list<string>  $scripts  PHP script code strings for each worker
+     * @return list<array{exit_code: int, stdout: string, stderr: string}>
+     */
+    private function runParallelWorkers(array $scripts): array
+    {
+        $processes = [];
+        $pipes = [];
+
+        foreach ($scripts as $idx => $script) {
+            $tmpFile = sys_get_temp_dir()."/worker_{$idx}_".uniqid().'.php';
+            file_put_contents($tmpFile, $script);
+
+            $descriptors = [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ];
+
+            $cmd = 'php '.escapeshellarg($tmpFile);
+            $proc = proc_open($cmd, $descriptors, $pipes[$idx]);
+            $processes[$idx] = [
+                'resource' => $proc,
+                'tmp_file' => $tmpFile,
+            ];
+        }
+
+        $results = [];
+        foreach ($processes as $idx => $procInfo) {
+            $stdout = stream_get_contents($pipes[$idx][1]);
+            $stderr = stream_get_contents($pipes[$idx][2]);
+            fclose($pipes[$idx][0]);
+            fclose($pipes[$idx][1]);
+            fclose($pipes[$idx][2]);
+
+            $exitCode = proc_close($procInfo['resource']);
+            @unlink($procInfo['tmp_file']);
+
+            $results[$idx] = [
+                'exit_code' => $exitCode,
+                'stdout' => (string) $stdout,
+                'stderr' => (string) $stderr,
+            ];
+        }
+
+        return $results;
+    }
+
+    public function test_race_a_two_concurrent_cart_cas_updates(): void
     {
         $ctx = new CartContext(
             tenantId: $this->tenant->id,
@@ -111,20 +177,58 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
             quantity: CartQuantity::fromInt(1)
         ));
 
-        $initialVersion = $cart->fresh()->version; // e.g. 2
+        $initialVersion = $cart->fresh()->version;
 
-        // Client A updates with expected version
-        $this->cartService->updateQuantity($cart, $line->id, CartQuantity::fromInt(5), $initialVersion);
-        $this->assertSame(5, (int) $line->fresh()->quantity);
+        $worker1 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Cart\Contracts\CartServiceInterface;
+use Modules\Cart\Models\Cart;
+use Modules\Cart\ValueObjects\CartQuantity;
+
+try {
+    \$cart = Cart::find({$cart->id});
+    app(CartServiceInterface::class)->updateQuantity(\$cart, {$line->id}, CartQuantity::fromInt(5), {$initialVersion});
+    echo 'SUCCESS_W1';
+} catch (Throwable \$e) {
+    echo 'FAIL_W1:' . \$e->getMessage();
+}
+";
+
+        $worker2 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Cart\Contracts\CartServiceInterface;
+use Modules\Cart\Models\Cart;
+use Modules\Cart\ValueObjects\CartQuantity;
+
+try {
+    usleep(10000); // 10ms jitter
+    \$cart = Cart::find({$cart->id});
+    app(CartServiceInterface::class)->updateQuantity(\$cart, {$line->id}, CartQuantity::fromInt(10), {$initialVersion});
+    echo 'SUCCESS_W2';
+} catch (Throwable \$e) {
+    echo 'FAIL_W2:' . \$e->getMessage();
+}
+";
+
+        $results = $this->runParallelWorkers([$worker1, $worker2]);
+
+        $outputs = array_column($results, 'stdout');
+        $successCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'SUCCESS')));
+        $failCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'FAIL')));
+
+        // Exactly one CAS update succeeds and increments version, the other is rejected with version mismatch
+        $this->assertSame(1, $successCount, 'Exactly one concurrent CAS update must succeed.');
+        $this->assertSame(1, $failCount, 'The conflicting CAS update must fail.');
         $this->assertSame($initialVersion + 1, $cart->fresh()->version);
-
-        // Client B tries with stale initial version -> fails
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Cart version mismatch.');
-        $this->cartService->updateQuantity($cart, $line->id, CartQuantity::fromInt(10), $initialVersion);
     }
 
-    public function test_stale_cart_version_blocks_checkout_progression(): void
+    public function test_race_b_two_concurrent_create_checkout_attempts_same_cart(): void
     {
         $ctx = new CartContext(
             tenantId: $this->tenant->id,
@@ -141,19 +245,181 @@ class PostgreSqlCartCheckoutConcurrencyTest extends TestCase
             quantity: CartQuantity::fromInt(1)
         ));
 
+        $worker1 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Cart\Models\Cart;
+
+try {
+    \$cart = Cart::find({$cart->id});
+    \$session = app(CheckoutOrchestratorInterface::class)->createFromCart(\$cart);
+    echo 'SESSION:' . \$session->id;
+} catch (Throwable \$e) {
+    echo 'FAIL:' . \$e->getMessage();
+}
+";
+
+        $worker2 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Cart\Models\Cart;
+
+try {
+    \$cart = Cart::find({$cart->id});
+    \$session = app(CheckoutOrchestratorInterface::class)->createFromCart(\$cart);
+    echo 'SESSION:' . \$session->id;
+} catch (Throwable \$e) {
+    echo 'FAIL:' . \$e->getMessage();
+}
+";
+
+        $results = $this->runParallelWorkers([$worker1, $worker2]);
+
+        $outputs = array_column($results, 'stdout');
+        $sessionIds = [];
+        foreach ($outputs as $out) {
+            if (preg_match('/SESSION:(\d+)/', $out, $m)) {
+                $sessionIds[] = (int) $m[1];
+            }
+        }
+
+        // Both workers resolve to the single active checkout session
+        $this->assertCount(2, $sessionIds);
+        $this->assertSame($sessionIds[0], $sessionIds[1]);
+        $this->assertSame(1, CheckoutSession::where('tenant_id', $this->tenant->id)->where('cart_id', $cart->id)->count());
+    }
+
+    public function test_race_c_two_concurrent_reservation_attempts_limited_stock(): void
+    {
+        $cart1 = $this->cartService->getOrCreateActiveCart(new CartContext($this->tenant->id, $this->store->id, $this->market->id, $this->channel->id, 'CHF', $this->user->id));
+        $this->cartService->addLine($cart1, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
+
+        $cart2 = Cart::create([
+            'tenant_id' => $this->tenant->id,
+            'guest_token_hash' => hash('sha256', 'guest-concurrent-2'),
+            'store_id' => $this->store->id,
+            'market_id' => $this->market->id,
+            'channel_id' => $this->channel->id,
+            'currency' => 'CHF',
+            'status' => 'active',
+        ]);
+        $this->cartService->addLine($cart2, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
+
+        $session1 = $this->checkoutOrchestrator->createFromCart($cart1);
+        $this->checkoutOrchestrator->setCustomerData($session1, new CheckoutCustomerData('u1@example.com', 'U', '1'));
+        $this->checkoutOrchestrator->setAddresses($session1, new CheckoutAddress('U 1', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $this->checkoutOrchestrator->selectShippingQuote($session1, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        $session2 = $this->checkoutOrchestrator->createFromCart($cart2);
+        $this->checkoutOrchestrator->setCustomerData($session2, new CheckoutCustomerData('u2@example.com', 'U', '2'));
+        $this->checkoutOrchestrator->setAddresses($session2, new CheckoutAddress('U 2', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $this->checkoutOrchestrator->selectShippingQuote($session2, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        $worker1 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Checkout\Models\CheckoutSession;
+
+try {
+    \$s = CheckoutSession::find({$session1->id});
+    app(CheckoutOrchestratorInterface::class)->reserveInventory(\$s);
+    echo 'SUCCESS_RES_1';
+} catch (Throwable \$e) {
+    echo 'FAIL_RES_1:' . \$e->getMessage();
+}
+";
+
+        $worker2 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Checkout\Models\CheckoutSession;
+
+try {
+    \$s = CheckoutSession::find({$session2->id});
+    app(CheckoutOrchestratorInterface::class)->reserveInventory(\$s);
+    echo 'SUCCESS_RES_2';
+} catch (Throwable \$e) {
+    echo 'FAIL_RES_2:' . \$e->getMessage();
+}
+";
+
+        $results = $this->runParallelWorkers([$worker1, $worker2]);
+
+        $outputs = array_column($results, 'stdout');
+        $successCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'SUCCESS_RES')));
+        $failCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'FAIL_RES')));
+
+        // Exactly one reservation claims the 1 available unit; the second fails
+        $this->assertSame(1, $successCount, 'Exactly one concurrent reservation must succeed.');
+        $this->assertSame(1, $failCount, 'The conflicting reservation must fail on insufficient stock.');
+        $this->assertSame('1.0000', (string) $this->stockItem->fresh()->reserved);
+    }
+
+    public function test_race_d_two_concurrent_ready_for_order_calls_same_idempotency_key(): void
+    {
+        $cart = $this->cartService->getOrCreateActiveCart(new CartContext($this->tenant->id, $this->store->id, $this->market->id, $this->channel->id, 'CHF', $this->user->id));
+        $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
+
         $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u1@example.com', 'U', '1'));
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('U 1', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+        $session = $this->checkoutOrchestrator->reserveInventory($session);
 
-        // Mutate cart in another tab
-        $this->cartService->addLine($cart, new CartLineItemData(
-            productId: $this->product->id,
-            variantId: null,
-            quantity: CartQuantity::fromInt(2)
-        ));
+        $idempKey = 'race-ready-key-999';
 
-        // Checkout session attempts to set customer data with stale evaluated version
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('CART_STALE');
+        $worker1 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 
-        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('test@example.com', 'Test', 'User'));
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Checkout\Models\CheckoutSession;
+
+try {
+    \$s = CheckoutSession::find({$session->id});
+    \$res = app(CheckoutOrchestratorInterface::class)->markReadyForOrder(\$s, '{$idempKey}');
+    echo 'READY:' . \$res->state;
+} catch (Throwable \$e) {
+    echo 'FAIL:' . \$e->getMessage();
+}
+";
+
+        $worker2 = "<?php
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Checkout\Models\CheckoutSession;
+
+try {
+    \$s = CheckoutSession::find({$session->id});
+    \$res = app(CheckoutOrchestratorInterface::class)->markReadyForOrder(\$s, '{$idempKey}');
+    echo 'READY:' . \$res->state;
+} catch (Throwable \$e) {
+    echo 'FAIL:' . \$e->getMessage();
+}
+";
+
+        $results = $this->runParallelWorkers([$worker1, $worker2]);
+
+        $outputs = array_column($results, 'stdout');
+        $readyCount = count(array_filter($outputs, fn ($o) => str_contains($o, 'READY:ready_for_order')));
+
+        $this->assertSame(2, $readyCount, 'Both concurrent calls with same idempotency key return ready_for_order.');
+        $this->assertSame('ready_for_order', $session->fresh()->state);
     }
 }

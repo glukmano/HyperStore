@@ -24,12 +24,12 @@ class CheckoutInventoryReservationOrchestrator
      * Executes atomic multi-source inventory reservations within the caller's outer PostgreSQL transaction.
      * Locks source allocations in deterministic order (source_id ASC, product_id ASC, variant_id ASC).
      *
-     * @return list<int> List of acquired reservation IDs
+     * @return array<int, array<string, mixed>> List of structured reservation reference arrays
      */
     public function reserve(CheckoutSession $session, FulfillmentPlan $plan): array
     {
         $tenantId = $session->tenant_id;
-        $acquiredReservationIds = [];
+        $acquiredReferences = [];
 
         // Check if any group is unavailable
         foreach ($plan->groups as $group) {
@@ -102,10 +102,17 @@ class CheckoutInventoryReservationOrchestrator
                 throw new RuntimeException("Inventory reservation failed for product [{$alloc['product_id']}] on source [{$alloc['source_id']}]: {$result->message}");
             }
 
-            $acquiredReservationIds[] = (int) $result->reservation->id;
+            $acquiredReferences[] = [
+                'reservation_id' => (int) $result->reservation->id,
+                'reservation_key' => $resKey,
+                'source_id' => $alloc['source_id'],
+                'product_id' => $alloc['product_id'],
+                'variant_id' => $alloc['variant_id'],
+                'quantity' => (string) $alloc['quantity'],
+            ];
         }
 
-        return $acquiredReservationIds;
+        return $acquiredReferences;
     }
 
     /**
@@ -113,18 +120,18 @@ class CheckoutInventoryReservationOrchestrator
      */
     public function releaseAll(CheckoutSession $session): void
     {
-        $references = $session->reservation_references ?? [];
+        $references = (array) ($session->reservation_references ?? []);
         if (empty($references)) {
             return;
         }
 
-        foreach ($references as $resId) {
-            $resKey = "checkout:{$session->id}:alloc:{$resId}";
-            try {
-                $this->inventoryReservationService->release($session->tenant_id, $resKey);
-            } catch (\Throwable) {
-                // Safe ignore if already released/expired
+        foreach ($references as $ref) {
+            $resKey = is_array($ref) ? ($ref['reservation_key'] ?? null) : null;
+            if (! is_string($resKey)) {
+                continue;
             }
+
+            $this->inventoryReservationService->release($session->tenant_id, $resKey);
         }
     }
 }

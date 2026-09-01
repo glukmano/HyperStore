@@ -9,6 +9,7 @@ use Modules\Cart\Models\CartLine;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutTotals;
 use Modules\Checkout\DTOs\SelectedShippingQuote;
+use Modules\Checkout\Exceptions\PriceUnavailableException;
 use Modules\Pricing\Contracts\PriceResolverInterface;
 use Modules\Pricing\Contracts\TaxCalculatorInterface;
 use Modules\Pricing\DTOs\PricingContext;
@@ -54,10 +55,11 @@ class CheckoutPricingOrchestrator
             customerGroupId: null
         );
 
-        // 1. Calculate merchandise lines using PriceResolver
+        // 1. Calculate merchandise lines using PriceResolver (NO fake price fallback)
         $merchandiseSubtotalMinor = 0;
         $linePricingBreakdown = [];
         $promoItems = [];
+        $lineTaxItems = [];
 
         foreach ($cart->lines as $line) {
             /** @var CartLine $line */
@@ -70,7 +72,11 @@ class CheckoutPricingOrchestrator
             );
 
             $priceResult = $this->priceResolver->resolve($pItem, $pricingCtx);
-            $unitPrice = $priceResult !== null ? $priceResult->unitPrice : MoneyValue::fromMinor(1000, $currency);
+            if ($priceResult === null) {
+                throw PriceUnavailableException::forProduct($line->product_id, $line->variant_id);
+            }
+
+            $unitPrice = $priceResult->unitPrice;
             $unitPriceMinor = $unitPrice->getMinorAmount();
             $lineTotal = $unitPrice->multiply($qty);
             $lineTotalMinor = $lineTotal->getMinorAmount();
@@ -81,7 +87,7 @@ class CheckoutPricingOrchestrator
                 'cart_line_id' => $line->id,
                 'product_id' => $line->product_id,
                 'variant_id' => $line->variant_id,
-                'quantity' => $line->quantity,
+                'quantity' => (string) $line->quantity,
                 'unit_price_minor' => $unitPriceMinor,
                 'line_total_minor' => $lineTotalMinor,
                 'currency' => $currency,
@@ -96,6 +102,12 @@ class CheckoutPricingOrchestrator
                 brandId: null,
                 productType: (string) $line->product->product_type
             );
+
+            $lineTaxItems[] = [
+                'line' => $line,
+                'total' => $lineTotal,
+                'tax_class_id' => (int) ($line->product->tax_class_id ?? 1),
+            ];
         }
 
         $merchandiseSubtotal = MoneyValue::fromMinor($merchandiseSubtotalMinor, $currency);
@@ -140,9 +152,10 @@ class CheckoutPricingOrchestrator
         $shippingDiscount = MoneyValue::fromMinor($shippingDiscountMinor, $currency);
         $shippingFinal = MoneyValue::fromMinor($shippingFinalMinor, $currency);
 
-        // 4. Taxes
+        // 4. Line-level Typed Taxes
         $taxTotalMinor = 0;
         $taxSnapshot = [];
+        $appliedTaxRates = [];
 
         if ($shippingAddress !== null && $merchandiseSubtotalMinor > 0) {
             $taxCtx = new TaxContext(
@@ -153,15 +166,18 @@ class CheckoutPricingOrchestrator
                 isTaxInclusive: false
             );
 
-            // Standard taxable subtotal calculation
-            $taxableSubtotal = MoneyValue::fromMinor(max(0, $merchandiseSubtotalMinor - $totalDiscountMinor), $currency);
-            $taxRes = $this->taxCalculator->calculate($taxableSubtotal, 1, $taxCtx);
-            $taxTotalMinor = $taxRes->taxAmount->getMinorAmount();
+            // Calculate per line preserving tax class
+            foreach ($lineTaxItems as $taxItem) {
+                $lineTaxRes = $this->taxCalculator->calculate($taxItem['total'], $taxItem['tax_class_id'], $taxCtx);
+                $taxTotalMinor += $lineTaxRes->taxAmount->getMinorAmount();
+                foreach ($lineTaxRes->appliedRates as $r) {
+                    $appliedTaxRates[] = $r;
+                }
+            }
+
             $taxSnapshot = [
-                'net_amount_minor' => $taxRes->netAmount->getMinorAmount(),
-                'tax_amount_minor' => $taxRes->taxAmount->getMinorAmount(),
-                'gross_amount_minor' => $taxRes->grossAmount->getMinorAmount(),
-                'applied_rates' => $taxRes->appliedRates,
+                'tax_amount_minor' => $taxTotalMinor,
+                'applied_rates' => $appliedTaxRates,
             ];
         }
 

@@ -54,6 +54,10 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
 
     private InventorySource $sourceB;
 
+    private StockItem $stockItemA;
+
+    private StockItem $stockItemB;
+
     private ShippingZone $zone;
 
     private ShippingMethod $method;
@@ -78,9 +82,9 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
 
         $this->product = Product::create([
             'tenant_id' => $this->tenant->id,
+            'sku' => 'WIDGET-1',
             'name' => 'Widget',
             'slug' => 'widget',
-            'sku' => 'WIDGET-1',
             'product_type' => 'physical',
             'status' => 'active',
             'weight_kg' => 1.0,
@@ -112,11 +116,11 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
         $this->checkoutOrchestrator = app(CheckoutOrchestratorInterface::class);
     }
 
-    public function test_multi_source_reservation_preserves_allocations(): void
+    public function test_multi_source_reservation_preserves_allocations_and_release_on_cancel(): void
     {
         // Source A has 6 units, Source B has 4 units -> total requested 10 units
-        StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $this->product->id, 'on_hand' => 6, 'reserved' => 0]);
-        StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceB->id, 'product_id' => $this->product->id, 'on_hand' => 4, 'reserved' => 0]);
+        $this->stockItemA = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $this->product->id, 'on_hand' => 6, 'reserved' => 0]);
+        $this->stockItemB = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceB->id, 'product_id' => $this->product->id, 'on_hand' => 4, 'reserved' => 0]);
 
         $ctx = new CartContext(
             tenantId: $this->tenant->id,
@@ -136,12 +140,22 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
         $session = $this->checkoutOrchestrator->createFromCart($cart);
         $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('test@example.com', 'Test', 'User'));
         $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Test User', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
-        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code, 'original_amount' => 500, 'final_amount' => 500]);
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
 
         $session = $this->checkoutOrchestrator->reserveInventory($session);
 
         $this->assertCount(2, $session->reservation_references);
         $this->assertSame('inventory_reserved', $session->state);
+        $this->assertSame('6.0000', (string) $this->stockItemA->fresh()->reserved);
+        $this->assertSame('4.0000', (string) $this->stockItemB->fresh()->reserved);
+
+        // Cancel checkout session -> releases all reservations
+        $this->checkoutOrchestrator->cancel($session);
+
+        $this->assertSame('0.0000', (string) $this->stockItemA->fresh()->reserved);
+        $this->assertSame('0.0000', (string) $this->stockItemB->fresh()->reserved);
+        $this->assertNull($session->fresh()->reservation_references);
+        $this->assertSame('cancelled', $session->fresh()->state);
     }
 
     public function test_atomic_rollback_on_partial_reservation_failure_leaves_zero_orphans(): void
@@ -168,7 +182,7 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
         $session = $this->checkoutOrchestrator->createFromCart($cart);
         $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('test@example.com', 'Test', 'User'));
         $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Test User', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
-        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code, 'original_amount' => 500, 'final_amount' => 500]);
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
 
         try {
             $this->checkoutOrchestrator->reserveInventory($session);
@@ -204,7 +218,7 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
         $session = $this->checkoutOrchestrator->createFromCart($cart);
         $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('test@example.com', 'Test', 'User'));
         $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Test User', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
-        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code, 'original_amount' => 500, 'final_amount' => 500]);
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
         $session = $this->checkoutOrchestrator->reserveInventory($session);
 
         $idempKey = 'key-ready-12345';

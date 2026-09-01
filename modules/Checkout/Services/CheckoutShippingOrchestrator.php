@@ -9,21 +9,28 @@ use Modules\Cart\Models\CartLine;
 use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\SelectedShippingQuote;
+use Modules\Checkout\Exceptions\PriceUnavailableException;
 use Modules\Fulfillment\Contracts\FulfillmentPlanningServiceInterface;
 use Modules\Fulfillment\DTOs\FulfillmentItemLine;
 use Modules\Fulfillment\DTOs\FulfillmentPlan;
+use Modules\Pricing\Contracts\PriceResolverInterface;
+use Modules\Pricing\DTOs\PricingContext;
+use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\ValueObjects\ShippingContext;
+use Modules\Shipping\ValueObjects\ShippingRateQuote;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
 use Modules\Shipping\ValueObjects\Weight;
+use RuntimeException;
 
 class CheckoutShippingOrchestrator
 {
     public function __construct(
         private readonly FulfillmentPlanningServiceInterface $fulfillmentService,
         private readonly ShippingRateEngineInterface $shippingRateEngine,
-        private readonly ProductShippingCapabilityResolverInterface $shippingCapabilityResolver
+        private readonly ProductShippingCapabilityResolverInterface $shippingCapabilityResolver,
+        private readonly PriceResolverInterface $priceResolver
     ) {}
 
     /**
@@ -38,7 +45,16 @@ class CheckoutShippingOrchestrator
     {
         $cart->loadMissing('lines.product');
 
-        // 1. Build fulfillment lines
+        $pricingCtx = new PricingContext(
+            tenantId: $cart->tenant_id,
+            currency: $cart->currency,
+            storeId: $cart->store_id,
+            marketId: $cart->market_id,
+            channelId: $cart->channel_id,
+            customerGroupId: null
+        );
+
+        // 1. Build fulfillment lines with authoritative prices and exact weights
         $fLines = [];
         $physicalShippingLines = [];
 
@@ -46,26 +62,37 @@ class CheckoutShippingOrchestrator
             /** @var CartLine $line */
             $product = $line->product;
             $qty = $line->getQuantityVO()->toInt();
-            $unitWeightKg = (float) ($product->weight_kg ?? 0.0);
+            /** @var numeric-string $unitWeightStr */
+            $unitWeightStr = is_numeric($product->weight_kg ?? null) ? (string) $product->weight_kg : '0.0000';
+            $unitWeight = Weight::of(bccomp($unitWeightStr, '0', 4) > 0 ? $unitWeightStr : '0.0001', 'kg');
             $isShippable = $this->shippingCapabilityResolver->requiresPhysicalShipping($product);
+
+            $pItem = new PricingItem(
+                productId: $line->product_id,
+                variantId: $line->variant_id,
+                quantity: $qty
+            );
+            $priceRes = $this->priceResolver->resolve($pItem, $pricingCtx);
+            if ($priceRes === null) {
+                throw PriceUnavailableException::forProduct($line->product_id, $line->variant_id);
+            }
 
             $fLines[] = new FulfillmentItemLine(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
                 quantity: $qty,
-                unitPrice: MoneyValue::fromMinor(1000, $cart->currency),
-                unitWeight: Weight::of((string) max(0.0001, $unitWeightKg), 'kg'),
+                unitPrice: $priceRes->unitPrice,
+                unitWeight: $unitWeight,
                 isShippable: $isShippable
             );
 
-            // Filter strictly physical lines for ShippingRateRequest
             if ($isShippable) {
                 $physicalShippingLines[] = [
                     'product_id' => $line->product_id,
                     'variant_id' => $line->variant_id,
                     'quantity' => $qty,
-                    'unit_price' => MoneyValue::fromMinor(1000, $cart->currency),
-                    'unit_weight' => Weight::of((string) max(0.0001, $unitWeightKg), 'kg'),
+                    'unit_price' => $priceRes->unitPrice,
+                    'unit_weight' => $unitWeight,
                     'is_shippable' => true,
                 ];
             }
@@ -99,17 +126,59 @@ class CheckoutShippingOrchestrator
     }
 
     /**
-     * Builds SelectedShippingQuote with deterministic fingerprint.
+     * Re-quotes and derives an authoritative server-calculated SelectedShippingQuote.
+     * Never trusts client-submitted amounts or breakdowns.
      *
-     * @param  array<string, mixed>  $rateQuote
+     * @param  array<string, mixed>  $clientSelection
      */
-    public function buildSelectedQuote(
+    public function buildAuthoritativeSelectedQuote(
         Cart $cart,
         CheckoutAddress $destination,
-        array $rateQuote,
-        FulfillmentPlan $plan
+        array $clientSelection
     ): SelectedShippingQuote {
+        $quoteRes = $this->quote($cart, $destination);
+        $shippingResult = $quoteRes['shipping_result'];
+
+        $methodId = (int) $clientSelection['method_id'];
+        $carrierCode = isset($clientSelection['carrier_code']) ? (string) $clientSelection['carrier_code'] : null;
+        $serviceCode = isset($clientSelection['service_code']) ? (string) $clientSelection['service_code'] : null;
+
+        /** @var ShippingRateQuote|null $matchedQuote */
+        $matchedQuote = null;
+        foreach ($shippingResult->quotes as $q) {
+            if ((int) $q->methodId === $methodId) {
+                if ($carrierCode !== null && $q->carrierCode !== $carrierCode) {
+                    continue;
+                }
+                if ($serviceCode !== null && $q->serviceCode !== $serviceCode) {
+                    continue;
+                }
+                $matchedQuote = $q;
+                break;
+            }
+        }
+
+        if ($matchedQuote === null) {
+            throw new RuntimeException("Selected shipping method [{$methodId}] is not eligible or available for this checkout.");
+        }
+
         $currency = $cart->currency;
+        $originalAmountMinor = $matchedQuote->breakdown->baseRate->getMinorAmount()
+            + $matchedQuote->breakdown->perItemAmount->getMinorAmount()
+            + $matchedQuote->breakdown->perWeightAmount->getMinorAmount()
+            + $matchedQuote->breakdown->handlingFee->getMinorAmount()
+            + $matchedQuote->breakdown->carrierMarkup->getMinorAmount();
+        $finalAmountMinor = $matchedQuote->amount->getMinorAmount();
+
+        $breakdownArray = [
+            'base_rate' => $matchedQuote->breakdown->baseRate->getMinorAmount(),
+            'per_item' => $matchedQuote->breakdown->perItemAmount->getMinorAmount(),
+            'per_weight' => $matchedQuote->breakdown->perWeightAmount->getMinorAmount(),
+            'handling_fee' => $matchedQuote->breakdown->handlingFee->getMinorAmount(),
+            'carrier_markup' => $matchedQuote->breakdown->carrierMarkup->getMinorAmount(),
+            'promotion_discount' => $matchedQuote->breakdown->promotionDiscount->getMinorAmount(),
+            'final_amount' => $matchedQuote->breakdown->finalAmount->getMinorAmount(),
+        ];
 
         $contextData = [
             'tenant_id' => $cart->tenant_id,
@@ -122,23 +191,23 @@ class CheckoutShippingOrchestrator
         $fingerprint = hash('sha256', (string) json_encode([
             'context' => $contextData,
             'destination' => $destination->toArray(),
-            'method_id' => (int) $rateQuote['method_id'],
-            'method_code' => (string) $rateQuote['method_code'],
-            'carrier_code' => $rateQuote['carrier_code'] ?? null,
-            'service_code' => $rateQuote['service_code'] ?? null,
-            'original_amount' => (int) $rateQuote['original_amount'],
-            'final_amount' => (int) $rateQuote['final_amount'],
+            'method_id' => $matchedQuote->methodId,
+            'method_code' => $matchedQuote->methodCode,
+            'carrier_code' => $matchedQuote->carrierCode,
+            'service_code' => $matchedQuote->serviceCode,
+            'original_amount' => $originalAmountMinor,
+            'final_amount' => $finalAmountMinor,
         ]));
 
         return new SelectedShippingQuote(
-            methodId: (int) $rateQuote['method_id'],
-            methodCode: (string) $rateQuote['method_code'],
-            carrierCode: isset($rateQuote['carrier_code']) ? (string) $rateQuote['carrier_code'] : null,
-            serviceCode: isset($rateQuote['service_code']) ? (string) $rateQuote['service_code'] : null,
-            originalAmount: MoneyValue::fromMinor((int) $rateQuote['original_amount'], $currency),
-            finalAmount: MoneyValue::fromMinor((int) $rateQuote['final_amount'], $currency),
+            methodId: $matchedQuote->methodId,
+            methodCode: $matchedQuote->methodCode,
+            carrierCode: $matchedQuote->carrierCode,
+            serviceCode: $matchedQuote->serviceCode,
+            originalAmount: MoneyValue::fromMinor($originalAmountMinor, $currency),
+            finalAmount: MoneyValue::fromMinor($finalAmountMinor, $currency),
             fingerprint: $fingerprint,
-            breakdown: (array) ($rateQuote['breakdown'] ?? [])
+            breakdown: $breakdownArray
         );
     }
 }

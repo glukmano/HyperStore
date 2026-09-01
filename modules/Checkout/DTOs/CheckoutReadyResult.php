@@ -20,7 +20,7 @@ final readonly class CheckoutReadyResult
      * @param  array<string, mixed>|null  $promotionSnapshot
      * @param  array<string, mixed>|null  $fulfillmentSnapshot
      * @param  array<string, mixed>|null  $selectedShippingQuote
-     * @param  array<int, int>  $reservationReferences
+     * @param  array<int, array<string, mixed>>  $reservationReferences
      */
     public function __construct(
         public int $checkoutSessionId,

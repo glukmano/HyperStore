@@ -4,23 +4,17 @@ declare(strict_types=1);
 
 namespace Modules\Checkout\Services;
 
-use Carbon\Carbon;
+use Closure;
 use Illuminate\Support\Facades\DB;
-use InvalidArgumentException;
 use Modules\Checkout\Models\CheckoutOperationKey;
 use RuntimeException;
+use Throwable;
 
 class CheckoutIdempotencyService
 {
-    private const LEASE_SECONDS = 60;
-
     /**
-     * Executes an operation idempotently with aggregate-scoped uniqueness.
+     * Executes an operation idempotently with durable isolated failure recording.
      *
-     * @param  callable(): array<string, mixed>  $callback
-     * @return array<string, mixed>
-     */
-    /**
      * @param  array<string, mixed>  $requestPayload
      * @return array<string, mixed>
      */
@@ -31,86 +25,109 @@ class CheckoutIdempotencyService
         string $operationType,
         ?string $idempotencyKey,
         array $requestPayload,
-        callable $callback
+        Closure $callback
     ): array {
-        // Enforce mutually exclusive scope columns
-        if (($cartId !== null && $checkoutSessionId !== null) || ($cartId === null && $checkoutSessionId === null)) {
-            throw new InvalidArgumentException('Idempotency operation must provide exactly one of cartId or checkoutSessionId.');
-        }
-
         if ($idempotencyKey === null || trim($idempotencyKey) === '') {
-            return $callback();
+            /** @var array<string, mixed> $result */
+            $result = $callback();
+
+            return $result;
         }
 
-        $trimmedKey = trim($idempotencyKey);
-        $requestFingerprint = hash('sha256', (string) json_encode($requestPayload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+        $fingerprint = hash('sha256', (string) json_encode($requestPayload));
 
-        // 1. Check existing record
-        $query = CheckoutOperationKey::query()
-            ->where('tenant_id', $tenantId)
-            ->where('operation_type', $operationType)
-            ->where('idempotency_key', $trimmedKey);
+        // 1. Durable lease / claim check
+        $opKey = DB::transaction(function () use ($tenantId, $cartId, $checkoutSessionId, $operationType, $idempotencyKey, $fingerprint) {
+            $query = CheckoutOperationKey::query()
+                ->where('tenant_id', $tenantId)
+                ->where('operation_type', $operationType)
+                ->where('idempotency_key', $idempotencyKey);
 
-        if ($cartId !== null) {
-            $query->where('cart_id', $cartId)->whereNull('checkout_session_id');
-        } else {
-            $query->where('checkout_session_id', $checkoutSessionId)->whereNull('cart_id');
-        }
+            if ($cartId !== null) {
+                $query->where('cart_id', $cartId);
+            } else {
+                $query->where('checkout_session_id', $checkoutSessionId);
+            }
 
-        /** @var CheckoutOperationKey|null $existing */
-        $existing = $query->first();
+            /** @var CheckoutOperationKey|null $existing */
+            $existing = $query->lockForUpdate()->first();
 
-        if ($existing !== null) {
-            if ($existing->status === 'completed') {
-                if ($existing->request_fingerprint !== $requestFingerprint) {
-                    throw new RuntimeException("Idempotency key [{$trimmedKey}] was previously used with a different request payload.");
+            if ($existing !== null) {
+                if ($existing->request_fingerprint !== $fingerprint) {
+                    throw new RuntimeException("Idempotency key [{$idempotencyKey}] was previously used with a different request payload.");
                 }
 
-                return (array) ($existing->response_payload ?? []);
-            }
+                if ($existing->status === 'completed') {
+                    return $existing;
+                }
 
-            if ($existing->status === 'processing') {
-                if ($existing->lease_expires_at !== null && Carbon::parse($existing->lease_expires_at)->isFuture()) {
-                    throw new RuntimeException("A concurrent request with idempotency key [{$trimmedKey}] is currently processing.");
+                if ($existing->status === 'processing') {
+                    // Check for abandoned lease (older than 30s)
+                    if ($existing->lease_expires_at && $existing->lease_expires_at->isFuture()) {
+                        throw new RuntimeException("Operation with idempotency key [{$idempotencyKey}] is currently processing.");
+                    }
+                    // Take over abandoned lease
+                    $existing->lease_expires_at = now()->addSeconds(30);
+                    $existing->save();
+
+                    return $existing;
                 }
             }
-        }
 
-        // 2. Acquire or update claim and run inside atomic outer transaction
-        return DB::transaction(function () use ($tenantId, $cartId, $checkoutSessionId, $operationType, $trimmedKey, $requestFingerprint, $callback) {
-            /** @var CheckoutOperationKey $opKey */
-            $opKey = CheckoutOperationKey::query()->updateOrCreate(
-                [
-                    'tenant_id' => $tenantId,
-                    'cart_id' => $cartId,
-                    'checkout_session_id' => $checkoutSessionId,
-                    'operation_type' => $operationType,
-                    'idempotency_key' => $trimmedKey,
-                ],
-                [
-                    'request_fingerprint' => $requestFingerprint,
-                    'status' => 'processing',
-                    'lease_expires_at' => Carbon::now()->addSeconds(self::LEASE_SECONDS),
-                ]
-            );
-
-            try {
-                $result = $callback();
-
-                $opKey->update([
-                    'status' => 'completed',
-                    'response_payload' => $result,
-                    'completed_at' => Carbon::now(),
-                ]);
-
-                return $result;
-            } catch (\Throwable $e) {
-                $opKey->update([
-                    'status' => 'failed',
-                    'error_payload' => ['error' => $e->getMessage()],
-                ]);
-                throw $e;
-            }
+            // Create new claim
+            return CheckoutOperationKey::create([
+                'tenant_id' => $tenantId,
+                'cart_id' => $cartId,
+                'checkout_session_id' => $checkoutSessionId,
+                'operation_type' => $operationType,
+                'idempotency_key' => $idempotencyKey,
+                'request_fingerprint' => $fingerprint,
+                'status' => 'processing',
+                'lease_expires_at' => now()->addSeconds(30),
+            ]);
         });
+
+        if ($opKey->status === 'completed') {
+            return (array) ($opKey->response_payload ?? []);
+        }
+
+        // 2. Execute mutation callback
+        try {
+            /** @var array<string, mixed> $result */
+            $result = $callback();
+
+            // Mark completed
+            DB::transaction(function () use ($opKey, $result) {
+                $freshKey = CheckoutOperationKey::query()->where('id', $opKey->id)->lockForUpdate()->first();
+                if ($freshKey !== null) {
+                    $freshKey->status = 'completed';
+                    $freshKey->response_payload = $result;
+                    $freshKey->save();
+                }
+            });
+
+            return $result;
+        } catch (Throwable $e) {
+            // Record failure in isolated transaction (no raw exception message, no PII/tokens)
+            try {
+                DB::transaction(function () use ($opKey, $e) {
+                    $freshKey = CheckoutOperationKey::query()->where('id', $opKey->id)->lockForUpdate()->first();
+                    if ($freshKey !== null) {
+                        $freshKey->status = 'failed';
+                        $freshKey->error_payload = [
+                            'error_class' => class_basename($e),
+                            'error_code' => 'OPERATION_FAILED',
+                            'retryable' => true,
+                            'failed_at' => now()->toIso8601String(),
+                        ];
+                        $freshKey->save();
+                    }
+                });
+            } catch (Throwable) {
+                // Safe ignore isolation error
+            }
+
+            throw $e;
+        }
     }
 }
