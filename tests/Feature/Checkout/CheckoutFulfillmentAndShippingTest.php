@@ -19,6 +19,7 @@ use Modules\Cart\ValueObjects\CartContext;
 use Modules\Cart\ValueObjects\CartLineItemData;
 use Modules\Cart\ValueObjects\CartQuantity;
 use Modules\Catalog\Models\Product;
+use Modules\Checkout\Adapters\CheckoutPromotionBenefitAdapter;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
@@ -31,9 +32,13 @@ use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Pricing\Models\TaxClass;
+use Modules\Pricing\ValueObjects\MoneyValue;
+use Modules\Promotions\DTOs\PromotionCartItem;
+use Modules\Promotions\DTOs\PromotionContext;
 use Modules\Promotions\Models\Coupon;
 use Modules\Promotions\Models\Promotion;
 use Modules\Promotions\Models\PromotionAction;
+use Modules\Promotions\Services\PromotionRuleEngine;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingRateRule;
@@ -593,8 +598,19 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         $this->assertSame(0, $revertedQuote->breakdown->promotionDiscount->getMinorAmount());
     }
 
-    public function test_checkout_source_contains_no_direct_promotion_model_inspection(): void
+    public function test_source_audit_promotions_and_checkout_architecture(): void
     {
+        // 1. Promotions module has ZERO dependency on Modules\Shipping
+        /** @var list<string> $promoFiles */
+        $promoFiles = glob(base_path('modules/Promotions/**/*.php')) ?: [];
+        $this->assertNotEmpty($promoFiles);
+        foreach ($promoFiles as $file) {
+            $content = (string) file_get_contents($file);
+            $this->assertStringNotContainsString('Modules\Shipping', $content, "File {$file} must have zero dependency on Modules\Shipping");
+            $this->assertStringNotContainsString('ShippingPromotionBenefitInterface', $content, "File {$file} must not import ShippingPromotionBenefitInterface");
+        }
+
+        // 2. Checkout does not inspect Promotion models/actions directly
         /** @var list<string> $checkoutFiles */
         $checkoutFiles = glob(base_path('modules/Checkout/**/*.php')) ?: [];
         $this->assertNotEmpty($checkoutFiles);
@@ -605,6 +621,11 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
             $this->assertStringNotContainsString("where('action_type', 'free_shipping')", $content, "File {$file} must not hardcode promotion action inspection");
             $this->assertStringNotContainsString('PromotionAction::', $content, "File {$file} must not access PromotionAction models directly");
         }
+
+        // 3. No public static test synchronization hook remains in production services
+        $cesContent = (string) file_get_contents(base_path('modules/Checkout/Services/CheckoutExpirationService.php'));
+        $this->assertStringNotContainsString('public static', $cesContent, 'CheckoutExpirationService must not contain public static properties');
+        $this->assertStringNotContainsString('$afterPreflightHook', $cesContent, 'CheckoutExpirationService must not contain $afterPreflightHook');
     }
 
     public function test_coupon_only_free_shipping_promotion_semantics(): void
@@ -686,5 +707,100 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         $quotesAutoPromo = $this->shippingOrchestrator->quote($cart, $dest);
         $this->assertSame(0, $quotesAutoPromo['shipping_result']->quotes[0]->amount->getMinorAmount());
         $this->assertSame(1000, $quotesAutoPromo['shipping_result']->quotes[0]->breakdown->promotionDiscount->getMinorAmount());
+    }
+
+    public function test_pricing_and_shipping_shared_promotions_eligibility_matrix(): void
+    {
+        $promoEngine = app(PromotionRuleEngine::class);
+
+        // Setup promotion with FreeShipping action + 10% discount
+        $promo = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Matrix Promo',
+            'code' => 'MATRIX_PROMO',
+            'status' => 'active',
+            'priority' => 100,
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+            'usage_limit' => 5,
+            'times_used' => 0,
+        ]);
+        PromotionAction::create([
+            'promotion_id' => $promo->id,
+            'action_type' => 'free_shipping',
+            'parameters' => [],
+        ]);
+        Coupon::create([
+            'tenant_id' => $this->tenant->id,
+            'promotion_id' => $promo->id,
+            'code' => 'MATRIX10',
+            'status' => 'active',
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+        ]);
+
+        $item = new PromotionCartItem(
+            productId: $this->physicalProduct->id,
+            variantId: null,
+            quantity: '1',
+            unitPrice: MoneyValue::fromMinor(4000, 'CHF'),
+            categoryIds: [],
+            productType: 'physical'
+        );
+
+        // Case 1: No coupon -> not eligible for pricing or shipping
+        $ctx1 = new PromotionContext(tenantId: $this->tenant->id, currency: 'CHF', items: [$item], couponCodes: []);
+        $res1 = $promoEngine->evaluate($ctx1);
+        $this->assertNotContains($promo->id, $res1->appliedPromotionIds);
+        $this->assertEmpty(CheckoutPromotionBenefitAdapter::adapt($res1->benefits));
+
+        // Case 2: Wrong coupon -> not eligible
+        $ctx2 = new PromotionContext(tenantId: $this->tenant->id, currency: 'CHF', items: [$item], couponCodes: ['BADCOUPON']);
+        $res2 = $promoEngine->evaluate($ctx2);
+        $this->assertNotContains($promo->id, $res2->appliedPromotionIds);
+        $this->assertEmpty(CheckoutPromotionBenefitAdapter::adapt($res2->benefits));
+
+        // Case 3: Valid coupon -> eligible for both
+        $ctx3 = new PromotionContext(tenantId: $this->tenant->id, currency: 'CHF', items: [$item], couponCodes: ['MATRIX10']);
+        $res3 = $promoEngine->evaluate($ctx3);
+        $this->assertContains($promo->id, $res3->appliedPromotionIds);
+        $adapted3 = CheckoutPromotionBenefitAdapter::adapt($res3->benefits);
+        $this->assertNotEmpty($adapted3);
+        $this->assertTrue($adapted3[0]->isFreeShipping());
+
+        // Case 4: Inactive coupon -> not eligible
+        Coupon::where('code', 'MATRIX10')->update(['status' => 'inactive']);
+        $res4 = $promoEngine->evaluate($ctx3);
+        $this->assertNotContains($promo->id, $res4->appliedPromotionIds);
+        $this->assertEmpty(CheckoutPromotionBenefitAdapter::adapt($res4->benefits));
+
+        // Case 5: Usage limit reached -> not eligible
+        Coupon::where('code', 'MATRIX10')->update(['status' => 'active']);
+        $promo->update(['times_used' => 5]);
+        $res5 = $promoEngine->evaluate($ctx3);
+        $this->assertNotContains($promo->id, $res5->appliedPromotionIds);
+        $this->assertEmpty(CheckoutPromotionBenefitAdapter::adapt($res5->benefits));
+
+        // Case 6: Exclusive promotion takes precedence
+        $promo->update(['times_used' => 0]);
+        $exclusivePromo = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Exclusive Promo',
+            'code' => 'EXCL_PROMO',
+            'status' => 'active',
+            'priority' => 200,
+            'is_exclusive' => true,
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+        ]);
+        PromotionAction::create([
+            'promotion_id' => $exclusivePromo->id,
+            'action_type' => 'fixed_discount',
+            'parameters' => ['amount' => 500, 'currency' => 'CHF'],
+        ]);
+        $res6 = $promoEngine->evaluate($ctx3);
+        $this->assertContains($exclusivePromo->id, $res6->appliedPromotionIds);
+        $this->assertNotContains($promo->id, $res6->appliedPromotionIds);
+        $this->assertEmpty(CheckoutPromotionBenefitAdapter::adapt($res6->benefits));
     }
 }

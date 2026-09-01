@@ -7,6 +7,7 @@ namespace Modules\Checkout\Services;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
 use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
+use Modules\Checkout\Adapters\CheckoutPromotionBenefitAdapter;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\SelectedShippingQuote;
 use Modules\Checkout\Exceptions\PriceUnavailableException;
@@ -19,9 +20,9 @@ use Modules\Pricing\Contracts\PriceResolverInterface;
 use Modules\Pricing\DTOs\PricingContext;
 use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\ValueObjects\MoneyValue;
-use Modules\Promotions\Contracts\ShippingPromotionBenefitResolverInterface;
 use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
+use Modules\Promotions\Services\PromotionRuleEngine;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\ValueObjects\PackageCandidate;
 use Modules\Shipping\ValueObjects\ShippingContext;
@@ -37,7 +38,7 @@ class CheckoutShippingOrchestrator
         private readonly FulfillmentPlanningServiceInterface $fulfillmentService,
         private readonly ShippingRateEngineInterface $shippingRateEngine,
         private readonly PriceResolverInterface $priceResolver,
-        private readonly ShippingPromotionBenefitResolverInterface $promotionBenefitResolver,
+        private readonly PromotionRuleEngine $promotionRuleEngine,
     ) {}
 
     /**
@@ -141,7 +142,8 @@ class CheckoutShippingOrchestrator
             couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
         );
 
-        $promotionBenefits = $this->promotionBenefitResolver->resolveBenefits($promoCtx);
+        $promoResult = $this->promotionRuleEngine->evaluate($promoCtx);
+        $promotionBenefits = CheckoutPromotionBenefitAdapter::adapt($promoResult->benefits);
 
         $shippingReq = new ShippingRateRequest(
             context: $shippingCtx,
@@ -318,7 +320,8 @@ class CheckoutShippingOrchestrator
             couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
         );
 
-        $resolvedBenefits = $this->promotionBenefitResolver->resolveBenefits($promoCtx);
+        $promoResult = $this->promotionRuleEngine->evaluate($promoCtx);
+        $resolvedBenefits = CheckoutPromotionBenefitAdapter::adapt($promoResult->benefits);
         $canonicalBenefits = [];
         foreach ($resolvedBenefits as $b) {
             $canonicalBenefits[] = [

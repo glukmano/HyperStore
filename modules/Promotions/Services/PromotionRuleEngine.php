@@ -6,6 +6,7 @@ namespace Modules\Promotions\Services;
 
 use Carbon\Carbon;
 use Modules\Pricing\ValueObjects\MoneyValue;
+use Modules\Promotions\DTOs\PromotionBenefitDTO;
 use Modules\Promotions\DTOs\PromotionContext;
 use Modules\Promotions\DTOs\PromotionResult;
 use Modules\Promotions\Models\Promotion;
@@ -34,6 +35,8 @@ class PromotionRuleEngine
 
         $currentTotal = $subtotal;
         $discounts = [];
+        $benefits = [];
+        $appliedPromotionIds = [];
         $entitlements = [];
 
         // 2. Fetch active promotions in priority order
@@ -61,12 +64,14 @@ class PromotionRuleEngine
             }
 
             // If promotion has associated coupons, at least one supplied coupon must be valid for this promotion
+            $matchedCouponCode = null;
             if ($promotion->coupons->isNotEmpty()) {
                 $hasMatchingValidCoupon = false;
                 foreach ($context->couponCodes as $code) {
                     $validCoupon = $this->couponValidationService->validate($code, $context);
                     if ($validCoupon !== null && (int) $validCoupon->promotion_id === (int) $promotion->id) {
                         $hasMatchingValidCoupon = true;
+                        $matchedCouponCode = $validCoupon->code;
                         break;
                     }
                 }
@@ -90,7 +95,9 @@ class PromotionRuleEngine
                 continue;
             }
 
-            // Apply actions
+            $appliedPromotionIds[] = $promotion->id;
+
+            // Apply actions & collect typed benefits
             foreach ($promotion->actions as $act) {
                 /** @var PromotionAction $act */
                 $handler = $this->actionRegistry->get($act->action_type);
@@ -102,6 +109,16 @@ class PromotionRuleEngine
                 if ($discountLine !== null) {
                     $discounts[] = $discountLine;
                     $currentTotal = $currentTotal->subtract($discountLine->discountAmount);
+                }
+
+                if ($act->action_type === 'free_shipping') {
+                    $benefits[] = new PromotionBenefitDTO(
+                        promotionId: $promotion->id,
+                        type: 'free_shipping',
+                        parameters: $act->parameters ?? [],
+                        description: $promotion->name ?? 'Free shipping promotion applied',
+                        couponCode: $matchedCouponCode
+                    );
                 }
             }
 
@@ -118,7 +135,9 @@ class PromotionRuleEngine
             totalDiscount: $totalDiscount,
             finalTotal: $currentTotal,
             discounts: $discounts,
-            entitlements: $entitlements
+            entitlements: $entitlements,
+            benefits: $benefits,
+            appliedPromotionIds: $appliedPromotionIds
         );
     }
 }

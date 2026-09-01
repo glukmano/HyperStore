@@ -5,21 +5,15 @@ declare(strict_types=1);
 namespace Modules\Checkout\Services;
 
 use Illuminate\Support\Facades\DB;
+use Modules\Checkout\Contracts\CheckoutMutationBarrierInterface;
 use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
 
 class CheckoutExpirationService
 {
-    /**
-     * Test-only synchronization hook invoked immediately AFTER successful preflight check
-     * and BEFORE acquiring the mutation row lock.
-     *
-     * @var (callable(CheckoutSession): void)|null
-     */
-    public static mixed $afterPreflightHook = null;
-
     public function __construct(
         private readonly CheckoutInventoryReservationOrchestrator $reservationOrchestrator,
+        private readonly CheckoutMutationBarrierInterface $mutationBarrier,
     ) {}
 
     /**
@@ -31,9 +25,7 @@ class CheckoutExpirationService
     public function expireIfNeeded(CheckoutSession $session): void
     {
         if (! $session->expires_at->isPast()) {
-            if (self::$afterPreflightHook !== null) {
-                (self::$afterPreflightHook)($session);
-            }
+            $this->mutationBarrier->preflightPassed($session);
 
             return;
         }

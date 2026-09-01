@@ -6,6 +6,7 @@ namespace Modules\Checkout;
 
 use App\Core\Modular\ModuleServiceProvider;
 use Modules\Checkout\Commands\CleanupExpiredCheckoutsCommand;
+use Modules\Checkout\Contracts\CheckoutMutationBarrierInterface;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\Contracts\CheckoutPrerequisiteResolverInterface;
 use Modules\Checkout\Services\CheckoutExpirationService;
@@ -17,6 +18,7 @@ use Modules\Checkout\Services\CheckoutPrerequisiteResolver;
 use Modules\Checkout\Services\CheckoutPricingOrchestrator;
 use Modules\Checkout\Services\CheckoutShippingOrchestrator;
 use Modules\Checkout\Services\CheckoutStateMachineService;
+use Modules\Checkout\Services\NoOpCheckoutMutationBarrier;
 
 class CheckoutServiceProvider extends ModuleServiceProvider
 {
@@ -35,6 +37,7 @@ class CheckoutServiceProvider extends ModuleServiceProvider
         $this->app->singleton(CheckoutInventoryReservationOrchestrator::class);
         $this->app->singleton(CheckoutIdempotencyService::class);
         $this->app->singleton(CheckoutStateMachineService::class);
+        $this->app->singleton(CheckoutMutationBarrierInterface::class, NoOpCheckoutMutationBarrier::class);
         $this->app->singleton(CheckoutExpirationService::class);
     }
 

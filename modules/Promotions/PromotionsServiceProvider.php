@@ -24,14 +24,12 @@ use Modules\Promotions\Conditions\MinQuantityCondition;
 use Modules\Promotions\Conditions\ProductCondition;
 use Modules\Promotions\Conditions\ProductTypeCondition;
 use Modules\Promotions\Conditions\StoreCondition;
-use Modules\Promotions\Contracts\ShippingPromotionBenefitResolverInterface;
 use Modules\Promotions\Livewire\CouponManager;
 use Modules\Promotions\Livewire\PromotionManager;
 use Modules\Promotions\Registries\PromotionActionRegistry;
 use Modules\Promotions\Registries\PromotionConditionRegistry;
 use Modules\Promotions\Services\CouponValidationService;
 use Modules\Promotions\Services\PromotionRuleEngine;
-use Modules\Promotions\Services\ShippingPromotionBenefitResolver;
 
 class PromotionsServiceProvider extends ModuleServiceProvider
 {
@@ -73,7 +71,6 @@ class PromotionsServiceProvider extends ModuleServiceProvider
 
         $this->app->singleton(CouponValidationService::class);
         $this->app->singleton(PromotionRuleEngine::class);
-        $this->app->singleton(ShippingPromotionBenefitResolverInterface::class, ShippingPromotionBenefitResolver::class);
     }
 
     public function boot(): void

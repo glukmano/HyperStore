@@ -572,12 +572,16 @@ config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 
 \\Illuminate\\Support\\Facades\\DB::purge('pgsql');
 \\Illuminate\\Support\\Facades\\DB::setDefaultConnection('pgsql');
 
-// Use post-preflight synchronization hook
-\\Modules\\Checkout\\Services\\CheckoutExpirationService::\$afterPreflightHook = function (\$s) {
-    echo 'PREFLIGHT_PASSED|';
-    // Sleep to guarantee deadline crossing AFTER preflight and BEFORE locked mutation predicate
-    sleep(2);
-};
+// Inject test mutation barrier into container (zero global static mutable hooks)
+app()->bind(\\Modules\\Checkout\\Contracts\\CheckoutMutationBarrierInterface::class, function () {
+    return new class implements \\Modules\\Checkout\\Contracts\\CheckoutMutationBarrierInterface {
+        public function preflightPassed(\\Modules\\Checkout\\Models\\CheckoutSession \$session): void {
+            echo 'PREFLIGHT_PASSED|';
+            // Sleep to guarantee deadline crossing AFTER preflight and BEFORE locked mutation predicate
+            sleep(2);
+        }
+    };
+});
 
 \$session = \\Modules\\Checkout\\Models\\CheckoutSession::find({$session->id});
 \$co = app(\\Modules\\Checkout\\Services\\CheckoutOrchestrator::class);
