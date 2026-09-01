@@ -329,4 +329,47 @@ class CheckoutReservationAndIdempotencyTest extends TestCase
         $this->expectException(CheckoutExpiredException::class);
         $this->checkoutOrchestrator->markReadyForOrder($session);
     }
+
+    public function test_reserve_inventory_without_idempotency_key_is_transactional_and_atomic(): void
+    {
+        $stock = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $this->product->id, 'on_hand' => 10, 'reserved' => 0]);
+
+        $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('nullkey@example.com', 'Null', 'Key'));
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Null Key', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        // Execute reservation with null idempotency key
+        $session = $this->checkoutOrchestrator->reserveInventory($session, null);
+
+        $this->assertSame('inventory_reserved', $session->state);
+        $this->assertNotNull($session->reservation_references);
+        $this->assertSame('1.0000', (string) $stock->fresh()->reserved);
+    }
+
+    public function test_ready_for_order_without_idempotency_key_is_transactional(): void
+    {
+        $stock = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $this->product->id, 'on_hand' => 10, 'reserved' => 0]);
+
+        $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('nullkey2@example.com', 'Null2', 'Key2'));
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('Null2 Key2', ['Street 1'], 'Zurich', 'CH', postalCode: '8000'));
+        $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+        $session = $this->checkoutOrchestrator->reserveInventory($session, null);
+
+        // Execute markReadyForOrder with null idempotency key
+        $readyRes = $this->checkoutOrchestrator->markReadyForOrder($session, null);
+
+        $this->assertSame('ready_for_order', $readyRes->state);
+        $this->assertSame('ready_for_order', $session->fresh()->state);
+        $this->assertNotNull($session->fresh()->ready_snapshot);
+    }
 }

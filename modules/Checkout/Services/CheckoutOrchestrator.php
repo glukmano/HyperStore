@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Checkout\Services;
 
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
@@ -38,6 +39,54 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
             'currency' => $cart->currency,
         ];
 
+        $findExisting = function () use ($cart): ?CheckoutSession {
+            return CheckoutSession::query()
+                ->where('tenant_id', $cart->tenant_id)
+                ->where('cart_id', $cart->id)
+                ->whereNotIn('state', ['ready_for_order', 'expired', 'cancelled', 'failed'])
+                ->first();
+        };
+
+        $createSession = function () use ($cart, $findExisting): array {
+            if ($cart->lines()->count() === 0) {
+                throw new RuntimeException('Cannot create CheckoutSession from empty Cart.');
+            }
+
+            // In PostgreSQL, use advisory xact lock per (tenant, cart) to cleanly serialize concurrent creation
+            if (DB::connection()->getDriverName() === 'pgsql') {
+                DB::select('SELECT pg_advisory_xact_lock(?, ?)', [$cart->tenant_id, $cart->id]);
+            } else {
+                Cart::query()->where('id', $cart->id)->lockForUpdate()->first();
+            }
+
+            $existing = $findExisting();
+            if ($existing !== null) {
+                return [
+                    'session_id' => $existing->id,
+                    'uuid' => $existing->uuid,
+                ];
+            }
+
+            $session = CheckoutSession::create([
+                'tenant_id' => $cart->tenant_id,
+                'cart_id' => $cart->id,
+                'user_id' => $cart->user_id,
+                'guest_token_hash' => $cart->guest_token_hash,
+                'store_id' => $cart->store_id,
+                'market_id' => $cart->market_id,
+                'channel_id' => $cart->channel_id,
+                'currency' => $cart->currency,
+                'state' => 'created',
+                'evaluated_cart_version' => $cart->version,
+                'expires_at' => now()->addMinutes(60),
+            ]);
+
+            return [
+                'session_id' => $session->id,
+                'uuid' => $session->uuid,
+            ];
+        };
+
         $res = $this->idempotencyService->execute(
             tenantId: $cart->tenant_id,
             cartId: $cart->id,
@@ -45,58 +94,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
             operationType: 'create_checkout',
             idempotencyKey: $idempotencyKey,
             requestPayload: $payload,
-            callback: function () use ($cart) {
-                if ($cart->lines()->count() === 0) {
-                    throw new RuntimeException('Cannot create CheckoutSession from empty Cart.');
-                }
-
-                $findExisting = function () use ($cart): ?CheckoutSession {
-                    return CheckoutSession::query()
-                        ->where('tenant_id', $cart->tenant_id)
-                        ->where('cart_id', $cart->id)
-                        ->whereNotIn('state', ['ready_for_order', 'expired', 'cancelled', 'failed'])
-                        ->first();
-                };
-
-                $existing = $findExisting();
-                if ($existing !== null) {
-                    return [
-                        'session_id' => $existing->id,
-                        'uuid' => $existing->uuid,
-                    ];
-                }
-
-                try {
-                    $session = CheckoutSession::create([
-                        'tenant_id' => $cart->tenant_id,
-                        'cart_id' => $cart->id,
-                        'user_id' => $cart->user_id,
-                        'guest_token_hash' => $cart->guest_token_hash,
-                        'store_id' => $cart->store_id,
-                        'market_id' => $cart->market_id,
-                        'channel_id' => $cart->channel_id,
-                        'currency' => $cart->currency,
-                        'state' => 'created',
-                        'evaluated_cart_version' => $cart->version,
-                        'expires_at' => now()->addMinutes(60),
-                    ]);
-
-                    return [
-                        'session_id' => $session->id,
-                        'uuid' => $session->uuid,
-                    ];
-                } catch (\Throwable) {
-                    $existing = $findExisting();
-                    if ($existing !== null) {
-                        return [
-                            'session_id' => $existing->id,
-                            'uuid' => $existing->uuid,
-                        ];
-                    }
-
-                    throw new RuntimeException("Concurrent checkout creation conflict for cart [{$cart->id}].");
-                }
-            }
+            callback: $createSession
         );
 
         /** @var CheckoutSession $session */
@@ -274,6 +272,9 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 callback: function () use ($session) {
                     /** @var CheckoutSession $lockedSession */
                     $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                    if ($lockedSession->expires_at->isPast()) {
+                        throw new CheckoutExpiredException("CHECKOUT_EXPIRED: Checkout session [{$lockedSession->id}] has expired at [{$lockedSession->expires_at->toIso8601String()}].");
+                    }
                     $this->assertFreshCart($lockedSession);
 
                     $this->assertValidShippingQuote($lockedSession);
@@ -331,6 +332,9 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 callback: function () use ($session) {
                     /** @var CheckoutSession $lockedSession */
                     $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                    if ($lockedSession->expires_at->isPast()) {
+                        throw new CheckoutExpiredException("CHECKOUT_EXPIRED: Checkout session [{$lockedSession->id}] has expired at [{$lockedSession->expires_at->toIso8601String()}].");
+                    }
                     $this->assertFreshCart($lockedSession);
 
                     $this->assertValidShippingQuote($lockedSession);
@@ -425,6 +429,9 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
             callback: function () use ($session) {
                 /** @var CheckoutSession $lockedSession */
                 $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                if ($lockedSession->expires_at->isPast()) {
+                    throw new CheckoutExpiredException("CHECKOUT_EXPIRED: Checkout session [{$lockedSession->id}] has expired at [{$lockedSession->expires_at->toIso8601String()}].");
+                }
                 $this->assertFreshCart($lockedSession);
 
                 $cart = $lockedSession->cart;

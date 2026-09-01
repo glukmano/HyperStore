@@ -19,6 +19,7 @@ class PromotionRuleEngine
     public function __construct(
         private readonly PromotionConditionRegistry $conditionRegistry,
         private readonly PromotionActionRegistry $actionRegistry,
+        private readonly CouponValidationService $couponValidationService,
     ) {}
 
     public function evaluate(PromotionContext $context): PromotionResult
@@ -57,6 +58,21 @@ class PromotionRuleEngine
             // Verify usage limit
             if ($promotion->usage_limit !== null && $promotion->times_used >= $promotion->usage_limit) {
                 continue;
+            }
+
+            // If promotion has associated coupons, at least one supplied coupon must be valid for this promotion
+            if ($promotion->coupons->isNotEmpty()) {
+                $hasMatchingValidCoupon = false;
+                foreach ($context->couponCodes as $code) {
+                    $validCoupon = $this->couponValidationService->validate($code, $context);
+                    if ($validCoupon !== null && (int) $validCoupon->promotion_id === (int) $promotion->id) {
+                        $hasMatchingValidCoupon = true;
+                        break;
+                    }
+                }
+                if (! $hasMatchingValidCoupon) {
+                    continue;
+                }
             }
 
             // Evaluate all conditions

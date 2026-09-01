@@ -31,6 +31,7 @@ use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Pricing\Models\TaxClass;
+use Modules\Promotions\Models\Coupon;
 use Modules\Promotions\Models\Promotion;
 use Modules\Promotions\Models\PromotionAction;
 use Modules\Shipping\Models\ShippingMethod;
@@ -604,5 +605,86 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
             $this->assertStringNotContainsString("where('action_type', 'free_shipping')", $content, "File {$file} must not hardcode promotion action inspection");
             $this->assertStringNotContainsString('PromotionAction::', $content, "File {$file} must not access PromotionAction models directly");
         }
+    }
+
+    public function test_coupon_only_free_shipping_promotion_semantics(): void
+    {
+        $ctx = new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->user->id);
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData($this->physicalProduct->id, null, CartQuantity::fromInt(1)));
+
+        // Create a Coupon-Only Free Shipping promotion
+        $promo = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Coupon Free Shipping',
+            'code' => 'PROMO_SHIP_COUPON',
+            'status' => 'active',
+            'priority' => 100,
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+        ]);
+        PromotionAction::create([
+            'promotion_id' => $promo->id,
+            'action_type' => 'free_shipping',
+            'parameters' => [],
+        ]);
+        Coupon::create([
+            'tenant_id' => $this->tenant->id,
+            'promotion_id' => $promo->id,
+            'code' => 'FREESHIP20',
+            'status' => 'active',
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+        ]);
+
+        $dest = new CheckoutAddress('User', ['Street 1'], 'Zurich', 'CH', postalCode: '8000');
+
+        // Test A: No coupon supplied -> shipping remains paid 1000 minor
+        $quotesNoCoupon = $this->shippingOrchestrator->quote($cart, $dest);
+        $this->assertSame(1000, $quotesNoCoupon['shipping_result']->quotes[0]->amount->getMinorAmount());
+        $this->assertSame(0, $quotesNoCoupon['shipping_result']->quotes[0]->breakdown->promotionDiscount->getMinorAmount());
+
+        // Test B: Wrong coupon -> shipping remains paid 1000 minor
+        $cart->coupon_code = 'WRONGCODE';
+        $cart->save();
+        $quotesWrongCoupon = $this->shippingOrchestrator->quote($cart, $dest);
+        $this->assertSame(1000, $quotesWrongCoupon['shipping_result']->quotes[0]->amount->getMinorAmount());
+        $this->assertSame(0, $quotesWrongCoupon['shipping_result']->quotes[0]->breakdown->promotionDiscount->getMinorAmount());
+
+        // Test C: Valid coupon -> shipping becomes 0 minor with 1000 discount
+        $cart->coupon_code = 'FREESHIP20';
+        $cart->save();
+        $quotesValidCoupon = $this->shippingOrchestrator->quote($cart, $dest);
+        $this->assertSame(0, $quotesValidCoupon['shipping_result']->quotes[0]->amount->getMinorAmount());
+        $this->assertSame(1000, $quotesValidCoupon['shipping_result']->quotes[0]->breakdown->promotionDiscount->getMinorAmount());
+
+        // Test D: Expired coupon -> shipping remains paid 1000 minor
+        $expiredCoupon = Coupon::where('code', 'FREESHIP20')->firstOrFail();
+        $expiredCoupon->update(['status' => 'inactive']);
+        $quotesExpiredCoupon = $this->shippingOrchestrator->quote($cart, $dest);
+        $this->assertSame(1000, $quotesExpiredCoupon['shipping_result']->quotes[0]->amount->getMinorAmount());
+        $this->assertSame(0, $quotesExpiredCoupon['shipping_result']->quotes[0]->breakdown->promotionDiscount->getMinorAmount());
+
+        // Test E: Automatic FreeShipping promotion without coupons -> shipping becomes 0 minor
+        $autoPromo = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Auto Free Ship',
+            'code' => 'AUTO_FREE_ALL',
+            'status' => 'active',
+            'priority' => 50,
+            'valid_from' => now()->subDay(),
+            'valid_until' => now()->addMonth(),
+        ]);
+        PromotionAction::create([
+            'promotion_id' => $autoPromo->id,
+            'action_type' => 'free_shipping',
+            'parameters' => [],
+        ]);
+
+        $cart->coupon_code = null;
+        $cart->save();
+        $quotesAutoPromo = $this->shippingOrchestrator->quote($cart, $dest);
+        $this->assertSame(0, $quotesAutoPromo['shipping_result']->quotes[0]->amount->getMinorAmount());
+        $this->assertSame(1000, $quotesAutoPromo['shipping_result']->quotes[0]->breakdown->promotionDiscount->getMinorAmount());
     }
 }

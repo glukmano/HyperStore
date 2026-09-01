@@ -18,6 +18,7 @@ class ShippingPromotionBenefitResolver implements ShippingPromotionBenefitResolv
 {
     public function __construct(
         private readonly PromotionConditionRegistry $conditionRegistry,
+        private readonly CouponValidationService $couponValidationService,
     ) {}
 
     /**
@@ -44,10 +45,27 @@ class ShippingPromotionBenefitResolver implements ShippingPromotionBenefitResolv
         $benefits = [];
 
         foreach ($promotions as $promotion) {
+            // 1. Verify usage limit
             if ($promotion->usage_limit !== null && $promotion->times_used >= $promotion->usage_limit) {
                 continue;
             }
 
+            // 2. Authoritative Coupon Verification (if promotion has associated coupons)
+            if ($promotion->coupons->isNotEmpty()) {
+                $hasMatchingValidCoupon = false;
+                foreach ($context->couponCodes as $code) {
+                    $validCoupon = $this->couponValidationService->validate($code, $context);
+                    if ($validCoupon !== null && (int) $validCoupon->promotion_id === (int) $promotion->id) {
+                        $hasMatchingValidCoupon = true;
+                        break;
+                    }
+                }
+                if (! $hasMatchingValidCoupon) {
+                    continue;
+                }
+            }
+
+            // 3. Evaluate all Conditions
             $allConditionsPass = true;
             foreach ($promotion->conditions as $cond) {
                 /** @var PromotionCondition $cond */
@@ -62,6 +80,7 @@ class ShippingPromotionBenefitResolver implements ShippingPromotionBenefitResolv
                 continue;
             }
 
+            // 4. Produce typed FreeShippingBenefitDTO
             foreach ($promotion->actions as $act) {
                 /** @var PromotionAction $act */
                 if ($act->action_type === 'free_shipping') {
@@ -73,6 +92,7 @@ class ShippingPromotionBenefitResolver implements ShippingPromotionBenefitResolv
                 }
             }
 
+            // 5. Exclusivity & stop further rules
             if ($promotion->is_exclusive || $promotion->stop_further_rules) {
                 break;
             }

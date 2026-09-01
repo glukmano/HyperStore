@@ -565,14 +565,19 @@ try {
         $session->update(['expires_at' => now()->addSecond()]);
 
         $worker = "<?php
-require 'vendor/autoload.php';
-\$app = require_once 'bootstrap/app.php';
+require '".base_path('vendor/autoload.php')."';
+\$app = require_once '".base_path('bootstrap/app.php')."';
 \$app->make(Illuminate\\Contracts\\Console\\Kernel::class)->bootstrap();
 config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 'hyperstore', 'database.connections.pgsql.username' => 'lukman', 'database.connections.pgsql.host' => '127.0.0.1', 'database.connections.pgsql.port' => 5432]);
+\\Illuminate\\Support\\Facades\\DB::purge('pgsql');
 \\Illuminate\\Support\\Facades\\DB::setDefaultConnection('pgsql');
 
-// Preflight sleep to allow deadline to cross before locked mutation predicate
-sleep(2);
+// Use post-preflight synchronization hook
+\\Modules\\Checkout\\Services\\CheckoutExpirationService::\$afterPreflightHook = function (\$s) {
+    echo 'PREFLIGHT_PASSED|';
+    // Sleep to guarantee deadline crossing AFTER preflight and BEFORE locked mutation predicate
+    sleep(2);
+};
 
 \$session = \\Modules\\Checkout\\Models\\CheckoutSession::find({$session->id});
 \$co = app(\\Modules\\Checkout\\Services\\CheckoutOrchestrator::class);
@@ -588,7 +593,8 @@ try {
 ";
 
         $res = $this->runSynchronizedParallelWorkers([$worker]);
-        $this->assertSame('EXPIRED_CAUGHT', trim($res[0]['stdout']));
+        $this->assertStringContainsString('PREFLIGHT_PASSED', $res[0]['stdout']);
+        $this->assertStringContainsString('EXPIRED_CAUGHT', $res[0]['stdout']);
 
         // Verify final DB state
         $freshSession = $session->fresh();

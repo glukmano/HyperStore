@@ -28,10 +28,12 @@ class CheckoutIdempotencyService
         Closure $callback
     ): array {
         if ($idempotencyKey === null || trim($idempotencyKey) === '') {
-            /** @var array<string, mixed> $result */
-            $result = $callback();
+            return DB::transaction(function () use ($callback): array {
+                /** @var array<string, mixed> $result */
+                $result = $callback();
 
-            return $result;
+                return $result;
+            });
         }
 
         $fingerprint = hash('sha256', (string) json_encode($requestPayload));
