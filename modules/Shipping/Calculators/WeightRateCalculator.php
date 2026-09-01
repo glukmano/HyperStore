@@ -29,8 +29,8 @@ class WeightRateCalculator implements RateCalculatorInterface
                 $unitWeight = $line['unit_weight'];
                 /** @var numeric-string $uKg */
                 $uKg = $unitWeight->toKg();
-                /** @var numeric-string $lineKg */
-                $qtyStr = (string) (int) $line['quantity'];
+                /** @var numeric-string $qtyStr */
+                $qtyStr = (string) $line['quantity'];
                 /** @var numeric-string $lineKg */
                 $lineKg = bcmul($uKg, $qtyStr, 4);
                 /** @var numeric-string $totalWeightKg */

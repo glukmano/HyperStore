@@ -60,10 +60,25 @@ class DefaultPackingService implements PackingStrategyInterface
             foreach ($classItems as $item) {
                 /** @var numeric-string $unitWeightKg */
                 $unitWeightKg = $item->unitWeight->toKg();
+                /** @var numeric-string $qtyStr */
+                $qtyStr = (string) $item->quantity;
 
-                for ($i = 0; $i < $item->quantity; $i++) {
+                $isInteger = ! str_contains($qtyStr, '.') || rtrim(explode('.', $qtyStr)[1] ?? '', '0') === '';
+                $unitsToPack = [];
+                if ($isInteger && (int) $qtyStr > 1) {
+                    $intUnits = (int) $qtyStr;
+                    for ($i = 0; $i < $intUnits; $i++) {
+                        $unitsToPack[] = ['qty' => '1', 'weight_kg' => $unitWeightKg];
+                    }
+                } else {
+                    /** @var numeric-string $itemTotalWeight */
+                    $itemTotalWeight = bcmul($unitWeightKg, $qtyStr, 4);
+                    $unitsToPack[] = ['qty' => $qtyStr, 'weight_kg' => $itemTotalWeight];
+                }
+
+                foreach ($unitsToPack as $unit) {
                     /** @var numeric-string $projectedWeight */
-                    $projectedWeight = bcadd($currentWeightKg, $unitWeightKg, 4);
+                    $projectedWeight = bcadd($currentWeightKg, $unit['weight_kg'], 4);
 
                     if (! empty($currentItems) && bccomp($projectedWeight, self::MAX_PACKAGE_WEIGHT_KG, 4) > 0) {
                         // Seal current package
@@ -79,16 +94,16 @@ class DefaultPackingService implements PackingStrategyInterface
                     $currentItems[] = [
                         'product_id' => $item->productId,
                         'variant_id' => $item->variantId,
-                        'quantity' => 1,
+                        'quantity' => $unit['qty'],
                         'weight' => $item->unitWeight,
                         'shipping_class_id' => $item->shippingClassId,
                     ];
                     /** @var numeric-string $currentWeightKg */
-                    $currentWeightKg = bcadd($currentWeightKg, $unitWeightKg, 4);
+                    $currentWeightKg = bcadd($currentWeightKg, $unit['weight_kg'], 4);
                 }
             }
 
-            if (! empty($currentItems)) {
+            if (count($currentItems) > 0) {
                 $packages[] = new PackageCandidate(
                     items: $this->consolidateItems($currentItems),
                     totalWeight: Weight::of($currentWeightKg, 'kg'),
@@ -106,6 +121,10 @@ class DefaultPackingService implements PackingStrategyInterface
      * @param  array<int, array{product_id: int, variant_id: ?int, quantity: int, weight: Weight, shipping_class_id: ?int}>  $unitItems
      * @return array<int, array{product_id: int, variant_id: ?int, quantity: int, weight: Weight, shipping_class_id: ?int}>
      */
+    /**
+     * @param  array<int, array{product_id: int, variant_id: ?int, quantity: int|string, weight: Weight, shipping_class_id: ?int}>  $unitItems
+     * @return array<int, array{product_id: int, variant_id: ?int, quantity: int|string, weight: Weight, shipping_class_id: ?int}>
+     */
     private function consolidateItems(array $unitItems): array
     {
         $consolidated = [];
@@ -114,7 +133,11 @@ class DefaultPackingService implements PackingStrategyInterface
             if (! isset($consolidated[$key])) {
                 $consolidated[$key] = $unit;
             } else {
-                $consolidated[$key]['quantity'] += $unit['quantity'];
+                /** @var numeric-string $q1 */
+                $q1 = (string) $consolidated[$key]['quantity'];
+                /** @var numeric-string $q2 */
+                $q2 = (string) $unit['quantity'];
+                $consolidated[$key]['quantity'] = (string) bcadd($q1, $q2, 4);
             }
         }
 

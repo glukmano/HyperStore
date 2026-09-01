@@ -9,6 +9,6 @@ final class PricingItem
     public function __construct(
         public int $productId,
         public ?int $variantId = null,
-        public int $quantity = 1,
+        public int|string $quantity = 1,
     ) {}
 }

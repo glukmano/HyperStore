@@ -72,12 +72,11 @@ class CheckoutPricingOrchestrator
         foreach ($cart->lines as $line) {
             /** @var CartLine $line */
             $qtyStr = (string) $line->quantity;
-            $qtyInt = max(1, (int) ceil((float) $qtyStr));
 
             $pItem = new PricingItem(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
-                quantity: $qtyInt
+                quantity: $qtyStr
             );
 
             $priceResult = $this->priceResolver->resolve($pItem, $pricingCtx);
@@ -107,7 +106,7 @@ class CheckoutPricingOrchestrator
             $promoItems[] = new PromotionCartItem(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
-                quantity: $qtyInt,
+                quantity: $qtyStr,
                 unitPrice: $unitPrice,
                 categoryIds: [],
                 brandId: null,

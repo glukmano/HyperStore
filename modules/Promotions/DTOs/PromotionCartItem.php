@@ -14,7 +14,7 @@ final class PromotionCartItem
     public function __construct(
         public int $productId,
         public ?int $variantId,
-        public int $quantity,
+        public int|string $quantity,
         public MoneyValue $unitPrice,
         public array $categoryIds = [],
         public ?int $brandId = null,
@@ -23,6 +23,6 @@ final class PromotionCartItem
 
     public function getTotal(): MoneyValue
     {
-        return $this->unitPrice->multiply($this->quantity);
+        return $this->unitPrice->multiply((string) $this->quantity);
     }
 }

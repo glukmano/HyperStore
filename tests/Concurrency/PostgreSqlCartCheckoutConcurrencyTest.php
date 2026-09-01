@@ -509,8 +509,9 @@ try {
         $results = $this->runSynchronizedParallelWorkers([$worker1, $worker2]);
 
         $session->refresh();
-        // End state must be clean: either expired or cancelled, stock reserved must be 0
-        $this->assertTrue(in_array($session->state, ['expired', 'cancelled', 'inventory_reserved'], true));
-        $this->assertDatabaseHas('checkout_sessions', ['id' => $session->id]);
+        // End state must be terminal expired, stock reserved must be exactly 0
+        $this->assertSame('expired', $session->state);
+        $this->assertSame('0.0000', (string) $this->stockItem->fresh()->reserved);
+        $this->assertNull($session->reservation_references);
     }
 }

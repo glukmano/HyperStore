@@ -357,11 +357,12 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 $this->cartService->applyCoupon($cart, $couponCode);
                 $cart->refresh();
                 $lockedSession->evaluated_cart_version = $cart->version;
+                // Invalidate previously selected shipping quote on coupon change to prevent stale shipping benefits
+                $lockedSession->selected_shipping_quote = null;
 
                 $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
-                $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
 
-                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, $quote);
+                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, null);
 
                 $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
                 $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
@@ -403,11 +404,12 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 $this->cartService->removeCoupon($cart);
                 $cart->refresh();
                 $lockedSession->evaluated_cart_version = $cart->version;
+                // Invalidate previously selected shipping quote on coupon change to prevent stale shipping benefits
+                $lockedSession->selected_shipping_quote = null;
 
                 $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
-                $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
 
-                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, $quote);
+                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, null);
 
                 $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
                 $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
@@ -590,7 +592,12 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
         $quote = SelectedShippingQuote::fromArray($session->selected_shipping_quote, $session->currency);
         if ($quote->isExpired()) {
-            throw ShippingQuoteExpiredException::forQuote($quote->methodId);
+            throw new ShippingQuoteExpiredException("SHIPPING_QUOTE_EXPIRED: Selected shipping quote [{$quote->methodId}] has expired at [{$quote->expiresAt->toIso8601String()}]. Please fetch and select fresh shipping rates.");
+        }
+
+        if ($session->shipping_address !== null && $session->cart !== null) {
+            $dest = CheckoutAddress::fromArray($session->shipping_address);
+            $this->shippingOrchestrator->revalidateSelectedQuote($session->cart, $dest, $quote);
         }
     }
 }

@@ -29,6 +29,10 @@ use Modules\Pricing\Models\TaxClass;
 use Modules\Promotions\Models\Coupon;
 use Modules\Promotions\Models\Promotion;
 use Modules\Promotions\Models\PromotionAction;
+use Modules\Shipping\Models\ShippingMethod;
+use Modules\Shipping\Models\ShippingMethodZone;
+use Modules\Shipping\Models\ShippingZone;
+use Modules\Shipping\Models\ShippingZoneRule;
 use Tests\TestCase;
 
 class CheckoutPricingAndCouponTest extends TestCase
@@ -284,5 +288,71 @@ class CheckoutPricingAndCouponTest extends TestCase
         $this->expectExceptionMessage("TAX_CLASS_UNAVAILABLE: Product [{$this->productA->id}] has no tax class assigned");
 
         $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('A B', ['Bahnhofstrasse 1'], 'Zurich', 'CH', postalCode: '8001'));
+    }
+
+    public function test_coupon_application_and_removal_invalidates_selected_shipping_quote(): void
+    {
+        $zone = ShippingZone::create(['tenant_id' => $this->tenant->id, 'code' => 'CH_ZONE', 'name' => 'CH Zone', 'status' => 'active']);
+        ShippingZoneRule::create(['shipping_zone_id' => $zone->id, 'rule_type' => 'country', 'country_code' => 'CH']);
+        $method = ShippingMethod::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'STD_SHIP',
+            'name' => 'Standard Shipping',
+            'rate_calculator_type' => 'flat_rate',
+            'currency' => 'CHF',
+            'base_amount' => 1000,
+            'status' => 'active',
+        ]);
+        ShippingMethodZone::create(['shipping_method_id' => $method->id, 'shipping_zone_id' => $zone->id]);
+
+        $promo = Promotion::create([
+            'tenant_id' => $this->tenant->id,
+            'name' => 'Free Shipping',
+            'code' => 'FREESHIP_PROMO',
+            'status' => 'active',
+            'priority' => 10,
+            'starts_at' => now()->subDay(),
+            'ends_at' => now()->addMonth(),
+        ]);
+        Coupon::create([
+            'tenant_id' => $this->tenant->id,
+            'promotion_id' => $promo->id,
+            'code' => 'FREESHIP',
+            'status' => 'active',
+        ]);
+
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->productA->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u@example.com', 'A', 'B'));
+        $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('A B', ['Bahnhofstrasse 1'], 'Zurich', 'CH', postalCode: '8001'));
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $method->id, 'method_code' => $method->code]);
+
+        $this->assertNotNull($session->selected_shipping_quote);
+
+        // Apply coupon -> must clear selected_shipping_quote
+        $session = $this->checkoutOrchestrator->applyCoupon($session, 'FREESHIP');
+        $this->assertNull($session->selected_shipping_quote);
+
+        // Re-select shipping quote
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $method->id, 'method_code' => $method->code]);
+        $this->assertNotNull($session->selected_shipping_quote);
+
+        // Remove coupon -> must clear selected_shipping_quote
+        $session = $this->checkoutOrchestrator->removeCoupon($session);
+        $this->assertNull($session->selected_shipping_quote);
     }
 }

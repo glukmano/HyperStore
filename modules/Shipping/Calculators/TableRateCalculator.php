@@ -43,23 +43,29 @@ class TableRateCalculator implements RateCalculatorInterface
         $totalWeightKg = '0.0000';
         $subtotalMinor = 0;
 
+        /** @var numeric-string $totalItemsExact */
+        $totalItemsExact = '0.0000';
         foreach ($request->lines as $line) {
             if ($line['is_shippable'] ?? true) {
-                $qty = (int) $line['quantity'];
-                $totalItems += $qty;
+                /** @var numeric-string $qtyStr */
+                $qtyStr = (string) $line['quantity'];
+                /** @var numeric-string $totalItemsExact */
+                $totalItemsExact = bcadd($totalItemsExact, $qtyStr, 4);
                 /** @var Weight $unitWeight */
                 $unitWeight = $line['unit_weight'];
                 /** @var numeric-string $uKg */
                 $uKg = $unitWeight->toKg();
                 /** @var numeric-string $wStep */
-                $wStep = bcmul($uKg, (string) $qty, 4);
+                $wStep = bcmul($uKg, $qtyStr, 4);
                 /** @var numeric-string $totalWeightKg */
                 $totalWeightKg = bcadd($totalWeightKg, $wStep, 4);
                 /** @var MoneyValue $unitPrice */
                 $unitPrice = $line['unit_price'];
-                $subtotalMinor += $unitPrice->getMinorAmount() * $qty;
+                $lineSubtotal = $unitPrice->multiply($qtyStr);
+                $subtotalMinor += $lineSubtotal->getMinorAmount();
             }
         }
+        $totalItems = (int) ceil((float) $totalItemsExact);
 
         $evalContext = [
             'total_items' => $totalItems,

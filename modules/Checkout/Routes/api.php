@@ -10,6 +10,7 @@ use Modules\Cart\Services\CartOwnershipService;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
+use Modules\Checkout\Http\Resources\CheckoutDiagnosticResource;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Checkout\Services\CheckoutInventoryReservationOrchestrator;
 use Modules\Checkout\Services\CheckoutOwnershipService;
@@ -326,10 +327,11 @@ Route::prefix('api/v1/control-center/checkout')->middleware(['auth:sanctum'])->g
         $tenantId = (int) $contextManager->getTenant()->getId();
         $sessions = CheckoutSession::query()
             ->where('tenant_id', $tenantId)
+            ->with('cart')
             ->orderByDesc('id')
             ->paginate((int) $request->input('per_page', 25));
 
-        return response()->json($sessions);
+        return CheckoutDiagnosticResource::collection($sessions);
     });
 
     Route::get('/sessions/{id}', function (int $id, Request $request, ContextManager $contextManager) {
@@ -342,9 +344,10 @@ Route::prefix('api/v1/control-center/checkout')->middleware(['auth:sanctum'])->g
         $session = CheckoutSession::query()
             ->where('id', $id)
             ->where('tenant_id', $tenantId)
+            ->with('cart')
             ->firstOrFail();
 
-        return response()->json($session);
+        return new CheckoutDiagnosticResource($session);
     });
 
     Route::post('/sessions/{id}/release-reservations', function (int $id, Request $request, ContextManager $contextManager, CheckoutInventoryReservationOrchestrator $reservationOrchestrator) {

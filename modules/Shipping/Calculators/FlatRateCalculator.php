@@ -20,17 +20,21 @@ class FlatRateCalculator implements RateCalculatorInterface
         $handling = MoneyValue::fromMinor((int) $method->handling_fee, $currency);
         $zero = MoneyValue::fromMinor(0, $currency);
 
-        $totalItems = 0;
+        /** @var numeric-string $totalItems */
+        $totalItems = '0.0000';
         foreach ($request->lines as $line) {
             if ($line['is_shippable'] ?? true) {
-                $totalItems += (int) $line['quantity'];
+                /** @var numeric-string $lineQty */
+                $lineQty = (string) $line['quantity'];
+                /** @var numeric-string $totalItems */
+                $totalItems = bcadd($totalItems, $lineQty, 4);
             }
         }
 
         $perItemAmount = $zero;
         if (isset($method->metadata['per_item_fee']) && is_numeric($method->metadata['per_item_fee'])) {
             $perItemUnit = MoneyValue::fromMinor((int) $method->metadata['per_item_fee'], $currency);
-            $perItemAmount = $perItemUnit->multiply($totalItems);
+            $perItemAmount = $perItemUnit->multiply((string) $totalItems);
         }
 
         $finalAmount = $baseRate->add($handling)->add($perItemAmount);

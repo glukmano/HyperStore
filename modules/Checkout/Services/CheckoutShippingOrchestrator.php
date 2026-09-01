@@ -10,8 +10,9 @@ use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\SelectedShippingQuote;
 use Modules\Checkout\Exceptions\PriceUnavailableException;
+use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
+use Modules\Checkout\Exceptions\ShippingQuoteStaleException;
 use Modules\Fulfillment\Contracts\FulfillmentPlanningServiceInterface;
-use Modules\Fulfillment\DTOs\FulfillmentGroup;
 use Modules\Fulfillment\DTOs\FulfillmentItemLine;
 use Modules\Fulfillment\DTOs\FulfillmentPlan;
 use Modules\Pricing\Contracts\PriceResolverInterface;
@@ -19,6 +20,7 @@ use Modules\Pricing\DTOs\PricingContext;
 use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
+use Modules\Shipping\ValueObjects\PackageCandidate;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\ShippingRateQuote;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
@@ -28,14 +30,14 @@ use RuntimeException;
 class CheckoutShippingOrchestrator
 {
     public function __construct(
+        private readonly ProductShippingCapabilityResolverInterface $shippingCapabilityResolver,
         private readonly FulfillmentPlanningServiceInterface $fulfillmentService,
         private readonly ShippingRateEngineInterface $shippingRateEngine,
-        private readonly ProductShippingCapabilityResolverInterface $shippingCapabilityResolver,
-        private readonly PriceResolverInterface $priceResolver
+        private readonly PriceResolverInterface $priceResolver,
     ) {}
 
     /**
-     * Resolves fulfillment plan and queries fresh shipping rates.
+     * Resolves shippability, fulfillment plan, and shipping rate quotes for a checkout session.
      *
      * @return array{
      *     fulfillment_plan: FulfillmentPlan,
@@ -55,23 +57,24 @@ class CheckoutShippingOrchestrator
             customerGroupId: null
         );
 
-        // 1. Build fulfillment lines with authoritative prices and exact weights
         $fLines = [];
         $physicalShippingLines = [];
 
         foreach ($cart->lines as $line) {
             /** @var CartLine $line */
             $product = $line->product;
-            $qtyInt = max(1, (int) ceil((float) (string) $line->quantity));
+            $qtyStr = (string) $line->quantity;
             /** @var numeric-string $unitWeightStr */
             $unitWeightStr = is_numeric($product->weight_kg ?? null) ? (string) $product->weight_kg : '0.0000';
             $unitWeight = Weight::of(bccomp($unitWeightStr, '0', 4) > 0 ? $unitWeightStr : '0.0001', 'kg');
             $isShippable = $this->shippingCapabilityResolver->requiresPhysicalShipping($product);
+            $dim = null;
+            $shippingClassId = isset($product->shipping_class_id) ? (int) $product->shipping_class_id : null;
 
             $pItem = new PricingItem(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
-                quantity: $qtyInt
+                quantity: $qtyStr
             );
             $priceRes = $this->priceResolver->resolve($pItem, $pricingCtx);
             if ($priceRes === null) {
@@ -81,9 +84,11 @@ class CheckoutShippingOrchestrator
             $fLines[] = new FulfillmentItemLine(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
-                quantity: $qtyInt,
+                quantity: $qtyStr,
                 unitPrice: $priceRes->unitPrice,
                 unitWeight: $unitWeight,
+                dimensions: $dim,
+                shippingClassId: $shippingClassId,
                 isShippable: $isShippable
             );
 
@@ -91,9 +96,10 @@ class CheckoutShippingOrchestrator
                 $physicalShippingLines[] = [
                     'product_id' => $line->product_id,
                     'variant_id' => $line->variant_id,
-                    'quantity' => $qtyInt,
+                    'quantity' => $qtyStr,
                     'unit_price' => $priceRes->unitPrice,
                     'unit_weight' => $unitWeight,
+                    'shipping_class_id' => $shippingClassId,
                     'is_shippable' => true,
                 ];
             }
@@ -109,7 +115,6 @@ class CheckoutShippingOrchestrator
 
         $plan = $this->fulfillmentService->plan($cart->tenant_id, $fLines, $shippingCtx);
 
-        // 2. Query shipping rates if physical items exist
         $destVO = $destination->toShippingDestination();
 
         $shippingReq = new ShippingRateRequest(
@@ -127,7 +132,7 @@ class CheckoutShippingOrchestrator
     }
 
     /**
-     * Re-quotes and derives an authoritative server-calculated SelectedShippingQuote with full fingerprint.
+     * Re-quotes and derives an authoritative server-calculated SelectedShippingQuote with full canonical fingerprint.
      *
      * @param  array<string, mixed>  $clientSelection
      */
@@ -181,17 +186,24 @@ class CheckoutShippingOrchestrator
             'final_amount' => $matchedQuote->breakdown->finalAmount->getMinorAmount(),
         ];
 
-        // Gather complete rate-relevant inputs for comprehensive fingerprint
+        // 1. Fulfillment Allocations Canonical List
         $fulfillmentAllocations = [];
         foreach ($plan->groups as $g) {
-            /** @var FulfillmentGroup $g */
-            $fulfillmentAllocations[] = [
-                'inventory_source_id' => $g->inventorySourceId,
-                'is_shippable' => $g->isShippable,
-                'items_count' => count($g->items),
-            ];
+            foreach ($g->items as $it) {
+                /** @var FulfillmentItemLine $it */
+                $fulfillmentAllocations[] = [
+                    'source_id' => $g->inventorySourceId,
+                    'product_id' => $it->productId,
+                    'variant_id' => $it->variantId,
+                    'quantity' => (string) $it->quantity,
+                    'readiness' => is_object($g->readiness) && isset($g->readiness->value) ? (string) $g->readiness->value : (string) $g->readiness,
+                ];
+            }
         }
+        /** @var list<array{source_id: int|null, product_id: int, variant_id: int|null, quantity: string, readiness: string}> $fulfillmentAllocations */
+        usort($fulfillmentAllocations, fn (array $a, array $b): int => (($a['source_id'] ?? 0) <=> ($b['source_id'] ?? 0)) ?: ($a['product_id'] <=> $b['product_id']));
 
+        // 2. Physical Lines Canonical List
         $linesData = [];
         foreach ($cart->lines as $l) {
             /** @var CartLine $l */
@@ -199,8 +211,31 @@ class CheckoutShippingOrchestrator
                 'product_id' => $l->product_id,
                 'variant_id' => $l->variant_id,
                 'quantity' => (string) $l->quantity,
+                'unit_weight_kg' => (string) ($l->product->weight_kg ?? '0.0000'),
+                'shipping_class_id' => isset($l->product->shipping_class_id) ? (int) $l->product->shipping_class_id : null,
             ];
         }
+        /** @var list<array{product_id: int, variant_id: int|null, quantity: string, unit_weight_kg: string, shipping_class_id: int|null}> $linesData */
+        usort($linesData, fn (array $a, array $b): int => ($a['product_id'] <=> $b['product_id']) ?: (($a['variant_id'] ?? 0) <=> ($b['variant_id'] ?? 0)));
+
+        // 3. Packages Canonical List
+        $packagesData = [];
+        foreach ($plan->groups as $g) {
+            foreach ($g->packages as $pkg) {
+                /** @var PackageCandidate $pkg */
+                $packagesData[] = [
+                    'weight_kg' => $pkg->totalWeight->toKg(),
+                    'items_count' => count($pkg->items),
+                    'source_id' => $pkg->inventorySourceId,
+                ];
+            }
+        }
+
+        // 4. Promotion Shipping Benefits
+        $shippingBenefits = [
+            'coupon_code' => $cart->coupon_code,
+            'discount_minor' => $matchedQuote->breakdown->promotionDiscount->getMinorAmount(),
+        ];
 
         $rateRelevantInputs = [
             'tenant_id' => $cart->tenant_id,
@@ -213,9 +248,10 @@ class CheckoutShippingOrchestrator
             'method_code' => $matchedQuote->methodCode,
             'carrier_code' => $matchedQuote->carrierCode,
             'service_code' => $matchedQuote->serviceCode,
+            'physical_lines' => $linesData,
             'fulfillment_allocations' => $fulfillmentAllocations,
-            'lines' => $linesData,
-            'coupon_code' => $cart->coupon_code,
+            'packages' => $packagesData,
+            'promotion_shipping_benefits' => $shippingBenefits,
             'original_amount' => $originalAmountMinor,
             'final_amount' => $finalAmountMinor,
             'breakdown' => $breakdownArray,
@@ -236,5 +272,26 @@ class CheckoutShippingOrchestrator
             breakdown: $breakdownArray,
             rateRelevantInputs: $rateRelevantInputs
         );
+    }
+
+    /**
+     * Fully revalidates the stored shipping quote against current checkout state, destination, fulfillment plan, and promotions.
+     */
+    public function revalidateSelectedQuote(Cart $cart, CheckoutAddress $destination, SelectedShippingQuote $selectedQuote): void
+    {
+        if ($selectedQuote->isExpired()) {
+            throw new ShippingQuoteExpiredException("SHIPPING_QUOTE_EXPIRED: Selected shipping quote [{$selectedQuote->methodId}] has expired at [{$selectedQuote->expiresAt->toIso8601String()}].");
+        }
+
+        $freshQuote = $this->buildAuthoritativeSelectedQuote($cart, $destination, [
+            'method_id' => $selectedQuote->methodId,
+            'method_code' => $selectedQuote->methodCode,
+            'carrier_code' => $selectedQuote->carrierCode,
+            'service_code' => $selectedQuote->serviceCode,
+        ]);
+
+        if ($freshQuote->fingerprint !== $selectedQuote->fingerprint) {
+            throw new ShippingQuoteStaleException("SHIPPING_QUOTE_STALE: Selected shipping quote [{$selectedQuote->methodId}] is no longer valid due to checkout state changes. Re-selection is required.");
+        }
     }
 }

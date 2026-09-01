@@ -189,7 +189,7 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
         foreach ($items as $item) {
             $key = $item->productId.'_'.($item->variantId ?? '0');
             $avail = $availability[$sourceId][$key] ?? null;
-            if ($avail === null || ! $avail->canFulfillQuantity($item->quantity)) {
+            if ($avail === null || ! $avail->canFulfillQuantity((string) $item->quantity)) {
                 return false;
             }
         }
@@ -221,10 +221,11 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
 
         foreach ($items as $item) {
             $key = $item->productId.'_'.($item->variantId ?? '0');
-            $remainingQty = $item->quantity;
+            /** @var numeric-string $remainingQty */
+            $remainingQty = (string) $item->quantity;
 
             foreach ($sources as $source) {
-                if ($remainingQty <= 0) {
+                if (bccomp($remainingQty, '0', 4) <= 0) {
                     break;
                 }
                 $avail = $availability[$source->id][$key] ?? null;
@@ -235,34 +236,41 @@ class FulfillmentPlanningService implements FulfillmentPlanningServiceInterface
                 if ($avail->readiness === SourceAvailabilityDTO::BACKORDERED || $avail->readiness === SourceAvailabilityDTO::PREORDER) {
                     $allocateQty = $remainingQty;
                 } elseif ($avail->isReady()) {
-                    $availableAtSource = (int) floor((float) $avail->available->toString());
-                    if ($availableAtSource <= 0) {
+                    /** @var numeric-string $availableAtSource */
+                    $availableAtSource = $avail->available->toString();
+                    if (bccomp($availableAtSource, '0', 4) <= 0) {
                         continue;
                     }
-                    $allocateQty = min($remainingQty, $availableAtSource);
+                    $allocateQty = bccomp($remainingQty, $availableAtSource, 4) <= 0 ? $remainingQty : $availableAtSource;
                 } else {
                     continue;
                 }
+                $finalQty = is_int($item->quantity) ? (int) $allocateQty : $allocateQty;
                 $allocatedLine = new FulfillmentItemLine(
                     productId: $item->productId,
                     variantId: $item->variantId,
-                    quantity: $allocateQty,
+                    quantity: $finalQty,
                     unitPrice: $item->unitPrice,
                     unitWeight: $item->unitWeight,
+                    dimensions: $item->dimensions,
+                    shippingClassId: $item->shippingClassId,
                     isShippable: true
                 );
                 $sourceAllocations[$source->id][] = $allocatedLine;
-                $remainingQty -= $allocateQty;
+                $remainingQty = (string) bcsub($remainingQty, (string) $allocateQty, 4);
             }
 
-            if ($remainingQty > 0) {
+            if (bccomp($remainingQty, '0', 4) > 0) {
                 // Remaining quantity cannot be fulfilled
+                $finalUnavailQty = is_int($item->quantity) ? (int) $remainingQty : $remainingQty;
                 $unavailableItem = new FulfillmentItemLine(
                     productId: $item->productId,
                     variantId: $item->variantId,
-                    quantity: $remainingQty,
+                    quantity: $finalUnavailQty,
                     unitPrice: $item->unitPrice,
                     unitWeight: $item->unitWeight,
+                    dimensions: $item->dimensions,
+                    shippingClassId: $item->shippingClassId,
                     isShippable: false
                 );
                 $unavailableItems[] = $unavailableItem;

@@ -13,7 +13,7 @@ final readonly class FulfillmentItemLine
     public function __construct(
         public int $productId,
         public ?int $variantId,
-        public int $quantity,
+        public int|string $quantity,
         public MoneyValue $unitPrice,
         public Weight $unitWeight,
         public ?Dimension $dimensions = null,

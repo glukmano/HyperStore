@@ -98,7 +98,9 @@ class PriceResolver implements PriceResolverInterface
         $appliedTierMin = null;
 
         // 3. Check Quantity Tier Breaks
-        if ($item->quantity > 1 && $matchedPrice->tierPrices->isNotEmpty()) {
+        /** @var numeric-string $itemQtyStr */
+        $itemQtyStr = (string) $item->quantity;
+        if (bccomp($itemQtyStr, '1', 4) > 0 && $matchedPrice->tierPrices->isNotEmpty()) {
             /** @var TierPrice|null $matchedTier */
             $matchedTier = $matchedPrice->tierPrices
                 ->filter(fn ($t) => $t instanceof TierPrice && $t->min_quantity <= $item->quantity && ($t->max_quantity === null || $t->max_quantity >= $item->quantity))

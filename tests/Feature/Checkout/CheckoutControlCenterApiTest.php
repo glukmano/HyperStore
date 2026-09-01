@@ -130,21 +130,34 @@ class CheckoutControlCenterApiTest extends TestCase
         $cart = $this->cartService->getOrCreateActiveCart(new CartContext(tenantId: $this->tenant->id, storeId: $this->store->id, marketId: $this->market->id, channelId: $this->channel->id, currency: 'CHF', userId: $this->adminUser->id));
         $this->cartService->addLine($cart, new CartLineItemData($this->product->id, null, CartQuantity::fromInt(1)));
         $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('customer@secret.com', 'John', 'Doe', phone: '+41791234567'));
+        $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('John Doe', ['Secret Street 99'], 'Zurich', 'CH', postalCode: '8000', phone: '+41791234567'));
 
         // 1. Unauthorized user cannot access Control Center checkout sessions
         Sanctum::actingAs($this->unauthorizedUser, ['*']);
         $resp = $this->getJson('/api/v1/control-center/checkout/sessions');
         $resp->assertStatus(403);
 
-        // 2. Admin with checkout.inspect permission can inspect
+        // 2. Admin with checkout.inspect permission receives masked diagnostic data
         Sanctum::actingAs($this->adminUser, ['*']);
         $resp = $this->getJson('/api/v1/control-center/checkout/sessions');
         $resp->assertStatus(200);
         $resp->assertJsonFragment(['id' => $session->id]);
 
+        // Assert sensitive PII is masked/excluded
+        $content = $resp->getContent();
+        $this->assertStringNotContainsString('customer@secret.com', $content);
+        $this->assertStringNotContainsString('+41791234567', $content);
+        $this->assertStringNotContainsString('Secret Street 99', $content);
+
+        // Detail endpoint
         $respDetail = $this->getJson("/api/v1/control-center/checkout/sessions/{$session->id}");
         $respDetail->assertStatus(200);
         $respDetail->assertJsonFragment(['id' => $session->id]);
+        $detailContent = $respDetail->getContent();
+        $this->assertStringNotContainsString('customer@secret.com', $detailContent);
+        $this->assertStringNotContainsString('+41791234567', $detailContent);
+        $this->assertStringNotContainsString('Secret Street 99', $detailContent);
     }
 
     public function test_control_center_manual_reservation_release(): void

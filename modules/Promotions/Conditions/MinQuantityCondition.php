@@ -16,12 +16,17 @@ class MinQuantityCondition implements PromotionConditionInterface
 
     public function evaluate(PromotionContext $context, array $parameters): bool
     {
-        $minQty = (int) ($parameters['min_quantity'] ?? 1);
-        $totalQty = 0;
+        /** @var numeric-string $minQty */
+        $minQty = (string) ($parameters['min_quantity'] ?? '1');
+        /** @var numeric-string $totalQty */
+        $totalQty = '0.0000';
         foreach ($context->items as $item) {
-            $totalQty += $item->quantity;
+            /** @var numeric-string $itemQty */
+            $itemQty = (string) $item->quantity;
+            /** @var numeric-string $totalQty */
+            $totalQty = bcadd($totalQty, $itemQty, 4);
         }
 
-        return $totalQty >= $minQty;
+        return bccomp($totalQty, $minQty, 4) >= 0;
     }
 }

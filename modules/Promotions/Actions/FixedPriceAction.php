@@ -26,7 +26,8 @@ class FixedPriceAction implements PromotionActionInterface
         foreach ($context->items as $item) {
             if ($item->productId === $targetProductId && $item->unitPrice->getMinorAmount() > $targetPriceMinor) {
                 $diffPerUnit = $item->unitPrice->getMinorAmount() - $targetPriceMinor;
-                $discountMinor += $diffPerUnit * $item->quantity;
+                $diffMoney = MoneyValue::fromMinor($diffPerUnit, $context->currency);
+                $discountMinor += $diffMoney->multiply((string) $item->quantity)->getMinorAmount();
             }
         }
 

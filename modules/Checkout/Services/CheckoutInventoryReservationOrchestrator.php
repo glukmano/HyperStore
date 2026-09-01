@@ -46,29 +46,13 @@ class CheckoutInventoryReservationOrchestrator
                 continue;
             }
 
-            // Map cart lines for single-item fractional preservation
-            $cartLines = [];
-            foreach ($session->cart->lines as $cl) {
-                $k = $cl->product_id.':'.($cl->variant_id ?? 0);
-                $cartLines[$k] = (string) $cl->quantity;
-            }
-
             foreach ($group->items as $item) {
                 /** @var FulfillmentItemLine $item */
-                $k = $item->productId.':'.($item->variantId ?? 0);
-                $cartQty = $cartLines[$k] ?? null;
-
-                if ($cartQty !== null && str_contains($cartQty, '.') && rtrim(explode('.', $cartQty)[1] ?? '', '0') !== '' && count($plan->groups) === 1) {
-                    $allocQty = $cartQty;
-                } else {
-                    $allocQty = (string) $item->quantity;
-                }
-
                 $allocations[] = [
                     'source_id' => $group->inventorySourceId,
                     'product_id' => $item->productId,
                     'variant_id' => $item->variantId,
-                    'quantity' => $allocQty,
+                    'quantity' => (string) $item->quantity,
                 ];
             }
         }

@@ -22,6 +22,7 @@ use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
+use Modules\Checkout\Exceptions\ShippingQuoteStaleException;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
@@ -52,9 +53,23 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
 
     private Product $physicalProduct;
 
+    private Product $fractionalProduct;
+
     private ShippingZone $zone;
 
     private ShippingMethod $method;
+
+    private Warehouse $wh1;
+
+    private Warehouse $wh2;
+
+    private InventorySource $sourceA;
+
+    private InventorySource $sourceB;
+
+    private StockItem $stockItemA;
+
+    private StockItem $stockItemB;
 
     private CartServiceInterface $cartService;
 
@@ -95,9 +110,21 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
             'weight_kg' => 1.0,
         ]);
 
+        $this->fractionalProduct = Product::create([
+            'tenant_id' => $this->tenant->id,
+            'sku' => 'FRAC-FABRIC',
+            'name' => 'Fabric by Meter',
+            'slug' => 'fabric-meter',
+            'product_type' => 'custom',
+            'status' => 'active',
+            'weight_kg' => 0.5,
+            'metadata' => ['allows_fractional_quantity' => true],
+        ]);
+
         $pb = PriceBook::create(['tenant_id' => $this->tenant->id, 'code' => 'STD', 'name' => 'Std', 'currency' => 'CHF', 'status' => 'active', 'priority' => 1]);
         Price::create(['tenant_id' => $this->tenant->id, 'price_book_id' => $pb->id, 'product_id' => $this->digitalProduct->id, 'amount_minor' => 2000, 'currency' => 'CHF', 'status' => 'active']);
         Price::create(['tenant_id' => $this->tenant->id, 'price_book_id' => $pb->id, 'product_id' => $this->physicalProduct->id, 'amount_minor' => 4000, 'currency' => 'CHF', 'status' => 'active']);
+        Price::create(['tenant_id' => $this->tenant->id, 'price_book_id' => $pb->id, 'product_id' => $this->fractionalProduct->id, 'amount_minor' => 4000, 'currency' => 'CHF', 'status' => 'active']);
 
         $this->zone = ShippingZone::create(['tenant_id' => $this->tenant->id, 'code' => 'CH_ZONE', 'name' => 'CH Zone', 'status' => 'active']);
         ShippingZoneRule::create(['shipping_zone_id' => $this->zone->id, 'rule_type' => 'country', 'country_code' => 'CH']);
@@ -112,9 +139,11 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         ]);
         ShippingMethodZone::create(['shipping_method_id' => $this->method->id, 'shipping_zone_id' => $this->zone->id]);
 
-        $wh = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH1', 'name' => 'WH 1', 'country_code' => 'CH', 'status' => 'active']);
-        $source = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $wh->id, 'code' => 'SRC1', 'name' => 'Main Warehouse', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
-        StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $source->id, 'product_id' => $this->physicalProduct->id, 'on_hand' => 100, 'reserved' => 0]);
+        $this->wh1 = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH1', 'name' => 'WH 1', 'country_code' => 'CH', 'status' => 'active']);
+        $this->wh2 = Warehouse::create(['tenant_id' => $this->tenant->id, 'code' => 'WH2', 'name' => 'WH 2', 'country_code' => 'CH', 'status' => 'active']);
+        $this->sourceA = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $this->wh1->id, 'code' => 'SRC1', 'name' => 'Warehouse A', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
+        $this->sourceB = InventorySource::create(['tenant_id' => $this->tenant->id, 'warehouse_id' => $this->wh2->id, 'code' => 'SRC2', 'name' => 'Warehouse B', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 20]);
+        StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $this->physicalProduct->id, 'on_hand' => 100, 'reserved' => 0]);
 
         $this->cartService = app(CartServiceInterface::class);
         $this->checkoutOrchestrator = app(CheckoutOrchestratorInterface::class);
@@ -145,7 +174,6 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
             lastName: 'Smith'
         ));
 
-        // Mark ready for order directly without shipping address or shipping quote
         $ready = $this->checkoutOrchestrator->markReadyForOrder($session);
 
         $this->assertSame('ready_for_order', $ready->state);
@@ -186,7 +214,6 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
             postalCode: '3000'
         ));
 
-        // Client attempts to submit final_amount = 1 (tampering)
         $tamperedSelection = [
             'method_id' => $this->method->id,
             'method_code' => $this->method->code,
@@ -196,7 +223,6 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
 
         $session = $this->checkoutOrchestrator->selectShippingQuote($session, $tamperedSelection);
 
-        // Assert server persisted actual authoritative quote amount (1000 minor = 10.00 CHF), ignoring client's 1 minor
         $selected = $session->selected_shipping_quote;
         $this->assertNotNull($selected);
         $this->assertSame(1000, $selected['original_amount']);
@@ -207,7 +233,7 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         $ready = $this->checkoutOrchestrator->markReadyForOrder($session);
 
         $this->assertSame('ready_for_order', $ready->state);
-        $this->assertSame(5000, $ready->totals['grand_total']); // 40.00 + 10.00 shipping = 50.00 CHF
+        $this->assertSame(5000, $ready->totals['grand_total']);
     }
 
     public function test_get_shipping_rates_api_returns_fresh_typed_quotes(): void
@@ -269,5 +295,72 @@ class CheckoutFulfillmentAndShippingTest extends TestCase
         $this->expectExceptionMessage("SHIPPING_QUOTE_EXPIRED: Selected shipping quote [{$this->method->id}] has expired");
 
         $this->checkoutOrchestrator->markReadyForOrder($session);
+    }
+
+    public function test_stale_shipping_quote_fingerprint_blocks_ready_for_order(): void
+    {
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->physicalProduct->id,
+            variantId: null,
+            quantity: CartQuantity::fromInt(1)
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('u@example.com', 'U', '1'));
+        $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('U 1', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        // Manually alter stored fingerprint
+        $quoteData = $session->selected_shipping_quote;
+        $quoteData['fingerprint'] = 'tampered_or_stale_fingerprint_hash';
+        $session->selected_shipping_quote = $quoteData;
+        $session->save();
+
+        $this->expectException(ShippingQuoteStaleException::class);
+        $this->expectExceptionMessage("SHIPPING_QUOTE_STALE: Selected shipping quote [{$this->method->id}] is no longer valid");
+
+        $this->checkoutOrchestrator->reserveInventory($session);
+    }
+
+    public function test_multi_source_fractional_split_fulfillment_and_reservation(): void
+    {
+        // Source A has 0.75 units, Source B has 1.00 unit. Cart requests 1.25 units.
+        $this->stockItemA = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceA->id, 'product_id' => $this->fractionalProduct->id, 'on_hand' => 0.75, 'reserved' => 0]);
+        $this->stockItemB = StockItem::create(['tenant_id' => $this->tenant->id, 'inventory_source_id' => $this->sourceB->id, 'product_id' => $this->fractionalProduct->id, 'on_hand' => 1.00, 'reserved' => 0]);
+
+        $ctx = new CartContext(
+            tenantId: $this->tenant->id,
+            storeId: $this->store->id,
+            marketId: $this->market->id,
+            channelId: $this->channel->id,
+            currency: 'CHF',
+            userId: $this->user->id
+        );
+        $cart = $this->cartService->getOrCreateActiveCart($ctx);
+        $this->cartService->addLine($cart, new CartLineItemData(
+            productId: $this->fractionalProduct->id,
+            variantId: null,
+            quantity: CartQuantity::fromString('1.25000000')
+        ));
+
+        $session = $this->checkoutOrchestrator->createFromCart($cart);
+        $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData('frac@example.com', 'F', 'User'));
+        $session = $this->checkoutOrchestrator->setAddresses($session, new CheckoutAddress('F User', ['Poststrasse 1'], 'Bern', 'CH', postalCode: '3000'));
+        $session = $this->checkoutOrchestrator->selectShippingQuote($session, ['method_id' => $this->method->id, 'method_code' => $this->method->code]);
+
+        $session = $this->checkoutOrchestrator->reserveInventory($session);
+
+        // Assert Source A reserved exactly 0.7500 and Source B reserved exactly 0.5000
+        $this->assertSame('0.7500', (string) $this->stockItemA->fresh()->reserved);
+        $this->assertSame('0.5000', (string) $this->stockItemB->fresh()->reserved);
     }
 }
