@@ -6,6 +6,8 @@ namespace App\Providers;
 
 use App\Core\Audit\AuditManager;
 use App\Core\Audit\Contracts\AuditManagerInterface;
+use App\Core\Channels\Contracts\StoreChannelEligibilityInterface;
+use App\Core\Channels\Services\StoreChannelEligibilityService;
 use App\Core\Context\ContextManager;
 use App\Core\Customers\CustomerScopeService;
 use App\Core\Features\Contracts\FeatureManagerInterface;
@@ -24,6 +26,7 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->bind(StoreChannelEligibilityInterface::class, StoreChannelEligibilityService::class);
         $this->app->singleton(ModuleRegistryInterface::class, ModuleRegistry::class);
 
         $this->app->singleton(ModuleKernelInterface::class, function ($app) {

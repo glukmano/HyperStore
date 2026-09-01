@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Shipping\Services;
 
+use App\Core\Channels\Contracts\StoreChannelEligibilityInterface;
 use Illuminate\Support\Collection;
 use Modules\Shipping\Contracts\ShippingZoneMatcherInterface;
 use Modules\Shipping\Models\ShippingZone;
@@ -14,6 +15,10 @@ use Modules\Shipping\ValueObjects\ShippingDestination;
 
 class ShippingZoneMatcher implements ShippingZoneMatcherInterface
 {
+    public function __construct(
+        private readonly ?StoreChannelEligibilityInterface $channelEligibility = null
+    ) {}
+
     /**
      * Matches shipping zones by strict specificity:
      * 1. Check exclusions (exclusion beats inclusion).
@@ -105,9 +110,26 @@ class ShippingZoneMatcher implements ShippingZoneMatcherInterface
             /** @var ShippingZoneAssignment $assignment */
             $matchStore = $assignment->store_id === null || $assignment->store_id === $context->storeId;
             $matchMarket = $assignment->market_id === null || $assignment->market_id === $context->marketId;
-            $matchChannel = $assignment->channel_id === null || $assignment->channel_id === $context->channelId;
 
-            if ($matchStore && $matchMarket && $matchChannel) {
+            // Channel eligibility check
+            if ($assignment->channel_id !== null) {
+                if ($assignment->channel_id !== $context->channelId) {
+                    continue;
+                }
+
+                // Channel is global reference data: must be enabled for the context store
+                if ($context->storeId === null) {
+                    // Fail safe: channel assignment requires a resolved Store context
+                    continue;
+                }
+
+                $eligibilityService = $this->channelEligibility ?? app(StoreChannelEligibilityInterface::class);
+                if (! $eligibilityService->isEnabledForStore($context->storeId, $assignment->channel_id)) {
+                    continue;
+                }
+            }
+
+            if ($matchStore && $matchMarket) {
                 return true;
             }
         }
