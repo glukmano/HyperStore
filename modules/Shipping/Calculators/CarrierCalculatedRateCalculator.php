@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Shipping\Calculators;
 
+use Illuminate\Support\Facades\Log;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\RateCalculatorInterface;
 use Modules\Shipping\Models\Carrier;
@@ -28,8 +29,20 @@ class CarrierCalculatedRateCalculator implements RateCalculatorInterface
         }
 
         $providerCode = $carrier->provider_code ?? 'manual';
-        $provider = $this->carrierRegistry->getProvider($providerCode);
-        $rates = $provider->calculateRates($carrier, $request);
+        try {
+            $provider = $this->carrierRegistry->getProvider($providerCode);
+            $rates = $provider->calculateRates($carrier, $request);
+        } catch (\Throwable $e) {
+            Log::warning('Carrier provider execution failed, isolating error', [
+                'carrier_code' => $carrier->code,
+                'provider_code' => $providerCode,
+                'error_class' => get_class($e),
+                'error_message' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
         if (empty($rates)) {
             return null;
         }

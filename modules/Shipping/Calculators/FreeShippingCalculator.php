@@ -15,7 +15,7 @@ class FreeShippingCalculator implements RateCalculatorInterface
 {
     public function calculate(ShippingMethod $method, ShippingZone $zone, ShippingRateRequest $request): ?RateBreakdown
     {
-        $currency = $request->context->currency;
+        $currency = $method->currency ?? $request->context->currency;
         $zero = MoneyValue::fromMinor(0, $currency);
 
         // Check configured min_subtotal threshold if specified

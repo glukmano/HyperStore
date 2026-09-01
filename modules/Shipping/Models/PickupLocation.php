@@ -7,12 +7,29 @@ namespace Modules\Shipping\Models;
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use InvalidArgumentException;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\Warehouse;
 
 class PickupLocation extends Model
 {
     use BelongsToTenant;
+
+    public static function boot(): void
+    {
+        parent::boot();
+
+        static::saving(function (PickupLocation $loc) {
+            $src = $loc->inventorySource;
+            if ($src instanceof InventorySource && (int) $src->tenant_id !== (int) $loc->tenant_id) {
+                throw new InvalidArgumentException("PickupLocation tenant_id [{$loc->tenant_id}] does not match InventorySource tenant_id [{$src->tenant_id}].");
+            }
+            $wh = $loc->warehouse;
+            if ($wh instanceof Warehouse && (int) $wh->tenant_id !== (int) $loc->tenant_id) {
+                throw new InvalidArgumentException("PickupLocation tenant_id [{$loc->tenant_id}] does not match Warehouse tenant_id [{$wh->tenant_id}].");
+            }
+        });
+    }
 
     public $timestamps = false;
 

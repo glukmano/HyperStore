@@ -19,6 +19,7 @@ use Modules\Inventory\Models\Warehouse;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
 use Modules\Shipping\Models\Carrier;
+use Modules\Shipping\Models\PickupLocation;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingZone;
@@ -176,5 +177,40 @@ class ShippingSecurityAndPurityTest extends TestCase
 
         // Must reject cross-tenant inventory source
         $response->assertStatus(404);
+    }
+
+    public function test_cross_tenant_method_zone_relationship_is_rejected(): void
+    {
+        $zoneA = ShippingZone::create(['tenant_id' => $this->tenantA->id, 'code' => 'ZONE_A', 'name' => 'Zone A', 'status' => 'active']);
+        $methodB = ShippingMethod::create([
+            'tenant_id' => $this->tenantB->id,
+            'code' => 'METHOD_B',
+            'name' => 'Method B',
+            'rate_calculator_type' => 'flat_rate',
+            'currency' => 'CHF',
+            'base_amount' => 1000,
+            'status' => 'active',
+        ]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        ShippingMethodZone::create([
+            'shipping_method_id' => $methodB->id,
+            'shipping_zone_id' => $zoneA->id,
+        ]);
+    }
+
+    public function test_cross_tenant_pickup_location_source_is_rejected(): void
+    {
+        $whB = Warehouse::create(['tenant_id' => $this->tenantB->id, 'code' => 'WH_B_SEC', 'name' => 'WH B Sec', 'country_code' => 'CH', 'status' => 'active']);
+        $srcB = InventorySource::create(['tenant_id' => $this->tenantB->id, 'warehouse_id' => $whB->id, 'code' => 'SRC_B_SEC', 'name' => 'SRC B Sec', 'source_type' => 'warehouse', 'status' => 'active', 'priority' => 10]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        PickupLocation::create([
+            'tenant_id' => $this->tenantA->id,
+            'inventory_source_id' => $srcB->id,
+            'code' => 'PICKUP_CROSS',
+            'name' => 'Pickup Cross',
+            'status' => 'active',
+        ]);
     }
 }

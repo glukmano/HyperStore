@@ -4,21 +4,43 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Shipping;
 
+use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Modules\Pricing\Contracts\CurrencyConversionInterface;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
+use Modules\Shipping\Contracts\ShippingZoneMatcherInterface;
 use Modules\Shipping\Models\ShippingMethod;
 use Modules\Shipping\Models\ShippingMethodZone;
 use Modules\Shipping\Models\ShippingZone;
+use Modules\Shipping\Models\ShippingZoneAssignment;
 use Modules\Shipping\Models\ShippingZoneRule;
+use Modules\Shipping\Registries\ShippingMethodTypeRegistry;
+use Modules\Shipping\Services\ShippingRateEngine;
+use Modules\Shipping\Services\ShippingRestrictionEvaluator;
 use Modules\Shipping\ValueObjects\FreeShippingBenefitDTO;
 use Modules\Shipping\ValueObjects\ShippingContext;
 use Modules\Shipping\ValueObjects\ShippingDestination;
 use Modules\Shipping\ValueObjects\ShippingRateRequest;
 use Modules\Shipping\ValueObjects\Weight;
 use Tests\TestCase;
+
+class FakeCurrencyConverter implements CurrencyConversionInterface
+{
+    public function convert(MoneyValue $amount, string $targetCurrency, ?int $tenantId = null): MoneyValue
+    {
+        // 1 EUR = 1.10 CHF -> multiply by 1.10
+        if ($amount->getCurrencyCode() === 'EUR' && $targetCurrency === 'CHF') {
+            $convertedMinor = (int) round($amount->getMinorAmount() * 1.10);
+
+            return MoneyValue::fromMinor($convertedMinor, 'CHF');
+        }
+
+        return MoneyValue::fromMinor($amount->getMinorAmount(), $targetCurrency);
+    }
+}
 
 class ShippingRateCalculationTest extends TestCase
 {
@@ -139,5 +161,109 @@ class ShippingRateCalculationTest extends TestCase
         $this->assertSame(1700, $quotes[0]->breakdown->promotionDiscount->getMinorAmount());
         $this->assertSame(1500, $quotes[0]->breakdown->baseRate->getMinorAmount());
         $this->assertSame(200, $quotes[0]->breakdown->handlingFee->getMinorAmount());
+    }
+
+    public function test_currency_conversion_preserves_every_breakdown_component(): void
+    {
+        $zone = ShippingZone::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'EU_ZONE',
+            'name' => 'EU Zone',
+            'status' => 'active',
+        ]);
+        ShippingZoneRule::create(['shipping_zone_id' => $zone->id, 'rule_type' => 'country', 'country_code' => 'DE']);
+
+        // Method configured in EUR: base 1000 EUR, handling 200 EUR
+        $m = ShippingMethod::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'EUR_METHOD',
+            'name' => 'EUR Method',
+            'rate_calculator_type' => 'flat_rate',
+            'currency' => 'EUR',
+            'base_amount' => 1000,
+            'handling_fee' => 200,
+            'priority' => 10,
+            'status' => 'active',
+        ]);
+        ShippingMethodZone::create(['shipping_method_id' => $m->id, 'shipping_zone_id' => $zone->id]);
+
+        $customEngine = new ShippingRateEngine(
+            zoneMatcher: app(ShippingZoneMatcherInterface::class),
+            methodTypeRegistry: app(ShippingMethodTypeRegistry::class),
+            restrictionEvaluator: app(ShippingRestrictionEvaluator::class),
+            currencyConverter: new FakeCurrencyConverter
+        );
+
+        // Request in CHF (1 EUR = 1.10 CHF)
+        $request = new ShippingRateRequest(
+            context: new ShippingContext(tenantId: $this->tenant->id, currency: 'CHF'),
+            destination: new ShippingDestination(countryCode: 'DE'),
+            lines: [
+                ['product_id' => 1, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(5000, 'CHF'), 'unit_weight' => Weight::of('1.0', 'kg'), 'is_shippable' => true],
+            ]
+        );
+
+        $quotes = $customEngine->calculateQuotes($request);
+
+        $this->assertCount(1, $quotes);
+        $quote = $quotes[0];
+
+        // Base rate: 1000 EUR * 1.10 = 1100 CHF
+        $this->assertSame(1100, $quote->breakdown->baseRate->getMinorAmount());
+        $this->assertSame('CHF', $quote->breakdown->baseRate->getCurrencyCode());
+
+        // Handling fee: 200 EUR * 1.10 = 220 CHF
+        $this->assertSame(220, $quote->breakdown->handlingFee->getMinorAmount());
+        $this->assertSame('CHF', $quote->breakdown->handlingFee->getCurrencyCode());
+
+        // Final Amount: 1100 + 220 = 1320 CHF
+        $this->assertSame(1320, $quote->amount->getMinorAmount());
+        $this->assertSame('CHF', $quote->amount->getCurrencyCode());
+        $this->assertSame(1320, $quote->breakdown->finalAmount->getMinorAmount());
+    }
+
+    public function test_shipping_zone_store_market_channel_scoping(): void
+    {
+        $store1 = Store::create(['tenant_id' => $this->tenant->id, 'code' => 'STORE_1', 'name' => 'Store 1', 'slug' => 'store-1', 'status' => 'active']);
+        $zone = ShippingZone::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'STORE_1_ONLY',
+            'name' => 'Store 1 Only Zone',
+            'status' => 'active',
+        ]);
+        ShippingZoneRule::create(['shipping_zone_id' => $zone->id, 'rule_type' => 'country', 'country_code' => 'CH']);
+        ShippingZoneAssignment::create([
+            'shipping_zone_id' => $zone->id,
+            'store_id' => $store1->id,
+            'market_id' => null,
+            'channel_id' => null,
+        ]);
+
+        $m = ShippingMethod::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'METHOD_STORE_1',
+            'name' => 'Store 1 Method',
+            'rate_calculator_type' => 'flat_rate',
+            'currency' => 'CHF',
+            'base_amount' => 500,
+            'status' => 'active',
+        ]);
+        ShippingMethodZone::create(['shipping_method_id' => $m->id, 'shipping_zone_id' => $zone->id]);
+
+        // Request with Store 2 -> No quotes
+        $reqStore2 = new ShippingRateRequest(
+            context: new ShippingContext(tenantId: $this->tenant->id, currency: 'CHF', storeId: 2),
+            destination: new ShippingDestination(countryCode: 'CH'),
+            lines: [['product_id' => 1, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(1000, 'CHF'), 'unit_weight' => Weight::zero(), 'is_shippable' => true]]
+        );
+        $this->assertEmpty($this->engine->calculateQuotes($reqStore2));
+
+        // Request with Store 1 -> Quote returned
+        $reqStore1 = new ShippingRateRequest(
+            context: new ShippingContext(tenantId: $this->tenant->id, currency: 'CHF', storeId: $store1->id),
+            destination: new ShippingDestination(countryCode: 'CH'),
+            lines: [['product_id' => 1, 'quantity' => 1, 'unit_price' => MoneyValue::fromMinor(1000, 'CHF'), 'unit_weight' => Weight::zero(), 'is_shippable' => true]]
+        );
+        $this->assertCount(1, $this->engine->calculateQuotes($reqStore1));
     }
 }
