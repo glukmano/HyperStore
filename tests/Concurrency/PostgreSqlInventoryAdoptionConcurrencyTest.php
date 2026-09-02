@@ -24,11 +24,19 @@ use Tests\TestCase;
 /**
  * True process-level PostgreSQL concurrency tests for InventoryReservation adoption.
  *
- * Each test spawns real OS-level processes via proc_open, synchronized with a file
- * barrier, to prove transactional correctness under genuine database-level races.
+ * Each race spawns real OS-level PHP processes via proc_open, synchronized with a
+ * file-barrier, running against the live PostgreSQL database.  These tests prove
+ * that production code (not test-side guards) handles races correctly.
  *
- * These tests require a running PostgreSQL instance with the hyperstore database.
- * They are NOT SQLite/in-memory tests.
+ * Race A: TOCTOU — adoption vs automatic expiration.
+ *   The expire worker calls the REAL InventoryReservationService::expire() with NO
+ *   test-side eligibility guard.  expire() itself must refuse to expire an adopted
+ *   reservation under its own row lock.
+ *
+ * Race A-deadline: adopt() rejects a reservation whose TTL passed before the lock.
+ * Race B: adoption vs release.
+ * Race C: duplicate same-owner adoption.
+ * Race D: conflicting-owner adoption.
  */
 class PostgreSqlInventoryAdoptionConcurrencyTest extends TestCase
 {
@@ -96,25 +104,61 @@ PHP;
     }
 
     // ───────────────────────────────────────────────────────────────────────
-    // Race A: Adoption vs Expiration
-    // Two processes simultaneously: one adopts, one expires the same reservation.
+    // Race A: TOCTOU — Adoption vs Expiration (production code only, no test guard)
+    //
+    // This race proves expire() itself refuses to expire an adopted reservation.
+    // The expire worker calls the REAL service->expire() with NO test-side check.
+    //
+    // The expire worker pre-fetches the InventoryReservation row BEFORE adoption,
+    // pauses at the barrier, while the adopt worker adopts first.
+    // When expire resumes, it passes its stale candidate to service->expire().
+    // expire() re-evaluates eligibility under its own FOR UPDATE row lock and
+    // sees owner_type IS NOT NULL — refuses to expire.
+    //
+    // Valid outcomes:
+    //   Adoption first: status=active, owner_type=order, expires_at=null, reserved unchanged.
+    //   Expiration first: status=expired, adopt() fails, reserved=0.
+    //
+    // Forbidden: adopted+expired, adopted+stock released, double-decrement.
     // ───────────────────────────────────────────────────────────────────────
-    public function test_race_a_adoption_vs_expiration(): void
+    public function test_race_a_adoption_wins_over_expiration_via_expire_service_authority(): void
     {
         $tenantId = $this->tenant->id;
         $productId = $this->productId;
 
-        // Create a reservation with a 60-min TTL (not yet expired)
         $service = app(InventoryReservationServiceInterface::class);
         $context = new InventoryContext(tenantId: $tenantId);
-        $resKey = 'race-a-adopt-vs-expire-'.uniqid();
+        $resKey = 'race-a-toctou-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
-
-        // Record stock_item reserved before the race
+        $reservationId = InventoryReservation::where('reservation_key', $resKey)->first()->id;
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
 
         $b = $this->baseWorkerBootstrap;
+
+        // Expire worker: loads the reservation BEFORE the barrier (stale candidate reference),
+        // then calls the REAL service->expire() with NO test-side guard.
+        // expire() itself must detect adoption under its row lock.
+        $workerExpire = <<<PHP
+{$b}
+use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
+use Modules\Inventory\Models\InventoryReservation;
+
+// Pre-fetch the candidate row (as ExpireReservationsCommand would do via chunkById)
+\$candidate = InventoryReservation::find({$reservationId});
+
+// __BARRIER_WAIT__
+// Both workers are now synchronized. adopt worker runs concurrently.
+
+try {
+    // Call the REAL production service->expire() with NO test-side eligibility guard.
+    // expire() itself must re-evaluate eligibility under its own row lock.
+    \$expired = app(InventoryReservationServiceInterface::class)->expire(\$candidate);
+    echo \$expired ? 'EXPIRED' : 'NOOP';
+} catch (Throwable \$e) {
+    echo 'EXPIRE_FAIL:' . \$e->getMessage();
+}
+PHP;
 
         $workerAdopt = <<<PHP
 {$b}
@@ -122,6 +166,7 @@ use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Enums\ReservationOwnerType;
 
 // __BARRIER_WAIT__
+
 try {
     app(InventoryReservationServiceInterface::class)->adopt(
         {$tenantId},
@@ -135,73 +180,98 @@ try {
 }
 PHP;
 
-        $workerExpire = <<<PHP
-{$b}
-use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
-use Modules\Inventory\Models\InventoryReservation;
-use Carbon\Carbon;
-
-// __BARRIER_WAIT__
-try {
-    // Force expires_at to past inside a transaction to simulate expiration window
-    // then expire via service
-    \Illuminate\Support\Facades\DB::transaction(function () use (&\$res) {
-        \$res = InventoryReservation::where('reservation_key', '{$resKey}')
-            ->lockForUpdate()
-            ->first();
-        if (\$res && \$res->status === 'active' && \$res->owner_type === null) {
-            app(InventoryReservationServiceInterface::class)->expire(\$res);
-            echo 'EXPIRED';
-        } else {
-            echo 'SKIP_EXPIRE:status=' . (\$res ? \$res->status : 'null') . ':owner=' . (\$res ? \$res->owner_type : 'null');
-        }
-    });
-} catch (Throwable \$e) {
-    echo 'EXPIRE_FAIL:' . \$e->getMessage();
-}
-PHP;
-
-        $results = $this->runSynchronizedParallelWorkers([$workerAdopt, $workerExpire]);
-        $adoptOut = $results[0]['stdout'];
-        $expireOut = $results[1]['stdout'];
+        $results = $this->runSynchronizedParallelWorkers([$workerExpire, $workerAdopt]);
+        $expireOut = $results[0]['stdout'];
+        $adoptOut = $results[1]['stdout'];
 
         $res = InventoryReservation::where('reservation_key', $resKey)->first();
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
-        // Valid final states:
-        // A) Adoption wins: status=active, owner_type=order, expires_at=null, reserved unchanged
-        // B) Expiration wins: status=expired, owner_type=null, reserved=0 OR stockBefore (depending on alloc)
-        $adopted = str_contains($adoptOut, 'ADOPTED');
-        $expired = str_contains($expireOut, 'EXPIRED') || str_contains($expireOut, 'SKIP_EXPIRE');
+        $this->assertNotNull($res);
 
-        $this->assertNotNull($res, 'Reservation must exist after race');
-
-        if ($adopted) {
-            // Adoption won
+        if (str_contains($adoptOut, 'ADOPTED')) {
+            // Adoption won: expire() saw the adopted state under its lock and returned false (NOOP)
+            $this->assertTrue(
+                str_contains($expireOut, 'NOOP'),
+                "When adoption wins, expire() MUST return false (NOOP). Got: [{$expireOut}]"
+            );
             $this->assertSame('active', $res->status, 'Adopted reservation must remain active');
-            $this->assertSame('order', $res->owner_type, 'Owner must be order after adoption');
-            $this->assertNull($res->expires_at, 'expires_at must be null after adoption');
-            $this->assertEquals($stockBefore, $stockAfter, 'StockItem.reserved must be unchanged after adoption');
+            $this->assertSame('order', $res->owner_type);
+            $this->assertSame('ORDER-RACE-A', $res->owner_reference);
+            $this->assertNull($res->expires_at);
+            $this->assertEquals($stockBefore, $stockAfter, 'Stock must remain unchanged when adoption wins');
         } else {
-            // Expiration won — adoption must have failed
-            $this->assertTrue(str_contains($adoptOut, 'ADOPT_FAIL'), "If expiration won, adoption must fail. Got: {$adoptOut}");
-            $this->assertSame('expired', $res->status, 'Reservation must be expired if expiration won');
-            $this->assertNull($res->owner_type, 'No owner on expired reservation');
+            // Expiration won first: adopt() must fail; stock released
+            $this->assertTrue(
+                str_contains($expireOut, 'EXPIRED'),
+                "If adoption lost, expiration must have succeeded. Got: [{$expireOut}]"
+            );
+            $this->assertTrue(
+                str_contains($adoptOut, 'ADOPT_FAIL'),
+                "If expiration won, adopt() must fail. Got: [{$adoptOut}]"
+            );
+            $this->assertSame('expired', $res->status);
+            $this->assertNull($res->owner_type);
         }
 
-        // FORBIDDEN: adopted reservation with released stock
-        if ($res->status === 'active' && $res->owner_type === 'order') {
+        // INVARIANTS — must hold regardless of which worker won:
+
+        // FORBIDDEN: adopted reservation that was also expired
+        if ($res->status === 'active') {
+            $this->assertNotNull($res->owner_type, 'Active reservation must have an owner if adoption won');
+        }
+
+        // FORBIDDEN: double decrement or negative stock
+        $this->assertGreaterThanOrEqual('0.0000', $stockAfter);
+
+        // FORBIDDEN: adopted + stock released (only one state may have released stock)
+        if ($res->owner_type === 'order' && $res->status === 'active') {
             $this->assertEquals($stockBefore, $stockAfter, 'FORBIDDEN: adopted reservation has released stock');
         }
-
-        // FORBIDDEN: double decrement of stock
-        $this->assertGreaterThanOrEqual('0.0000', $stockAfter, 'Stock must not go negative');
     }
 
     // ───────────────────────────────────────────────────────────────────────
-    // Race A (deadline boundary): adoption sees reservation TTL-expired mid-lock
+    // Race A (reverse): Expiration first, adoption fails
+    //
+    // Force a deterministic outcome: expire the reservation first, then attempt adopt.
+    // This confirms the reverse path: expiration wins → adopt() throws.
     // ───────────────────────────────────────────────────────────────────────
-    public function test_race_a_deadline_boundary_adopt_on_already_ttl_expired(): void
+    public function test_race_a_expiration_wins_adoption_rejects(): void
+    {
+        $tenantId = $this->tenant->id;
+        $productId = $this->productId;
+
+        $service = app(InventoryReservationServiceInterface::class);
+        $context = new InventoryContext(tenantId: $tenantId);
+        $resKey = 'race-a-expire-first-'.uniqid();
+
+        $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('1.0000'), $context, 60);
+        $res = InventoryReservation::where('reservation_key', $resKey)->first();
+        $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
+
+        // Deterministically expire first (no concurrent race needed here)
+        InventoryReservation::where('reservation_key', $resKey)
+            ->update(['expires_at' => Carbon::now()->subSeconds(5)]);
+        $res->refresh();
+
+        $expired = $service->expire($res);
+        $this->assertTrue($expired, 'Expiration must succeed on a TTL-passed reservation');
+
+        $resAfter = InventoryReservation::where('reservation_key', $resKey)->first();
+        $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
+
+        $this->assertSame('expired', $resAfter->status);
+        $this->assertLessThan($stockBefore, $stockAfter, 'Stock must have been released by expiration');
+
+        // Now attempt to adopt the expired reservation
+        $this->expectException(ReservationAdoptionException::class);
+        $service->adopt($tenantId, $resKey, ReservationOwnerType::ORDER, 'ORDER-AFTER-EXPIRE');
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Race A (deadline boundary): adopt() sees TTL-expired active reservation
+    // ───────────────────────────────────────────────────────────────────────
+    public function test_race_a_deadline_boundary_adopt_on_ttl_expired_active(): void
     {
         $tenantId = $this->tenant->id;
         $productId = $this->productId;
@@ -212,15 +282,14 @@ PHP;
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('1.0000'), $context, 60);
 
-        // Force expires_at to the past BEFORE adoption attempt
+        // Force expires_at to past BEFORE adoption attempt (simulates TTL boundary at lock time)
         InventoryReservation::where('reservation_key', $resKey)
             ->update(['expires_at' => Carbon::now()->subSeconds(5)]);
 
         $this->expectException(ReservationAdoptionException::class);
-
         $service->adopt($tenantId, $resKey, ReservationOwnerType::ORDER, 'ORDER-DEADLINE');
 
-        // Verify reservation is NOT adopted
+        // Reservation must not be adopted
         $res = InventoryReservation::where('reservation_key', $resKey)->first();
         $this->assertNull($res->owner_type);
         $this->assertSame('active', $res->status);
@@ -228,7 +297,6 @@ PHP;
 
     // ───────────────────────────────────────────────────────────────────────
     // Race B: Adoption vs Release
-    // One worker adopts; one worker releases. Only one may win.
     // ───────────────────────────────────────────────────────────────────────
     public function test_race_b_adoption_vs_release(): void
     {
@@ -240,7 +308,6 @@ PHP;
         $resKey = 'race-b-adopt-vs-release-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
-
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
         $b = $this->baseWorkerBootstrap;
 
@@ -252,10 +319,7 @@ use Modules\Inventory\Enums\ReservationOwnerType;
 // __BARRIER_WAIT__
 try {
     app(InventoryReservationServiceInterface::class)->adopt(
-        {$tenantId},
-        '{$resKey}',
-        ReservationOwnerType::ORDER,
-        'ORDER-RACE-B',
+        {$tenantId}, '{$resKey}', ReservationOwnerType::ORDER, 'ORDER-RACE-B'
     );
     echo 'ADOPTED';
 } catch (Throwable \$e) {
@@ -284,40 +348,27 @@ PHP;
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
         $this->assertNotNull($res);
+        $this->assertContains($res->status, ['active', 'released'], 'Must be active (adopted) or released');
 
-        if (str_contains($adoptOut, 'ADOPTED')) {
-            // Adoption won: release must have been a no-op (already adopted, status still active)
-            // OR release may also have succeeded if it ran after adopt (status=active, then released)
-            // Both are valid. Final state: if still active+adopted OR released.
-            $this->assertContains($res->status, ['active', 'released'], 'Must be active (adopted) or released');
-
-            if ($res->status === 'active') {
-                // Adoption retained: stock still reserved
-                $this->assertEquals($stockBefore, $stockAfter, 'Stock must remain reserved if still adopted+active');
-            } else {
-                // Released after adoption: stock should be 0
-                $this->assertSame('0.0000', $stockAfter, 'Stock must be 0 if released');
-            }
-        } elseif (str_contains($releaseOut, 'RELEASED')) {
-            // Release won: adoption must have failed
-            $this->assertTrue(str_contains($adoptOut, 'ADOPT_FAIL'), "If release won, adoption must fail. Got: {$adoptOut}");
-            $this->assertSame('released', $res->status, 'Must be released if release won');
-            $this->assertSame('0.0000', $stockAfter, 'Stock must be 0 after release');
+        if (str_contains($adoptOut, 'ADOPTED') && $res->status === 'active') {
+            // Adoption won and release was no-op or lost the lock: reserved unchanged
+            $this->assertEquals($stockBefore, $stockAfter, 'Stock must remain when adopted and still active');
+        } elseif ($res->status === 'released') {
+            // Release won at some point: stock must be 0
+            $this->assertSame('0.0000', $stockAfter, 'Stock must be 0 when released');
         }
 
-        // FORBIDDEN: owner retained while stock already released as if active reservation
-        if ($res->status === 'released' && $res->owner_type === 'order') {
-            // Released adopted reservation is acceptable — stock is 0
-            $this->assertSame('0.0000', $stockAfter, 'Released adopted reservation must have 0 reserved stock');
-        }
-
-        // No double decrement
+        // FORBIDDEN: double decrement
         $this->assertGreaterThanOrEqual('0.0000', $stockAfter);
+
+        // FORBIDDEN: adopted active reservation with released stock
+        if ($res->status === 'active' && $res->owner_type === 'order') {
+            $this->assertEquals($stockBefore, $stockAfter, 'FORBIDDEN: adopted+active but stock released');
+        }
     }
 
     // ───────────────────────────────────────────────────────────────────────
-    // Race C: Duplicate same-owner adoption (two processes, same owner)
-    // Exactly one must be the initial adoption; one must be the idempotent replay.
+    // Race C: Duplicate same-owner adoption
     // ───────────────────────────────────────────────────────────────────────
     public function test_race_c_duplicate_same_owner_adoption(): void
     {
@@ -329,11 +380,10 @@ PHP;
         $resKey = 'race-c-dup-adopt-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
-
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
         $b = $this->baseWorkerBootstrap;
 
-        $makeWorker = fn (int $w) => <<<PHP
+        $makeWorker = fn () => <<<PHP
 {$b}
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Enums\ReservationOwnerType;
@@ -341,10 +391,7 @@ use Modules\Inventory\Enums\ReservationOwnerType;
 // __BARRIER_WAIT__
 try {
     \$result = app(InventoryReservationServiceInterface::class)->adopt(
-        {$tenantId},
-        '{$resKey}',
-        ReservationOwnerType::ORDER,
-        'ORDER-DUP-SAME',
+        {$tenantId}, '{$resKey}', ReservationOwnerType::ORDER, 'ORDER-DUP-SAME'
     );
     echo \$result->wasAlreadyAdopted ? 'REPLAY' : 'FIRST';
 } catch (Throwable \$e) {
@@ -352,7 +399,7 @@ try {
 }
 PHP;
 
-        $results = $this->runSynchronizedParallelWorkers([$makeWorker(1), $makeWorker(2)]);
+        $results = $this->runSynchronizedParallelWorkers([$makeWorker(), $makeWorker()]);
         $out0 = $results[0]['stdout'];
         $out1 = $results[1]['stdout'];
 
@@ -361,32 +408,27 @@ PHP;
 
         $this->assertNotNull($res);
 
-        // Both must succeed (one FIRST, one REPLAY — order is non-deterministic)
+        // Both must succeed (not FAIL)
         $this->assertFalse(
             str_contains($out0, 'FAIL') && str_contains($out1, 'FAIL'),
-            "Both workers must not fail. Got: [{$out0}] [{$out1}]"
+            "Both workers must not fail simultaneously. Got: [{$out0}] [{$out1}]"
         );
 
-        // One first, one replay (or both replay if timing causes them to serialize)
-        $outcomes = [$out0, $out1];
-        $firsts = count(array_filter($outcomes, fn ($o) => str_contains($o, 'FIRST')));
-        $replays = count(array_filter($outcomes, fn ($o) => str_contains($o, 'REPLAY')));
+        // At least one must be FIRST or REPLAY
+        $successes = count(array_filter([$out0, $out1], fn ($o) => str_contains($o, 'FIRST') || str_contains($o, 'REPLAY')));
+        $this->assertGreaterThanOrEqual(1, $successes, 'At least one worker must succeed');
 
-        $this->assertGreaterThanOrEqual(1, $firsts + $replays, 'At least one must be FIRST or REPLAY');
+        // Exactly one final owner
+        $this->assertSame('order', $res->owner_type);
+        $this->assertSame('ORDER-DUP-SAME', $res->owner_reference);
+        $this->assertNull($res->expires_at);
 
-        // Final state: exactly one owner
-        $this->assertSame('order', $res->owner_type, 'Owner must be order');
-        $this->assertSame('ORDER-DUP-SAME', $res->owner_reference, 'Same owner reference must win');
-        $this->assertNull($res->expires_at, 'expires_at must be null after adoption');
-
-        // Stock must NOT change from before the adoption race
+        // Stock unchanged from adoption
         $this->assertEquals($stockBefore, $stockAfter, 'StockItem.reserved must not change from adoption race');
     }
 
     // ───────────────────────────────────────────────────────────────────────
-    // Race D: Conflicting owner adoption (two different Order UUIDs)
-    // Exactly one must win; the other must receive typed conflict error.
-    // Final reservation must have exactly one owner.
+    // Race D: Conflicting-owner adoption — exactly one wins
     // ───────────────────────────────────────────────────────────────────────
     public function test_race_d_conflicting_owner_adoption(): void
     {
@@ -398,7 +440,6 @@ PHP;
         $resKey = 'race-d-conflict-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
-
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
         $b = $this->baseWorkerBootstrap;
 
@@ -410,10 +451,7 @@ use Modules\Inventory\Enums\ReservationOwnerType;
 // __BARRIER_WAIT__
 try {
     app(InventoryReservationServiceInterface::class)->adopt(
-        {$tenantId},
-        '{$resKey}',
-        ReservationOwnerType::ORDER,
-        '{$owner}',
+        {$tenantId}, '{$resKey}', ReservationOwnerType::ORDER, '{$owner}'
     );
     echo 'ADOPTED:{$owner}';
 } catch (Throwable \$e) {
@@ -431,26 +469,20 @@ PHP;
         $res = InventoryReservation::where('reservation_key', $resKey)->first();
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
-        $this->assertNotNull($res);
-
         $successCount = count(array_filter([$out0, $out1], fn ($o) => str_contains($o, 'ADOPTED')));
         $failCount = count(array_filter([$out0, $out1], fn ($o) => str_contains($o, 'FAIL')));
 
-        // Exactly one must succeed, exactly one must fail
         $this->assertSame(1, $successCount, "Exactly one owner must win. Got: [{$out0}] [{$out1}]");
-        $this->assertSame(1, $failCount, "Exactly one must fail with conflict. Got: [{$out0}] [{$out1}]");
+        $this->assertSame(1, $failCount, "Exactly one must fail. Got: [{$out0}] [{$out1}]");
 
-        // Loser must get a typed conflict error
         $loserOut = str_contains($out0, 'FAIL') ? $out0 : $out1;
-        $this->assertStringContainsString('RESERVATION_CONFLICTING_OWNER', $loserOut, 'Loser must get typed conflict error');
+        $this->assertStringContainsString('RESERVATION_CONFLICTING_OWNER', $loserOut, 'Loser must receive typed conflict error');
 
-        // Final reservation has exactly one owner
         $this->assertSame('order', $res->owner_type);
         $this->assertContains($res->owner_reference, ['ORDER-CONFLICT-A', 'ORDER-CONFLICT-B']);
         $this->assertNull($res->expires_at);
 
-        // Stock unchanged (adoption does not alter reserved amount)
-        $this->assertEquals($stockBefore, $stockAfter, 'StockItem.reserved must not change during adoption race');
+        $this->assertEquals($stockBefore, $stockAfter, 'Stock unchanged during adoption race');
     }
 
     // ───────────────────────────────────────────────────────────────────────

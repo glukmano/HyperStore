@@ -7,6 +7,7 @@ namespace Tests\Feature\Inventory;
 use App\Core\Tenancy\Models\Tenant;
 use Carbon\Carbon;
 use Database\Seeders\ReferenceDataSeeder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Modules\Catalog\Actions\CreateProductAction;
 use Modules\Catalog\DTOs\ProductData;
@@ -67,9 +68,9 @@ beforeEach(function (): void {
 });
 
 // ---------------------------------------------------------------------------
-// A-01: Successful adoption sets ownership, clears expires_at, fires event
+// A-01: Successful adoption — fields set, event dispatched after commit
 // ---------------------------------------------------------------------------
-test('A-01: successful adopt sets owner fields, clears expires_at, dispatches InventoryReservationAdopted', function (): void {
+test('A-01: successful adopt sets owner fields, clears expires_at, dispatches InventoryReservationAdopted after commit', function (): void {
     Event::fake([InventoryReservationAdopted::class]);
 
     $this->service->reserve(
@@ -98,13 +99,16 @@ test('A-01: successful adopt sets owner fields, clears expires_at, dispatches In
         ->and($result->reservation->adopted_at)->not->toBeNull()
         ->and($result->reservation->expires_at)->toBeNull();
 
+    // Event is dispatched via DB::afterCommit. In the test env (no real nested
+    // transaction wrapping the test body) the afterCommit callback fires once
+    // the DB::transaction() inside adopt() commits.
     Event::assertDispatched(InventoryReservationAdopted::class, function ($e) {
         return $e->reservation->reservation_key === 'chk-adopt-a01';
     });
 });
 
 // ---------------------------------------------------------------------------
-// A-02: Allocations unchanged during adoption; StockItem.reserved unchanged
+// A-02: Allocations unchanged; StockItem.reserved unchanged during adoption
 // ---------------------------------------------------------------------------
 test('A-02: adopt does not alter allocations or StockItem.reserved', function (): void {
     $this->service->reserve(
@@ -125,15 +129,14 @@ test('A-02: adopt does not alter allocations or StockItem.reserved', function ()
         'ORDER-UUID-002',
     );
 
-    $reservedAfter = $this->stockItem->fresh()->reserved;
-    expect($reservedAfter)->toBe($reservedBefore);
+    expect($this->stockItem->fresh()->reserved)->toBe($reservedBefore);
 
     $res = InventoryReservation::where('reservation_key', 'chk-adopt-a02')->first();
     expect($res->allocations)->not->toBeEmpty();
 });
 
 // ---------------------------------------------------------------------------
-// A-03: Adopted reservations are excluded from ExpireReservationsCommand
+// A-03: Adopted reservations excluded from ExpireReservationsCommand
 // ---------------------------------------------------------------------------
 test('A-03: adopted reservation is not expired by ExpireReservationsCommand', function (): void {
     $this->service->reserve(
@@ -153,18 +156,17 @@ test('A-03: adopted reservation is not expired by ExpireReservationsCommand', fu
         'ORDER-UUID-003',
     );
 
-    // Simulate: manually set expires_at in the past (belt-and-suspenders; normally null after adopt)
+    // Simulate: manually force expires_at into the past (belt-and-suspenders)
     InventoryReservation::where('reservation_key', 'chk-adopt-a03')
         ->update(['expires_at' => Carbon::now()->subHour()]);
 
     $this->artisan(ExpireReservationsCommand::class);
 
-    $res = InventoryReservation::where('reservation_key', 'chk-adopt-a03')->first();
-    expect($res->status)->toBe('active');
+    expect(InventoryReservation::where('reservation_key', 'chk-adopt-a03')->first()->status)->toBe('active');
 });
 
 // ---------------------------------------------------------------------------
-// A-04: Unadopted active reservation with passed expires_at IS expired by command
+// A-04: Unadopted active reservation with past expires_at IS expired by command
 // ---------------------------------------------------------------------------
 test('A-04: unadopted active reservation with past expires_at is expired by ExpireReservationsCommand', function (): void {
     $this->service->reserve(
@@ -182,8 +184,7 @@ test('A-04: unadopted active reservation with past expires_at is expired by Expi
 
     $this->artisan(ExpireReservationsCommand::class);
 
-    $res = InventoryReservation::where('reservation_key', 'chk-adopt-a04')->first();
-    expect($res->status)->toBe('expired');
+    expect(InventoryReservation::where('reservation_key', 'chk-adopt-a04')->first()->status)->toBe('expired');
 });
 
 // ---------------------------------------------------------------------------
@@ -205,16 +206,14 @@ test('A-05: idempotent adopt returns wasAlreadyAdopted=true for same owner', fun
     expect($first->isSuccess)->toBeTrue()
         ->and($first->wasAlreadyAdopted)->toBeFalse()
         ->and($second->isSuccess)->toBeTrue()
-        ->and($second->wasAlreadyAdopted)->toBeTrue();
-
-    // StockItem.reserved must not change on replay
-    expect($this->stockItem->fresh()->reserved)->toBe('1.0000');
+        ->and($second->wasAlreadyAdopted)->toBeTrue()
+        ->and($this->stockItem->fresh()->reserved)->toBe('1.0000');
 });
 
 // ---------------------------------------------------------------------------
-// A-06: TTL-expired active reservation is REJECTED by adopt()
+// A-06: TTL-expired active reservation is REJECTED
 // ---------------------------------------------------------------------------
-test('A-06: active reservation with past expires_at is rejected by adopt() with ReservationAdoptionException', function (): void {
+test('A-06: active reservation with past expires_at rejected by adopt() with RESERVATION_TTL_EXPIRED', function (): void {
     $this->service->reserve(
         $this->tenant->id,
         'chk-adopt-a06',
@@ -225,7 +224,6 @@ test('A-06: active reservation with past expires_at is rejected by adopt() with 
         ttlMinutes: 60,
     );
 
-    // Force expires_at into the past (simulates cleanup command not yet having run)
     InventoryReservation::where('reservation_key', 'chk-adopt-a06')
         ->update(['expires_at' => Carbon::now()->subMinutes(5)]);
 
@@ -236,18 +234,15 @@ test('A-06: active reservation with past expires_at is rejected by adopt() with 
         'ORDER-SHOULD-FAIL',
     ))->toThrow(ReservationAdoptionException::class, 'RESERVATION_TTL_EXPIRED');
 
-    // owner_type must remain null — reservation not adopted
     $res = InventoryReservation::where('reservation_key', 'chk-adopt-a06')->first();
     expect($res->owner_type)->toBeNull()
         ->and($res->owner_reference)->toBeNull()
-        ->and($res->status)->toBe('active'); // ExpireReservationsCommand hasn't run
-
-    // StockItem.reserved unchanged
-    expect($this->stockItem->fresh()->reserved)->toBe('1.0000');
+        ->and($res->status)->toBe('active')
+        ->and($this->stockItem->fresh()->reserved)->toBe('1.0000');
 });
 
 // ---------------------------------------------------------------------------
-// A-07: Conflicting owner is rejected with exception
+// A-07: Conflicting owner is rejected
 // ---------------------------------------------------------------------------
 test('A-07: conflicting owner reference throws ReservationAdoptionException', function (): void {
     $this->service->reserve(
@@ -316,7 +311,7 @@ test('A-09: adopt on committed reservation throws ReservationAdoptionException',
 });
 
 // ---------------------------------------------------------------------------
-// A-10: Adopted reservation can be released (Order cancel flow)
+// A-10: Adopted reservation can be released (Order cancel)
 // ---------------------------------------------------------------------------
 test('A-10: adopted reservation can be released, releasing stock', function (): void {
     Event::fake([InventoryReservationReleased::class]);
@@ -345,7 +340,7 @@ test('A-10: adopted reservation can be released, releasing stock', function (): 
 });
 
 // ---------------------------------------------------------------------------
-// A-11: Adopted reservation can be committed (Order fulfilled flow)
+// A-11: Adopted reservation can be committed (Order fulfilled)
 // ---------------------------------------------------------------------------
 test('A-11: adopted reservation can be committed, deducting on_hand', function (): void {
     $this->service->reserve(
@@ -382,9 +377,9 @@ test('A-12: adopt on non-existent reservation throws ReservationAdoptionExceptio
 });
 
 // ---------------------------------------------------------------------------
-// A-13: Cross-tenant access rejected
+// A-13: Cross-tenant access — returns not-found (no existence disclosure)
 // ---------------------------------------------------------------------------
-test('A-13: adopt rejects reservation belonging to a different tenant', function (): void {
+test('A-13: cross-tenant reservation key returns not-found (existence not disclosed)', function (): void {
     $otherTenant = Tenant::create([
         'slug' => 'other-tenant-adopt',
         'name' => 'Other Tenant',
@@ -400,11 +395,125 @@ test('A-13: adopt rejects reservation belonging to a different tenant', function
         $this->context,
     );
 
-    // Attempt to adopt under the other tenant's ID (different tenant_id in the WHERE clause)
+    // Attempt to adopt under a different tenant's ID.
+    // The WHERE clause hides the reservation (not found = not disclosed).
     expect(fn () => $this->service->adopt(
         $otherTenant->id,
         'chk-adopt-a13',
         ReservationOwnerType::ORDER,
         'ORDER-CROSS-TENANT',
-    ))->toThrow(ReservationAdoptionException::class);
+    ))->toThrow(ReservationAdoptionException::class, 'RESERVATION_NOT_ACTIVE');
+
+    // Original reservation untouched
+    $res = InventoryReservation::where('reservation_key', 'chk-adopt-a13')->first();
+    expect($res->owner_type)->toBeNull()
+        ->and($res->status)->toBe('active');
+});
+
+// ---------------------------------------------------------------------------
+// A-14: Adoption event NOT dispatched when transaction rolls back
+// ---------------------------------------------------------------------------
+test('A-14: InventoryReservationAdopted NOT dispatched when adoption transaction rolls back', function (): void {
+    $dispatched = false;
+
+    Event::listen(InventoryReservationAdopted::class, function () use (&$dispatched): void {
+        $dispatched = true;
+    });
+
+    $this->service->reserve(
+        $this->tenant->id,
+        'chk-adopt-a14',
+        $this->product->id,
+        null,
+        Quantity::fromString('1.0000'),
+        $this->context,
+    );
+
+    // Wrap adopt() in an outer transaction that we manually roll back.
+    // The DB::afterCommit callback inside adopt() fires only when the OUTERMOST
+    // transaction commits. Rolling back the outer transaction suppresses it.
+    try {
+        DB::transaction(function (): void {
+            $this->service->adopt(
+                $this->tenant->id,
+                'chk-adopt-a14',
+                ReservationOwnerType::ORDER,
+                'ORDER-ROLLBACK',
+            );
+
+            // Force the outer transaction to roll back
+            throw new \RuntimeException('Simulated outer-transaction rollback');
+        });
+    } catch (\RuntimeException) {
+        // Expected — outer transaction rolled back
+    }
+
+    expect($dispatched)->toBeFalse('Event must NOT be observed after rollback');
+
+    // Adoption must be rolled back
+    $res = InventoryReservation::where('reservation_key', 'chk-adopt-a14')->first();
+    expect($res->owner_type)->toBeNull()
+        ->and($res->status)->toBe('active');
+});
+
+// ---------------------------------------------------------------------------
+// A-15: Adoption event dispatched exactly once on successful commit
+// ---------------------------------------------------------------------------
+test('A-15: InventoryReservationAdopted dispatched exactly once after successful commit', function (): void {
+    $count = 0;
+
+    Event::listen(InventoryReservationAdopted::class, function () use (&$count): void {
+        $count++;
+    });
+
+    $this->service->reserve(
+        $this->tenant->id,
+        'chk-adopt-a15',
+        $this->product->id,
+        null,
+        Quantity::fromString('1.0000'),
+        $this->context,
+    );
+
+    $this->service->adopt(
+        $this->tenant->id,
+        'chk-adopt-a15',
+        ReservationOwnerType::ORDER,
+        'ORDER-ONCE',
+    );
+
+    expect($count)->toBe(1, 'InventoryReservationAdopted must be dispatched exactly once');
+});
+
+// ---------------------------------------------------------------------------
+// A-16: expire() no-op when reservation was adopted between command scan and lock
+// ---------------------------------------------------------------------------
+test('A-16: expire() returns false and does not release stock when reservation was adopted before the lock', function (): void {
+    $this->service->reserve(
+        $this->tenant->id,
+        'chk-adopt-a16',
+        $this->product->id,
+        null,
+        Quantity::fromString('2.0000'),
+        $this->context,
+        ttlMinutes: 60,
+    );
+
+    $res = InventoryReservation::where('reservation_key', 'chk-adopt-a16')->first();
+    $stockBefore = $this->stockItem->fresh()->reserved;
+
+    // Adopt first (simulates adopt() committing before expire() acquires its lock)
+    $this->service->adopt(
+        $this->tenant->id,
+        'chk-adopt-a16',
+        ReservationOwnerType::ORDER,
+        'ORDER-BEAT-EXPIRE',
+    );
+
+    // Now call expire() with the stale candidate reference (as ExpireReservationsCommand would)
+    $expired = $this->service->expire($res);
+
+    expect($expired)->toBeFalse('expire() must return false when reservation was adopted')
+        ->and($this->stockItem->fresh()->reserved)->toBe($stockBefore, 'StockItem.reserved must be unchanged')
+        ->and(InventoryReservation::where('reservation_key', 'chk-adopt-a16')->first()->status)->toBe('active');
 });

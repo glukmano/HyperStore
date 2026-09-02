@@ -265,6 +265,10 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
         string $ownerReference
     ): ReservationAdoptionResultDTO {
         return DB::transaction(function () use ($tenantId, $reservationKey, $ownerType, $ownerReference) {
+            // Lock the row for update first.  The WHERE clause on tenant_id ensures
+            // cross-tenant reservation keys are invisible (not-found), preventing
+            // existence disclosure.  No separate cross-tenant guard is needed or
+            // desirable — the not-found response is the correct security behaviour.
             /** @var InventoryReservation|null $reservation */
             $reservation = InventoryReservation::query()
                 ->where('tenant_id', $tenantId)
@@ -273,15 +277,12 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
                 ->first();
 
             if ($reservation === null) {
+                // Covers: not found, already expired/deleted, or belongs to another tenant.
+                // All cases return the same typed not-active response to avoid existence disclosure.
                 throw ReservationAdoptionException::notActive($reservationKey, 'not_found');
             }
 
-            // Guard 2: tenant integrity (belt-and-suspenders; WHERE clause already enforces this)
-            if ($reservation->tenant_id !== $tenantId) {
-                throw ReservationAdoptionException::crossTenant($reservationKey);
-            }
-
-            // Guard 3: idempotent same-owner replay
+            // Guard 2: idempotent same-owner replay
             if ($reservation->isAdoptedBy($ownerType, $ownerReference)) {
                 return new ReservationAdoptionResultDTO(
                     isSuccess: true,
@@ -291,7 +292,7 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
                 );
             }
 
-            // Guard 4: conflicting owner
+            // Guard 3: conflicting owner
             if ($reservation->isAdopted()) {
                 throw ReservationAdoptionException::conflictingOwner(
                     $reservationKey,
@@ -300,28 +301,37 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
                 );
             }
 
-            // Guard 5: status must be active
+            // Guard 4: status must be active
             if ($reservation->status !== 'active') {
                 throw ReservationAdoptionException::notActive($reservationKey, $reservation->status);
             }
 
-            // Guard 6: TTL-expiry gate — reject semantically expired reservations that have
+            // Guard 5: TTL-expiry gate — reject semantically expired reservations that have
             // not yet been processed by ExpireReservationsCommand.
-            // We use the authoritative server timestamp captured inside the locked transaction
-            // to avoid any clock skew between application and DB.
             $now = Carbon::now();
             if ($reservation->expires_at !== null && $reservation->expires_at->lte($now)) {
                 throw ReservationAdoptionException::ttlExpired($reservationKey);
             }
 
-            // Guard 7: adopt — transfer ownership; nullify TTL for indefinite retention
+            // Adopt: transfer ownership; nullify TTL for indefinite retention.
             $reservation->owner_type = $ownerType->value;
             $reservation->owner_reference = $ownerReference;
             $reservation->adopted_at = $now;
             $reservation->expires_at = null; // indefinitely retained until commit or release
             $reservation->save();
 
-            InventoryReservationAdopted::dispatch($reservation);
+            // Dispatch the adoption event after the transaction commits.
+            // This guarantees no listener observes an adoption that rolls back.
+            // DB::afterCommit() executes the callback when the outermost transaction
+            // (transaction depth = 0) commits.  Under nested transactions it queues
+            // the callback until the outermost commit.
+            $reservationId = $reservation->id;
+            DB::afterCommit(function () use ($reservationId): void {
+                $committed = InventoryReservation::find($reservationId);
+                if ($committed !== null) {
+                    InventoryReservationAdopted::dispatch($committed);
+                }
+            });
 
             return new ReservationAdoptionResultDTO(
                 isSuccess: true,
@@ -431,12 +441,50 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
         });
     }
 
+    /**
+     * Expires a reservation, releasing its stock back from reserved.
+     *
+     * AUTHORITY INVARIANT: expire() is the authoritative decision-maker for
+     * automatic expiration. The ExpireReservationsCommand query is a candidate
+     * optimisation only — it narrows the working set. expire() re-evaluates ALL
+     * eligibility predicates under its own FOR UPDATE row lock, after which no
+     * concurrent adopt(), release(), or commit() can change the row's state.
+     *
+     * Eligibility re-evaluated under the row lock (TOCTOU-safe):
+     *  1. status = active     (not committed/released/already expired)
+     *  2. owner_type IS NULL  (not adopted — adopted reservations must never
+     *                          be expired by the automatic sweep)
+     *  3. expires_at IS NOT NULL (sanity: un-adopted reservations always have a TTL)
+     *  4. expires_at <= now() (TTL has genuinely passed at the time of the lock)
+     *
+     * If ANY predicate fails, expire() returns false (no-op) without side effects.
+     *
+     * Race safety:
+     *  - adopt() also acquires FOR UPDATE on the same row before writing owner_type.
+     *  - PostgreSQL serialises the two transactions on the row lock.
+     *  - Whichever transaction commits first wins; the loser sees the updated state
+     *    inside its own lock and aborts cleanly.
+     */
     public function expire(InventoryReservation $reservation): bool
     {
         return DB::transaction(function () use ($reservation) {
+            // Re-fetch the row under a FOR UPDATE lock.  This is the authoritative
+            // state check — the command-level candidate query is NOT trusted.
             /** @var InventoryReservation|null $locked */
-            $locked = InventoryReservation::query()->where('id', $reservation->id)->where('status', 'active')->lockForUpdate()->first();
+            $locked = InventoryReservation::query()
+                ->where('id', $reservation->id)
+                ->lockForUpdate()
+                ->first();
+
             if ($locked === null) {
+                return false;
+            }
+
+            // Authoritative eligibility: ALL four predicates must hold.
+            $now = Carbon::now();
+            if (! $locked->isEligibleForAutomaticExpiration($now)) {
+                // Pre-empted by adopt(), release(), commit(), or a concurrent
+                // expire() — this is expected; return no-op.
                 return false;
             }
 
