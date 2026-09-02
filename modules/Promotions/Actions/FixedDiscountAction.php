@@ -7,14 +7,18 @@ namespace Modules\Promotions\Actions;
 use Modules\Pricing\Contracts\CurrencyConversionInterface;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Promotions\Contracts\PromotionActionInterface;
+use Modules\Promotions\Contracts\PromotionItemFilterConditionInterface;
 use Modules\Promotions\DTOs\DiscountLine;
 use Modules\Promotions\DTOs\PromotionContext;
 use Modules\Promotions\Models\Promotion;
+use Modules\Promotions\Models\PromotionCondition;
+use Modules\Promotions\Registries\PromotionConditionRegistry;
 
 class FixedDiscountAction implements PromotionActionInterface
 {
     public function __construct(
         private readonly ?CurrencyConversionInterface $conversionService = null,
+        private readonly ?PromotionConditionRegistry $conditionRegistry = null,
     ) {}
 
     public function getType(): string
@@ -34,8 +38,51 @@ class FixedDiscountAction implements PromotionActionInterface
             $discount = $this->conversionService->convert($discount, $context->currency, $context->tenantId);
         }
 
-        if ($discount->isGreaterThan($currentTotal)) {
-            $discount = $currentTotal;
+        $capTotal = $currentTotal;
+
+        if ($this->conditionRegistry !== null) {
+            $hasItemFilter = false;
+            foreach ($promotion->conditions as $cond) {
+                /** @var PromotionCondition $cond */
+                $handler = $this->conditionRegistry->get($cond->condition_type);
+                if ($handler instanceof PromotionItemFilterConditionInterface) {
+                    $hasItemFilter = true;
+                    break;
+                }
+            }
+
+            if ($hasItemFilter) {
+                $eligibleTotal = MoneyValue::zero($context->currency);
+                foreach ($context->items as $item) {
+                    $itemMatches = true;
+                    foreach ($promotion->conditions as $cond) {
+                        /** @var PromotionCondition $cond */
+                        $handler = $this->conditionRegistry->get($cond->condition_type);
+                        if ($handler instanceof PromotionItemFilterConditionInterface) {
+                            if (! $handler->isItemEligible($item, $cond->parameters ?? [])) {
+                                $itemMatches = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if ($itemMatches) {
+                        $eligibleTotal = $eligibleTotal->add($item->getTotal());
+                    }
+                }
+
+                if ($eligibleTotal->isLessThan($capTotal)) {
+                    $capTotal = $eligibleTotal;
+                }
+            }
+        }
+
+        if ($discount->isGreaterThan($capTotal)) {
+            $discount = $capTotal;
+        }
+
+        if ($discount->isZero()) {
+            return null;
         }
 
         return new DiscountLine(

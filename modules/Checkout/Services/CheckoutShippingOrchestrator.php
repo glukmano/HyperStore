@@ -115,13 +115,19 @@ class CheckoutShippingOrchestrator
                 ];
             }
 
+            $catIds = $product->categories !== null
+                ? $product->categories->pluck('id')->all()
+                : [];
+
             $promoItems[] = new PromotionCartItem(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
                 quantity: $qtyStr,
                 unitPrice: $priceRes->unitPrice,
-                categoryIds: [],
-                productType: $product->product_type
+                categoryIds: $catIds,
+                brandId: $product->brand_id,
+                productType: (string) $product->product_type,
+                cartLineId: $line->id
             );
         }
 

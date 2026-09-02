@@ -5,16 +5,24 @@ declare(strict_types=1);
 namespace Modules\Promotions\Actions;
 
 use Modules\Pricing\ValueObjects\MoneyValue;
-use Modules\Promotions\Contracts\PromotionActionInterface;
+use Modules\Promotions\Contracts\PromotionItemFilterActionInterface;
 use Modules\Promotions\DTOs\DiscountLine;
+use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
 use Modules\Promotions\Models\Promotion;
 
-class FixedPriceAction implements PromotionActionInterface
+class FixedPriceAction implements PromotionItemFilterActionInterface
 {
     public function getType(): string
     {
         return 'fixed_price';
+    }
+
+    public function isItemTargeted(PromotionCartItem $item, array $parameters): bool
+    {
+        $targetProductId = (int) ($parameters['product_id'] ?? 0);
+
+        return $targetProductId > 0 && $item->productId === $targetProductId;
     }
 
     public function apply(Promotion $promotion, PromotionContext $context, array $parameters, MoneyValue $currentTotal): ?DiscountLine
@@ -24,7 +32,7 @@ class FixedPriceAction implements PromotionActionInterface
 
         $discountMinor = 0;
         foreach ($context->items as $item) {
-            if ($item->productId === $targetProductId && $item->unitPrice->getMinorAmount() > $targetPriceMinor) {
+            if ($this->isItemTargeted($item, $parameters) && $item->unitPrice->getMinorAmount() > $targetPriceMinor) {
                 $diffPerUnit = $item->unitPrice->getMinorAmount() - $targetPriceMinor;
                 $diffMoney = MoneyValue::fromMinor($diffPerUnit, $context->currency);
                 $discountMinor += $diffMoney->multiply((string) $item->quantity)->getMinorAmount();

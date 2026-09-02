@@ -19,6 +19,7 @@ final class PromotionCartItem
         public array $categoryIds = [],
         public ?int $brandId = null,
         public ?string $productType = null,
+        public ?int $cartLineId = null,
     ) {}
 
     public function getTotal(): MoneyValue

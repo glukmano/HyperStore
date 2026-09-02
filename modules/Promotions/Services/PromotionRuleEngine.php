@@ -6,6 +6,7 @@ namespace Modules\Promotions\Services;
 
 use Carbon\Carbon;
 use Modules\Pricing\ValueObjects\MoneyValue;
+use Modules\Promotions\Contracts\PromotionLineEligibilityResolverInterface;
 use Modules\Promotions\DTOs\PromotionBenefitDTO;
 use Modules\Promotions\DTOs\PromotionContext;
 use Modules\Promotions\DTOs\PromotionResult;
@@ -21,6 +22,7 @@ class PromotionRuleEngine
         private readonly PromotionConditionRegistry $conditionRegistry,
         private readonly PromotionActionRegistry $actionRegistry,
         private readonly CouponValidationService $couponValidationService,
+        private readonly PromotionLineEligibilityResolverInterface $eligibilityResolver,
     ) {}
 
     public function evaluate(PromotionContext $context): PromotionResult
@@ -107,6 +109,9 @@ class PromotionRuleEngine
 
                 $discountLine = $handler->apply($promotion, $context, $act->parameters ?? [], $currentTotal);
                 if ($discountLine !== null) {
+                    $eligibleCartLineIds = $this->eligibilityResolver->resolve($promotion, $context, $act);
+                    $discountLine = $discountLine->withEligibleCartLineIds($eligibleCartLineIds);
+
                     $discounts[] = $discountLine;
                     $currentTotal = $currentTotal->subtract($discountLine->discountAmount);
                 }

@@ -35,10 +35,11 @@ To distribute undivided minor units (pennies) without loss or arbitrary drift:
    - Tie-breaker: `cart_line_id` in ascending order (guaranteeing deterministic tie resolution).
 5. Distribute exactly 1 minor unit to each of the first `undistributed` lines in the sorted sequence.
 
-### 4. Promotion Eligibility Scope
-- A line is eligible for a promotion's discount if and only if it satisfies that promotion's product, category, or product type conditions and actions.
-- If a promotion has no line-level restrictions, all lines in the cart with remaining subtotal > 0 are eligible.
-- Multiple promotions are applied deterministically in the exact evaluation order established by `PromotionRuleEngine`. Each subsequent promotion allocates against the remaining undiscounted subtotal of eligible lines.
+### 4. Promotion Eligibility Scope & Architectural Separation of Concerns
+- **Promotions Domain Owns Eligibility Semantics**: `PromotionRuleEngine` is the single authoritative evaluator for promotion conditions and actions. It evaluates conditions and action targets using registered handlers (via `PromotionItemFilterConditionInterface`, `PromotionItemFilterActionInterface`, and `PromotionLineEligibilityResolverInterface`) and attaches the authoritative `eligibleCartLineIds: list<int>` to every monetary `DiscountLine`.
+- **Checkout Domain Owns Monetary Allocation Mathematics**: `CheckoutPricingOrchestrator` consumes the immutable `DiscountLine` collection and executes proportional allocation mathematics. Checkout contains ZERO logic inspecting `Promotion` models, reading `PromotionCondition` records, switching on `condition_type`, interpreting category/product IDs, or deciding action targeting.
+- **Fail-Closed Validation**: If any monetary `DiscountLine` carries empty, duplicate, or unknown `cart_line_id`s not present in the current cart, Checkout fails closed immediately. No fallback-to-all-lines is permitted under any circumstances.
+- **Sequential Multi-Discount Allocation**: Multiple promotions are evaluated deterministically in `PromotionRuleEngine` priority order. Each subsequent discount allocates proportionally across its specific `eligibleCartLineIds` against remaining subtotal capacity without double-allocation or negative lines.
 
 ### 5. Non-Negative Taxable Amount Safety Invariant
 For every line:

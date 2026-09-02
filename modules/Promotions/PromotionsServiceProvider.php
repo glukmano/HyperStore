@@ -24,11 +24,13 @@ use Modules\Promotions\Conditions\MinQuantityCondition;
 use Modules\Promotions\Conditions\ProductCondition;
 use Modules\Promotions\Conditions\ProductTypeCondition;
 use Modules\Promotions\Conditions\StoreCondition;
+use Modules\Promotions\Contracts\PromotionLineEligibilityResolverInterface;
 use Modules\Promotions\Livewire\CouponManager;
 use Modules\Promotions\Livewire\PromotionManager;
 use Modules\Promotions\Registries\PromotionActionRegistry;
 use Modules\Promotions\Registries\PromotionConditionRegistry;
 use Modules\Promotions\Services\CouponValidationService;
+use Modules\Promotions\Services\PromotionLineEligibilityResolver;
 use Modules\Promotions\Services\PromotionRuleEngine;
 
 class PromotionsServiceProvider extends ModuleServiceProvider
@@ -59,9 +61,12 @@ class PromotionsServiceProvider extends ModuleServiceProvider
         });
 
         $this->app->singleton(PromotionActionRegistry::class, function ($app) {
+            $conditions = $app->make(PromotionConditionRegistry::class);
+            $conversion = $app->make(CurrencyConversionInterface::class);
+
             $registry = new PromotionActionRegistry;
-            $registry->register(new PercentageDiscountAction);
-            $registry->register(new FixedDiscountAction($app->make(CurrencyConversionInterface::class)));
+            $registry->register(new PercentageDiscountAction($conditions));
+            $registry->register(new FixedDiscountAction($conversion, $conditions));
             $registry->register(new FixedPriceAction);
             $registry->register(new BuyXGetYAction);
             $registry->register(new FreeShippingAction);
@@ -69,6 +74,7 @@ class PromotionsServiceProvider extends ModuleServiceProvider
             return $registry;
         });
 
+        $this->app->singleton(PromotionLineEligibilityResolverInterface::class, PromotionLineEligibilityResolver::class);
         $this->app->singleton(CouponValidationService::class);
         $this->app->singleton(PromotionRuleEngine::class);
     }

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Modules\Checkout\Services;
 
-use Illuminate\Database\Eloquent\Collection;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
 use Modules\Checkout\DTOs\CheckoutAddress;
@@ -21,7 +20,6 @@ use Modules\Pricing\Models\TaxClass;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
-use Modules\Promotions\Models\Promotion;
 use Modules\Promotions\Services\PromotionRuleEngine;
 
 class CheckoutPricingOrchestrator
@@ -98,14 +96,19 @@ class CheckoutPricingOrchestrator
             $perLineUnitPrices[$line->id] = $unitPriceMinor;
             $perLineSubtotals[$line->id] = $lineTotalMinor;
 
+            $catIds = $line->product->categories !== null
+                ? $line->product->categories->pluck('id')->all()
+                : [];
+
             $promoItems[] = new PromotionCartItem(
                 productId: $line->product_id,
                 variantId: $line->variant_id,
                 quantity: $qtyStr,
                 unitPrice: $unitPrice,
-                categoryIds: [],
-                brandId: null,
-                productType: (string) $line->product->product_type
+                categoryIds: $catIds,
+                brandId: $line->product->brand_id,
+                productType: (string) $line->product->product_type,
+                cartLineId: $line->id
             );
 
             // Resolve tax class: product tax_class_id -> tenant default -> throw exception (no hardcoded fallback)
@@ -161,175 +164,91 @@ class CheckoutPricingOrchestrator
         }
 
         if ($totalDiscountMinor > 0) {
-            if (! empty($promoResult->discounts)) {
-                $appliedPromoIds = array_values(array_unique(array_filter(array_map(fn ($d) => $d->promotionId, $promoResult->discounts))));
-                /** @var Collection<int, Promotion> $promotionsById */
-                $promotionsById = Promotion::query()
-                    ->whereIn('id', $appliedPromoIds)
-                    ->with(['conditions', 'actions'])
-                    ->get()
-                    ->keyBy('id');
+            $cartLineIdsInCart = $cart->lines->pluck('id')->all();
 
-                foreach ($promoResult->discounts as $d) {
-                    $dAmount = $d->discountAmount->getMinorAmount();
-                    if ($dAmount <= 0) {
-                        continue;
-                    }
+            foreach ($promoResult->discounts as $d) {
+                $dAmount = $d->discountAmount->getMinorAmount();
+                if ($dAmount <= 0) {
+                    continue;
+                }
 
-                    $promo = $promotionsById->get($d->promotionId);
-                    $eligibleLineIds = [];
+                $eligibleIds = $d->eligibleCartLineIds;
+                if (empty($eligibleIds)) {
+                    throw new \RuntimeException(
+                        "DiscountLine for promotion [{$d->promotionCode}] returned empty eligibleCartLineIds."
+                    );
+                }
 
-                    foreach ($cart->lines as $line) {
-                        if ($remainingSubtotals[$line->id] <= 0) {
-                            continue;
-                        }
+                // Verify uniqueness of line IDs
+                if (count($eligibleIds) !== count(array_unique($eligibleIds))) {
+                    throw new \RuntimeException(
+                        "DiscountLine for promotion [{$d->promotionCode}] returned duplicate eligibleCartLineIds."
+                    );
+                }
 
-                        $isEligible = true;
-                        if ($promo !== null) {
-                            foreach ($promo->conditions as $cond) {
-                                $params = $cond->parameters ?? [];
-                                if ($cond->condition_type === 'product') {
-                                    $allowed = $params['product_ids'] ?? [];
-                                    if (! empty($allowed) && ! in_array($line->product_id, $allowed, true)) {
-                                        $isEligible = false;
-                                        break;
-                                    }
-                                } elseif ($cond->condition_type === 'category') {
-                                    $allowed = $params['category_ids'] ?? [];
-                                    $lineCatIds = $line->product->categories->pluck('id')->all();
-                                    if (! empty($allowed) && empty(array_intersect($lineCatIds, $allowed))) {
-                                        $isEligible = false;
-                                        break;
-                                    }
-                                } elseif ($cond->condition_type === 'product_type') {
-                                    $allowed = $params['product_types'] ?? [];
-                                    if (! empty($allowed) && ! in_array((string) $line->product->product_type, $allowed, true)) {
-                                        $isEligible = false;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if ($isEligible) {
-                                foreach ($promo->actions as $act) {
-                                    $params = $act->parameters ?? [];
-                                    if (in_array($act->action_type, ['fixed_price', 'buy_x_get_y'], true)) {
-                                        $targetPid = isset($params['product_id']) ? (int) $params['product_id'] : null;
-                                        if ($targetPid !== null && $targetPid > 0 && (int) $line->product_id !== $targetPid) {
-                                            $isEligible = false;
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if ($isEligible) {
-                            $eligibleLineIds[] = $line->id;
-                        }
-                    }
-
-                    if (empty($eligibleLineIds)) {
-                        throw new \RuntimeException("Cannot allocate promotion discount [{$d->promotionCode}] of [{$dAmount}] minor: no eligible remaining line subtotal.");
-                    }
-
-                    $totalEligibleRemaining = 0;
-                    foreach ($eligibleLineIds as $lid) {
-                        $totalEligibleRemaining += $remainingSubtotals[$lid];
-                    }
-
-                    if ($totalEligibleRemaining <= 0) {
-                        throw new \RuntimeException("Cannot allocate promotion discount [{$d->promotionCode}]: eligible remaining subtotal is zero.");
-                    }
-
-                    if ($dAmount > $totalEligibleRemaining) {
-                        $dAmount = $totalEligibleRemaining;
-                    }
-
-                    // Largest Remainder Method on $dAmount over eligible lines
-                    $floorShares = [];
-                    $remainders = [];
-                    $sumFloor = 0;
-
-                    foreach ($eligibleLineIds as $lid) {
-                        $weight = $remainingSubtotals[$lid];
-                        $prod = bcmul((string) $dAmount, (string) $weight, 0);
-                        $floor = (int) bcdiv($prod, (string) $totalEligibleRemaining, 0);
-                        $rem = (int) bcmod($prod, (string) $totalEligibleRemaining);
-
-                        $floorShares[$lid] = $floor;
-                        $remainders[$lid] = $rem;
-                        $sumFloor += $floor;
-                    }
-
-                    $undistributed = $dAmount - $sumFloor;
-
-                    // Sort by remainder DESC, then cart_line_id ASC tie-breaker
-                    usort($eligibleLineIds, function (int $a, int $b) use ($remainders): int {
-                        $remDiff = $remainders[$b] <=> $remainders[$a];
-                        if ($remDiff !== 0) {
-                            return $remDiff;
-                        }
-
-                        return $a <=> $b;
-                    });
-
-                    for ($k = 0; $k < $undistributed; $k++) {
-                        $floorShares[$eligibleLineIds[$k]] += 1;
-                    }
-
-                    foreach ($floorShares as $lid => $allocatedAmt) {
-                        $perLineAllocatedCartDiscounts[$lid] += $allocatedAmt;
-                        $remainingSubtotals[$lid] -= $allocatedAmt;
+                // Verify each line ID exists in current cart
+                foreach ($eligibleIds as $lineId) {
+                    if (! in_array($lineId, $cartLineIdsInCart, true)) {
+                        throw new \RuntimeException(
+                            "DiscountLine for promotion [{$d->promotionCode}] references unknown cart_line_id [{$lineId}]."
+                        );
                     }
                 }
-            } else {
-                // Generic cart discount allocation across all lines with positive subtotal
+
+                // Determine lines with positive remaining allocatable subtotal
                 $eligibleLineIds = [];
                 $totalEligibleRemaining = 0;
-                foreach ($cart->lines as $line) {
-                    if ($remainingSubtotals[$line->id] > 0) {
-                        $eligibleLineIds[] = $line->id;
-                        $totalEligibleRemaining += $remainingSubtotals[$line->id];
+                foreach ($eligibleIds as $lid) {
+                    $rem = $remainingSubtotals[$lid] ?? 0;
+                    if ($rem > 0) {
+                        $eligibleLineIds[] = $lid;
+                        $totalEligibleRemaining += $rem;
                     }
                 }
 
-                if ($totalEligibleRemaining > 0) {
-                    $dAmount = min($totalDiscountMinor, $totalEligibleRemaining);
-                    $floorShares = [];
-                    $remainders = [];
-                    $sumFloor = 0;
+                if ($totalEligibleRemaining <= 0) {
+                    throw new \RuntimeException(
+                        "Cannot allocate promotion discount [{$d->promotionCode}]: no eligible lines have remaining subtotal."
+                    );
+                }
 
-                    foreach ($eligibleLineIds as $lid) {
-                        $weight = $remainingSubtotals[$lid];
-                        $prod = bcmul((string) $dAmount, (string) $weight, 0);
-                        $floor = (int) bcdiv($prod, (string) $totalEligibleRemaining, 0);
-                        $rem = (int) bcmod($prod, (string) $totalEligibleRemaining);
+                $allocatableDiscount = min($dAmount, $totalEligibleRemaining);
 
-                        $floorShares[$lid] = $floor;
-                        $remainders[$lid] = $rem;
-                        $sumFloor += $floor;
+                // Proportional allocation using Integer Minor Units with Largest Remainder Rounding
+                $floorShares = [];
+                $remainders = [];
+                $sumFloor = 0;
+
+                foreach ($eligibleLineIds as $lid) {
+                    $weight = $remainingSubtotals[$lid];
+                    $prod = bcmul((string) $allocatableDiscount, (string) $weight, 0);
+                    $floor = (int) bcdiv($prod, (string) $totalEligibleRemaining, 0);
+                    $rem = (int) bcmod($prod, (string) $totalEligibleRemaining);
+
+                    $floorShares[$lid] = $floor;
+                    $remainders[$lid] = $rem;
+                    $sumFloor += $floor;
+                }
+
+                $undistributed = $allocatableDiscount - $sumFloor;
+
+                // Sort by remainder DESC, then cart_line_id ASC tie-breaker
+                usort($eligibleLineIds, function (int $a, int $b) use ($remainders): int {
+                    $remDiff = $remainders[$b] <=> $remainders[$a];
+                    if ($remDiff !== 0) {
+                        return $remDiff;
                     }
 
-                    $undistributed = $dAmount - $sumFloor;
+                    return $a <=> $b;
+                });
 
-                    usort($eligibleLineIds, function (int $a, int $b) use ($remainders): int {
-                        $remDiff = $remainders[$b] <=> $remainders[$a];
-                        if ($remDiff !== 0) {
-                            return $remDiff;
-                        }
+                for ($k = 0; $k < $undistributed; $k++) {
+                    $floorShares[$eligibleLineIds[$k]] += 1;
+                }
 
-                        return $a <=> $b;
-                    });
-
-                    for ($k = 0; $k < $undistributed; $k++) {
-                        $floorShares[$eligibleLineIds[$k]] += 1;
-                    }
-
-                    foreach ($floorShares as $lid => $allocatedAmt) {
-                        $perLineAllocatedCartDiscounts[$lid] += $allocatedAmt;
-                        $remainingSubtotals[$lid] -= $allocatedAmt;
-                    }
+                foreach ($floorShares as $lid => $allocatedAmt) {
+                    $perLineAllocatedCartDiscounts[$lid] += $allocatedAmt;
+                    $remainingSubtotals[$lid] -= $allocatedAmt;
                 }
             }
         }
