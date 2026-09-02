@@ -73,3 +73,13 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 - [ADR-0090: Customer & Guest Order Ownership, Ephemeral Token Return & IDOR Defense](ADR-0090-customer-and-guest-order-ownership-ephemeral-token-return-and-idor-defense.md)
 - [ADR-0091: Order Status History, Audit Trail & Typed Domain Events](ADR-0091-order-status-history-audit-trail-and-typed-domain-events.md)
 - [ADR-0092: Deterministic Cart Discount Allocation for Taxable Line Snapshots](ADR-0092-deterministic-cart-discount-allocation-for-taxable-line-snapshots.md)
+
+### Phase 09: Payments & Payment Orchestration Foundation
+- [ADR-0093: Payment Bounded Context Ownership, Unidirectional Order Decoupling & Event Synchronization](ADR-0093-payment-bounded-context-ownership-and-order-decoupling.md)
+- [ADR-0094: Provider-Neutral Gateway & Transaction Attempt Architecture](ADR-0094-provider-neutral-gateway-and-transaction-attempt-architecture.md)
+- [ADR-0095: Two-Phase Remote Gateway Consistency, UNKNOWN State & Out-of-Band Reconciliation](ADR-0095-two-phase-remote-gateway-consistency-and-unknown-state.md)
+- [ADR-0096: Payment Aggregate Obligation & PaymentTransaction Attempt State Machines](ADR-0096-payment-aggregate-and-transaction-state-machines.md)
+- [ADR-0097: Aggregate-Scoped Payment Idempotency & Provider Idempotency Derivation](ADR-0097-aggregate-scoped-payment-idempotency-and-provider-keys.md)
+- [ADR-0098: Zero-Total Order Internal Settlement Policy](ADR-0098-zero-total-order-internal-settlement-policy.md)
+- ADR-0099: *(Deferred: Payment Webhook Verification & Asynchronous Ingestion)*
+- [ADR-0100: PCI Boundary & Sensitive Payment Data Isolation](ADR-0100-pci-boundary-and-sensitive-payment-data-isolation.md)

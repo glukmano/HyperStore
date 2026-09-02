@@ -1,0 +1,10 @@
+{
+    "name": "Payment",
+    "slug": "payment",
+    "description": "HyperStore Payment Bounded Context, Gateway Abstraction, and Lifecycle Orchestration",
+    "version": "1.0.0",
+    "provider": "Modules\\Payment\\PaymentServiceProvider",
+    "requires": ["order"],
+    "order": 90,
+    "enabled": true
+}
