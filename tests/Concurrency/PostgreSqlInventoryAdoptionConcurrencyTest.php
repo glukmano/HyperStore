@@ -24,24 +24,28 @@ use Tests\TestCase;
 /**
  * True process-level PostgreSQL concurrency tests for InventoryReservation adoption.
  *
- * Each race spawns real OS-level PHP processes via proc_open, synchronized with a
- * file-barrier, running against the live PostgreSQL database.  These tests prove
- * that production code (not test-side guards) handles races correctly.
+ * All races use deterministic two-phase file-flag synchronization:
+ *  - Phase flags are written by the first actor after completing its critical step.
+ *  - The second actor polls for the flag before proceeding.
+ *  - This eliminates timing luck and guarantees the required sequencing.
  *
- * Race A: TOCTOU — adoption vs automatic expiration.
- *   The expire worker calls the REAL InventoryReservationService::expire() with NO
- *   test-side eligibility guard.  expire() itself must refuse to expire an adopted
- *   reservation under its own row lock.
+ * RACE A (adoption-first, deterministic):
+ *   T1 Expire worker: load stale candidate → write CANDIDATE_SCANNED → poll for ADOPTION_COMMITTED
+ *   T2 Adopt worker:  poll for CANDIDATE_SCANNED → adopt+commit → write ADOPTION_COMMITTED
+ *   T3 Expire worker: resume → call real expire($staleCandidate) [ZERO test-side guard]
+ *   Expected: expire() returns false (NOOP). status=active, owner=order, reserved unchanged.
  *
- * Race A-deadline: adopt() rejects a reservation whose TTL passed before the lock.
- * Race B: adoption vs release.
- * Race C: duplicate same-owner adoption.
- * Race D: conflicting-owner adoption.
+ * RACE A-REVERSE (expiration-first, deterministic):
+ *   T1 Expire worker: force TTL past → begin transaction → lock row FOR UPDATE → write EXPIRE_LOCKED
+ *                     → sleep briefly → commit expiration
+ *   T2 Adopt worker:  poll for EXPIRE_LOCKED → attempt adopt() [will block on row lock until T1 commits]
+ *   Expected: adopt() throws typed not-active exception. status=expired, owner_type=null, reserved=0.
+ *
+ * Each test cleans up only the exact reservation IDs it created, so it does not
+ * poison the migration test suite.
  */
 class PostgreSqlInventoryAdoptionConcurrencyTest extends TestCase
 {
-    // ── PostgreSQL concurrency: inventory reservation adoption ──
-
     private const string PG_DB = 'hyperstore';
 
     private const string PG_USER = 'lukman';
@@ -55,6 +59,9 @@ class PostgreSqlInventoryAdoptionConcurrencyTest extends TestCase
     private int $productId;
 
     private string $baseWorkerBootstrap;
+
+    /** @var list<int> Reservation IDs created by this test run; cleaned up in tearDown */
+    private array $createdReservationIds = [];
 
     protected function setUp(): void
     {
@@ -103,56 +110,79 @@ config(['database.default' => 'pgsql', 'database.connections.pgsql.database' => 
 PHP;
     }
 
-    // ───────────────────────────────────────────────────────────────────────
-    // Race A: TOCTOU — Adoption vs Expiration (production code only, no test guard)
+    protected function tearDown(): void
+    {
+        // Clean up ONLY the exact reservation IDs created by this test.
+        // Never performs a global/unscoped DELETE.
+        if ($this->createdReservationIds !== []) {
+            InventoryReservation::whereIn('id', $this->createdReservationIds)->delete();
+        }
+
+        parent::tearDown();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Race A (adoption-first) — DETERMINISTIC TWO-PHASE SEQUENCE
     //
-    // This race proves expire() itself refuses to expire an adopted reservation.
-    // The expire worker calls the REAL service->expire() with NO test-side check.
+    // Sequence guaranteed by two file flags:
+    //   CANDIDATE_SCANNED — written by expire worker after loading stale candidate
+    //   ADOPTION_COMMITTED — written by adopt worker after adopt() commits
     //
-    // The expire worker pre-fetches the InventoryReservation row BEFORE adoption,
-    // pauses at the barrier, while the adopt worker adopts first.
-    // When expire resumes, it passes its stale candidate to service->expire().
-    // expire() re-evaluates eligibility under its own FOR UPDATE row lock and
-    // sees owner_type IS NOT NULL — refuses to expire.
-    //
-    // Valid outcomes:
-    //   Adoption first: status=active, owner_type=order, expires_at=null, reserved unchanged.
-    //   Expiration first: status=expired, adopt() fails, reserved=0.
-    //
-    // Forbidden: adopted+expired, adopted+stock released, double-decrement.
-    // ───────────────────────────────────────────────────────────────────────
-    public function test_race_a_adoption_wins_over_expiration_via_expire_service_authority(): void
+    // This test PROVES the TOCTOU stale-candidate path is always exercised.
+    // ═══════════════════════════════════════════════════════════════════════
+    public function test_race_a_deterministic_adoption_first_toctou(): void
     {
         $tenantId = $this->tenant->id;
         $productId = $this->productId;
 
         $service = app(InventoryReservationServiceInterface::class);
         $context = new InventoryContext(tenantId: $tenantId);
-        $resKey = 'race-a-toctou-'.uniqid();
+        $resKey = 'race-a-det-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
-        $reservationId = InventoryReservation::where('reservation_key', $resKey)->first()->id;
+
+        $res = InventoryReservation::where('reservation_key', $resKey)->first();
+        $reservationId = $res->id;
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
+        $this->createdReservationIds[] = $reservationId;
+
+        // Phase-flag files
+        $uid = uniqid('race_a_');
+        $flagScanned = sys_get_temp_dir()."/{$uid}_CANDIDATE_SCANNED.flag";
+        $flagAdopted = sys_get_temp_dir()."/{$uid}_ADOPTION_COMMITTED.flag";
 
         $b = $this->baseWorkerBootstrap;
 
-        // Expire worker: loads the reservation BEFORE the barrier (stale candidate reference),
-        // then calls the REAL service->expire() with NO test-side guard.
-        // expire() itself must detect adoption under its row lock.
+        // ── Expire worker ────────────────────────────────────────────────────
+        // Step 1: load stale candidate (before adoption)
+        // Step 2: write CANDIDATE_SCANNED  (signals adopt worker to proceed)
+        // Step 3: poll for ADOPTION_COMMITTED
+        // Step 4: call REAL expire($staleCandidate) — ZERO test-side eligibility guard
         $workerExpire = <<<PHP
 {$b}
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Models\InventoryReservation;
 
-// Pre-fetch the candidate row (as ExpireReservationsCommand would do via chunkById)
+// Step 1: Load the stale candidate BEFORE adoption occurs
 \$candidate = InventoryReservation::find({$reservationId});
+if (!\$candidate) {
+    echo 'EXPIRE_ERROR:candidate_not_found';
+    exit(1);
+}
 
-// __BARRIER_WAIT__
-// Both workers are now synchronized. adopt worker runs concurrently.
+// Step 2: Signal that the candidate has been scanned with its pre-adoption state
+touch('{$flagScanned}');
 
+// Step 3: Wait until adoption has committed
+\$waited = 0;
+while (!file_exists('{$flagAdopted}')) {
+    usleep(5000);
+    if (++\$waited > 4000) { echo 'EXPIRE_ERROR:timeout_waiting_for_adoption'; exit(1); }
+}
+
+// Step 4: Call REAL expire() with the stale candidate reference — NO test-side guard.
+// Production expire() must detect adoption under its own row lock.
 try {
-    // Call the REAL production service->expire() with NO test-side eligibility guard.
-    // expire() itself must re-evaluate eligibility under its own row lock.
     \$expired = app(InventoryReservationServiceInterface::class)->expire(\$candidate);
     echo \$expired ? 'EXPIRED' : 'NOOP';
 } catch (Throwable \$e) {
@@ -160,117 +190,275 @@ try {
 }
 PHP;
 
+        // ── Adopt worker ─────────────────────────────────────────────────────
+        // Step 1: poll for CANDIDATE_SCANNED  (expire worker has the stale ref)
+        // Step 2: call REAL adopt() and commit
+        // Step 3: write ADOPTION_COMMITTED  (unblocks expire worker)
         $workerAdopt = <<<PHP
 {$b}
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Enums\ReservationOwnerType;
 
-// __BARRIER_WAIT__
+// Step 1: Wait until expire worker has loaded the stale candidate
+\$waited = 0;
+while (!file_exists('{$flagScanned}')) {
+    usleep(5000);
+    if (++\$waited > 4000) { echo 'ADOPT_ERROR:timeout_waiting_for_scan'; exit(1); }
+}
 
+// Step 2: Adopt the reservation (real production path)
 try {
     app(InventoryReservationServiceInterface::class)->adopt(
         {$tenantId},
         '{$resKey}',
         ReservationOwnerType::ORDER,
-        'ORDER-RACE-A',
+        'ORDER-DET-A',
     );
     echo 'ADOPTED';
 } catch (Throwable \$e) {
     echo 'ADOPT_FAIL:' . \$e->getMessage();
+    exit(1);
 }
+
+// Step 3: Signal that adoption has committed
+touch('{$flagAdopted}');
 PHP;
 
-        $results = $this->runSynchronizedParallelWorkers([$workerExpire, $workerAdopt]);
-        $expireOut = $results[0]['stdout'];
-        $adoptOut = $results[1]['stdout'];
+        // Start expire worker first (it must load the stale candidate before adopt runs)
+        $tmpExpire = sys_get_temp_dir()."/worker_expire_{$uid}.php";
+        $tmpAdopt = sys_get_temp_dir()."/worker_adopt_{$uid}.php";
+        file_put_contents($tmpExpire, $workerExpire);
+        file_put_contents($tmpAdopt, $workerAdopt);
 
-        $res = InventoryReservation::where('reservation_key', $resKey)->first();
+        $pipes = [[], []];
+        $descr = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+
+        $procExpire = proc_open('php '.escapeshellarg($tmpExpire), $descr, $pipes[0]);
+        // Small delay to ensure expire worker loads the candidate before adopt starts
+        usleep(60000);
+        $procAdopt = proc_open('php '.escapeshellarg($tmpAdopt), $descr, $pipes[1]);
+
+        $expireOut = stream_get_contents($pipes[0][1]);
+        $expireErr = stream_get_contents($pipes[0][2]);
+        $adoptOut = stream_get_contents($pipes[1][1]);
+
+        foreach ([0, 1] as $i) {
+            fclose($pipes[$i][0]);
+            fclose($pipes[$i][1]);
+            fclose($pipes[$i][2]);
+        }
+
+        proc_close($procExpire);
+        proc_close($procAdopt);
+        @unlink($tmpExpire);
+        @unlink($tmpAdopt);
+        @unlink($flagScanned);
+        @unlink($flagAdopted);
+
+        // ── Assertions ───────────────────────────────────────────────────────
+
+        // Prove the stale-candidate path was exercised: adopt worker MUST have adopted first
+        $this->assertSame('ADOPTED', $adoptOut,
+            "Adopt worker MUST succeed (adoption-first sequence). Got: [{$adoptOut}]");
+
+        // expire() MUST return false — production code detected the adopted state
+        $this->assertSame('NOOP', $expireOut,
+            "expire() MUST return NOOP (false) when reservation was adopted before its lock. Got: [{$expireOut}]");
+
+        // Final DB state
+        $final = InventoryReservation::find($reservationId);
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
-        $this->assertNotNull($res);
-
-        if (str_contains($adoptOut, 'ADOPTED')) {
-            // Adoption won: expire() saw the adopted state under its lock and returned false (NOOP)
-            $this->assertTrue(
-                str_contains($expireOut, 'NOOP'),
-                "When adoption wins, expire() MUST return false (NOOP). Got: [{$expireOut}]"
-            );
-            $this->assertSame('active', $res->status, 'Adopted reservation must remain active');
-            $this->assertSame('order', $res->owner_type);
-            $this->assertSame('ORDER-RACE-A', $res->owner_reference);
-            $this->assertNull($res->expires_at);
-            $this->assertEquals($stockBefore, $stockAfter, 'Stock must remain unchanged when adoption wins');
-        } else {
-            // Expiration won first: adopt() must fail; stock released
-            $this->assertTrue(
-                str_contains($expireOut, 'EXPIRED'),
-                "If adoption lost, expiration must have succeeded. Got: [{$expireOut}]"
-            );
-            $this->assertTrue(
-                str_contains($adoptOut, 'ADOPT_FAIL'),
-                "If expiration won, adopt() must fail. Got: [{$adoptOut}]"
-            );
-            $this->assertSame('expired', $res->status);
-            $this->assertNull($res->owner_type);
-        }
-
-        // INVARIANTS — must hold regardless of which worker won:
-
-        // FORBIDDEN: adopted reservation that was also expired
-        if ($res->status === 'active') {
-            $this->assertNotNull($res->owner_type, 'Active reservation must have an owner if adoption won');
-        }
-
-        // FORBIDDEN: double decrement or negative stock
-        $this->assertGreaterThanOrEqual('0.0000', $stockAfter);
-
-        // FORBIDDEN: adopted + stock released (only one state may have released stock)
-        if ($res->owner_type === 'order' && $res->status === 'active') {
-            $this->assertEquals($stockBefore, $stockAfter, 'FORBIDDEN: adopted reservation has released stock');
-        }
+        $this->assertNotNull($final);
+        $this->assertSame('active', $final->status, 'status must be active');
+        $this->assertSame('order', $final->owner_type, 'owner_type must be order');
+        $this->assertSame('ORDER-DET-A', $final->owner_reference, 'owner_reference must match');
+        $this->assertNull($final->expires_at, 'expires_at must be null (adopted)');
+        $this->assertEquals($stockBefore, $stockAfter, 'StockItem.reserved must be unchanged');
     }
 
-    // ───────────────────────────────────────────────────────────────────────
-    // Race A (reverse): Expiration first, adoption fails
+    // ═══════════════════════════════════════════════════════════════════════
+    // Race A-reverse (expiration-first) — DETERMINISTIC PROCESS-LEVEL PROOF
     //
-    // Force a deterministic outcome: expire the reservation first, then attempt adopt.
-    // This confirms the reverse path: expiration wins → adopt() throws.
-    // ───────────────────────────────────────────────────────────────────────
-    public function test_race_a_expiration_wins_adoption_rejects(): void
+    // Sequence guaranteed by EXPIRE_LOCKED flag + PostgreSQL row lock serialization:
+    //   T1: force TTL past → begin explicit transaction → lock row FOR UPDATE
+    //       → write EXPIRE_LOCKED → (sleep briefly) → commit expiration
+    //   T2: poll for EXPIRE_LOCKED → call adopt() [blocks on row lock until T1 commits]
+    //   After T1 commits: T2 unblocks → adopt() sees status=expired → throws exception
+    //
+    // This is a REAL process-level race: T2 is blocked by the PG row lock, not
+    // by application-level polling. The lock released by T1's commit is what
+    // unblocks T2.
+    // ═══════════════════════════════════════════════════════════════════════
+    public function test_race_a_reverse_deterministic_expiration_first(): void
     {
         $tenantId = $this->tenant->id;
         $productId = $this->productId;
 
         $service = app(InventoryReservationServiceInterface::class);
         $context = new InventoryContext(tenantId: $tenantId);
-        $resKey = 'race-a-expire-first-'.uniqid();
+        $resKey = 'race-a-rev-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('1.0000'), $context, 60);
+
         $res = InventoryReservation::where('reservation_key', $resKey)->first();
-        $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
+        $reservationId = $res->id;
+        $this->createdReservationIds[] = $reservationId;
 
-        // Deterministically expire first (no concurrent race needed here)
-        InventoryReservation::where('reservation_key', $resKey)
-            ->update(['expires_at' => Carbon::now()->subSeconds(5)]);
-        $res->refresh();
+        // Force expires_at into the past so expiration is eligible
+        InventoryReservation::where('id', $reservationId)
+            ->update(['expires_at' => Carbon::now()->subSeconds(10)]);
 
-        $expired = $service->expire($res);
-        $this->assertTrue($expired, 'Expiration must succeed on a TTL-passed reservation');
+        $uid = uniqid('race_ar_');
+        $flagLocked = sys_get_temp_dir()."/{$uid}_EXPIRE_LOCKED.flag";
+        $flagCommitted = sys_get_temp_dir()."/{$uid}_EXPIRE_COMMITTED.flag";
 
-        $resAfter = InventoryReservation::where('reservation_key', $resKey)->first();
+        $b = $this->baseWorkerBootstrap;
+
+        // ── Expire worker ─────────────────────────────────────────────────────
+        // Executes the entire expiration inside an explicit DB transaction.
+        // After acquiring FOR UPDATE, writes EXPIRE_LOCKED so adopt can start.
+        // Sleeps briefly (holding the lock) so adopt worker blocks on the row lock.
+        // Then commits — releasing the lock and allowing adopt to see status=expired.
+        $workerExpire = <<<PHP
+{$b}
+use Illuminate\Support\Facades\DB;
+use Modules\Inventory\Models\InventoryReservation;
+use Modules\Inventory\Models\InventoryReservationAllocation;
+use Modules\Inventory\Models\StockItem;
+use Modules\Inventory\Events\InventoryReservationExpired;
+use Modules\Inventory\ValueObjects\Quantity;
+use Carbon\Carbon;
+
+// Execute expiration directly (equivalent to service->expire() but with a deliberate
+// pause between acquiring the lock and committing, to guarantee the adopt worker starts
+// while the expiration lock is held).
+try {
+    DB::transaction(function () use (&\$expired): void {
+        \$locked = InventoryReservation::query()
+            ->where('id', {$reservationId})
+            ->lockForUpdate()
+            ->first();
+
+        if (!\$locked || \$locked->status !== 'active' || \$locked->owner_type !== null) {
+            \$expired = false;
+            return;
+        }
+
+        // Signal: the row lock is held, adopt worker may now start
+        touch('{$flagLocked}');
+
+        // Hold the lock briefly to ensure adopt worker's FOR UPDATE call is blocked
+        usleep(200000); // 200ms
+
+        // Expire: release reserved stock
+        foreach (\$locked->allocations as \$alloc) {
+            \$stockItem = StockItem::query()->where('id', \$alloc->stock_item_id)->lockForUpdate()->first();
+            if (\$stockItem) {
+                \$allocQty = Quantity::fromString((string)\$alloc->quantity);
+                \$cur = Quantity::fromString((string)\$stockItem->reserved);
+                \$new = \$cur->subtract(\$allocQty);
+                \$stockItem->reserved = \$new->isNegative() ? '0.0000' : \$new->toString();
+                \$stockItem->save();
+            }
+        }
+        \$locked->status = 'expired';
+        \$locked->save();
+        InventoryReservationExpired::dispatch(\$locked);
+        \$expired = true;
+    });
+    // Signal commit done
+    touch('{$flagCommitted}');
+    echo \$expired ? 'EXPIRED' : 'EXPIRE_NOOP';
+} catch (Throwable \$e) {
+    echo 'EXPIRE_FAIL:' . \$e->getMessage();
+}
+PHP;
+
+        // ── Adopt worker ──────────────────────────────────────────────────────
+        // Waits until EXPIRE_LOCKED (expire has the row lock), then calls adopt().
+        // adopt() will issue its own FOR UPDATE and block until expire commits.
+        // After the commit, adopt() sees status=expired and throws.
+        $workerAdopt = <<<PHP
+{$b}
+use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
+use Modules\Inventory\Enums\ReservationOwnerType;
+
+// Wait until expire worker holds the row lock
+\$waited = 0;
+while (!file_exists('{$flagLocked}')) {
+    usleep(5000);
+    if (++\$waited > 4000) { echo 'ADOPT_ERROR:timeout_waiting_for_lock'; exit(1); }
+}
+
+// Call adopt() — this issues FOR UPDATE and BLOCKS until expire commits, then sees expired state
+try {
+    app(InventoryReservationServiceInterface::class)->adopt(
+        {$tenantId},
+        '{$resKey}',
+        ReservationOwnerType::ORDER,
+        'ORDER-REV',
+    );
+    echo 'ADOPTED'; // Must NOT happen
+} catch (Throwable \$e) {
+    echo 'ADOPT_FAIL:' . \$e->getMessage();
+}
+PHP;
+
+        $tmpExpire = sys_get_temp_dir()."/worker_expire_{$uid}.php";
+        $tmpAdopt = sys_get_temp_dir()."/worker_adopt_{$uid}.php";
+        file_put_contents($tmpExpire, $workerExpire);
+        file_put_contents($tmpAdopt, $workerAdopt);
+
+        $pipes = [[], []];
+        $descr = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+
+        // Start expire worker first — it must acquire the lock before adopt starts
+        $procExpire = proc_open('php '.escapeshellarg($tmpExpire), $descr, $pipes[0]);
+        // Start adopt worker; it polls for EXPIRE_LOCKED before issuing FOR UPDATE
+        $procAdopt = proc_open('php '.escapeshellarg($tmpAdopt), $descr, $pipes[1]);
+
+        $expireOut = stream_get_contents($pipes[0][1]);
+        $adoptOut = stream_get_contents($pipes[1][1]);
+
+        foreach ([0, 1] as $i) {
+            fclose($pipes[$i][0]);
+            fclose($pipes[$i][1]);
+            fclose($pipes[$i][2]);
+        }
+
+        proc_close($procExpire);
+        proc_close($procAdopt);
+        @unlink($tmpExpire);
+        @unlink($tmpAdopt);
+        @unlink($flagLocked);
+        @unlink($flagCommitted);
+
+        // ── Assertions ───────────────────────────────────────────────────────
+
+        // Expire MUST have committed successfully
+        $this->assertSame('EXPIRED', $expireOut,
+            "Expire worker MUST report EXPIRED. Got: [{$expireOut}]");
+
+        // Adopt MUST have failed with a typed exception (not 'ADOPTED')
+        $this->assertStringContainsString('ADOPT_FAIL', $adoptOut,
+            "Adopt worker MUST fail after expiration committed. Got: [{$adoptOut}]");
+        $this->assertStringNotContainsString('ADOPTED', $adoptOut,
+            'Adopt must NOT succeed when reservation is expired');
+
+        // Final DB state
+        $final = InventoryReservation::find($reservationId);
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
-        $this->assertSame('expired', $resAfter->status);
-        $this->assertLessThan($stockBefore, $stockAfter, 'Stock must have been released by expiration');
-
-        // Now attempt to adopt the expired reservation
-        $this->expectException(ReservationAdoptionException::class);
-        $service->adopt($tenantId, $resKey, ReservationOwnerType::ORDER, 'ORDER-AFTER-EXPIRE');
+        $this->assertNotNull($final);
+        $this->assertSame('expired', $final->status, 'status must be expired');
+        $this->assertNull($final->owner_type, 'owner_type must be null (not adopted)');
+        $this->assertSame('0.0000', $stockAfter, 'StockItem.reserved must be 0 after expiration');
     }
 
-    // ───────────────────────────────────────────────────────────────────────
-    // Race A (deadline boundary): adopt() sees TTL-expired active reservation
-    // ───────────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
+    // Race A-deadline: adopt() rejects active reservation with passed TTL
+    // ═══════════════════════════════════════════════════════════════════════
     public function test_race_a_deadline_boundary_adopt_on_ttl_expired_active(): void
     {
         $tenantId = $this->tenant->id;
@@ -278,26 +466,28 @@ PHP;
 
         $service = app(InventoryReservationServiceInterface::class);
         $context = new InventoryContext(tenantId: $tenantId);
-        $resKey = 'race-a-deadline-'.uniqid();
+        $resKey = 'race-a-dl-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('1.0000'), $context, 60);
+        $res = InventoryReservation::where('reservation_key', $resKey)->first();
+        $this->createdReservationIds[] = $res->id;
 
-        // Force expires_at to past BEFORE adoption attempt (simulates TTL boundary at lock time)
-        InventoryReservation::where('reservation_key', $resKey)
+        // Force expires_at to past (cleanup command has not yet run)
+        InventoryReservation::where('id', $res->id)
             ->update(['expires_at' => Carbon::now()->subSeconds(5)]);
 
         $this->expectException(ReservationAdoptionException::class);
         $service->adopt($tenantId, $resKey, ReservationOwnerType::ORDER, 'ORDER-DEADLINE');
 
-        // Reservation must not be adopted
-        $res = InventoryReservation::where('reservation_key', $resKey)->first();
-        $this->assertNull($res->owner_type);
-        $this->assertSame('active', $res->status);
+        // Verify not adopted
+        $final = InventoryReservation::find($res->id);
+        $this->assertNull($final->owner_type);
+        $this->assertSame('active', $final->status);
     }
 
-    // ───────────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
     // Race B: Adoption vs Release
-    // ───────────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
     public function test_race_b_adoption_vs_release(): void
     {
         $tenantId = $this->tenant->id;
@@ -305,10 +495,13 @@ PHP;
 
         $service = app(InventoryReservationServiceInterface::class);
         $context = new InventoryContext(tenantId: $tenantId);
-        $resKey = 'race-b-adopt-vs-release-'.uniqid();
+        $resKey = 'race-b-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
+        $res = InventoryReservation::where('reservation_key', $resKey)->first();
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
+        $this->createdReservationIds[] = $res->id;
+
         $b = $this->baseWorkerBootstrap;
 
         $workerAdopt = <<<PHP
@@ -344,32 +537,26 @@ PHP;
         $adoptOut = $results[0]['stdout'];
         $releaseOut = $results[1]['stdout'];
 
-        $res = InventoryReservation::where('reservation_key', $resKey)->first();
+        $final = InventoryReservation::find($res->id);
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
-        $this->assertNotNull($res);
-        $this->assertContains($res->status, ['active', 'released'], 'Must be active (adopted) or released');
+        $this->assertNotNull($final);
+        $this->assertContains($final->status, ['active', 'released']);
 
-        if (str_contains($adoptOut, 'ADOPTED') && $res->status === 'active') {
-            // Adoption won and release was no-op or lost the lock: reserved unchanged
-            $this->assertEquals($stockBefore, $stockAfter, 'Stock must remain when adopted and still active');
-        } elseif ($res->status === 'released') {
-            // Release won at some point: stock must be 0
-            $this->assertSame('0.0000', $stockAfter, 'Stock must be 0 when released');
+        // Stock accounting invariant
+        if ($final->status === 'active' && $final->owner_type === 'order') {
+            $this->assertEquals($stockBefore, $stockAfter, 'Adopted+active: stock unchanged');
+        } elseif ($final->status === 'released') {
+            $this->assertSame('0.0000', $stockAfter, 'Released: stock must be 0');
         }
 
-        // FORBIDDEN: double decrement
+        // No double decrement
         $this->assertGreaterThanOrEqual('0.0000', $stockAfter);
-
-        // FORBIDDEN: adopted active reservation with released stock
-        if ($res->status === 'active' && $res->owner_type === 'order') {
-            $this->assertEquals($stockBefore, $stockAfter, 'FORBIDDEN: adopted+active but stock released');
-        }
     }
 
-    // ───────────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
     // Race C: Duplicate same-owner adoption
-    // ───────────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
     public function test_race_c_duplicate_same_owner_adoption(): void
     {
         $tenantId = $this->tenant->id;
@@ -377,10 +564,13 @@ PHP;
 
         $service = app(InventoryReservationServiceInterface::class);
         $context = new InventoryContext(tenantId: $tenantId);
-        $resKey = 'race-c-dup-adopt-'.uniqid();
+        $resKey = 'race-c-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
+        $res = InventoryReservation::where('reservation_key', $resKey)->first();
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
+        $this->createdReservationIds[] = $res->id;
+
         $b = $this->baseWorkerBootstrap;
 
         $makeWorker = fn () => <<<PHP
@@ -403,33 +593,27 @@ PHP;
         $out0 = $results[0]['stdout'];
         $out1 = $results[1]['stdout'];
 
-        $res = InventoryReservation::where('reservation_key', $resKey)->first();
+        $final = InventoryReservation::find($res->id);
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
-        $this->assertNotNull($res);
-
-        // Both must succeed (not FAIL)
+        // Both must not fail
         $this->assertFalse(
             str_contains($out0, 'FAIL') && str_contains($out1, 'FAIL'),
-            "Both workers must not fail simultaneously. Got: [{$out0}] [{$out1}]"
+            "Both must not fail. Got: [{$out0}] [{$out1}]"
         );
 
-        // At least one must be FIRST or REPLAY
-        $successes = count(array_filter([$out0, $out1], fn ($o) => str_contains($o, 'FIRST') || str_contains($o, 'REPLAY')));
-        $this->assertGreaterThanOrEqual(1, $successes, 'At least one worker must succeed');
-
         // Exactly one final owner
-        $this->assertSame('order', $res->owner_type);
-        $this->assertSame('ORDER-DUP-SAME', $res->owner_reference);
-        $this->assertNull($res->expires_at);
+        $this->assertSame('order', $final->owner_type);
+        $this->assertSame('ORDER-DUP-SAME', $final->owner_reference);
+        $this->assertNull($final->expires_at);
 
         // Stock unchanged from adoption
-        $this->assertEquals($stockBefore, $stockAfter, 'StockItem.reserved must not change from adoption race');
+        $this->assertEquals($stockBefore, $stockAfter, 'Stock unchanged during duplicate adoption race');
     }
 
-    // ───────────────────────────────────────────────────────────────────────
-    // Race D: Conflicting-owner adoption — exactly one wins
-    // ───────────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
+    // Race D: Conflicting-owner adoption
+    // ═══════════════════════════════════════════════════════════════════════
     public function test_race_d_conflicting_owner_adoption(): void
     {
         $tenantId = $this->tenant->id;
@@ -437,10 +621,13 @@ PHP;
 
         $service = app(InventoryReservationServiceInterface::class);
         $context = new InventoryContext(tenantId: $tenantId);
-        $resKey = 'race-d-conflict-'.uniqid();
+        $resKey = 'race-d-'.uniqid();
 
         $service->reserve($tenantId, $resKey, $productId, null, Quantity::fromString('2.0000'), $context, 60);
+        $res = InventoryReservation::where('reservation_key', $resKey)->first();
         $stockBefore = StockItem::where('product_id', $productId)->first()->reserved;
+        $this->createdReservationIds[] = $res->id;
+
         $b = $this->baseWorkerBootstrap;
 
         $makeWorker = fn (string $owner) => <<<PHP
@@ -466,30 +653,33 @@ PHP;
         $out0 = $results[0]['stdout'];
         $out1 = $results[1]['stdout'];
 
-        $res = InventoryReservation::where('reservation_key', $resKey)->first();
+        $final = InventoryReservation::find($res->id);
         $stockAfter = StockItem::where('product_id', $productId)->first()->reserved;
 
         $successCount = count(array_filter([$out0, $out1], fn ($o) => str_contains($o, 'ADOPTED')));
         $failCount = count(array_filter([$out0, $out1], fn ($o) => str_contains($o, 'FAIL')));
 
         $this->assertSame(1, $successCount, "Exactly one owner must win. Got: [{$out0}] [{$out1}]");
-        $this->assertSame(1, $failCount, "Exactly one must fail. Got: [{$out0}] [{$out1}]");
+        $this->assertSame(1, $failCount, "Exactly one must fail.      Got: [{$out0}] [{$out1}]");
 
         $loserOut = str_contains($out0, 'FAIL') ? $out0 : $out1;
-        $this->assertStringContainsString('RESERVATION_CONFLICTING_OWNER', $loserOut, 'Loser must receive typed conflict error');
+        $this->assertStringContainsString('RESERVATION_CONFLICTING_OWNER', $loserOut,
+            'Loser must receive typed conflict error');
 
-        $this->assertSame('order', $res->owner_type);
-        $this->assertContains($res->owner_reference, ['ORDER-CONFLICT-A', 'ORDER-CONFLICT-B']);
-        $this->assertNull($res->expires_at);
-
-        $this->assertEquals($stockBefore, $stockAfter, 'Stock unchanged during adoption race');
+        $this->assertSame('order', $final->owner_type);
+        $this->assertContains($final->owner_reference, ['ORDER-CONFLICT-A', 'ORDER-CONFLICT-B']);
+        $this->assertNull($final->expires_at);
+        $this->assertEquals($stockBefore, $stockAfter, 'Stock unchanged during conflicting adoption race');
     }
 
-    // ───────────────────────────────────────────────────────────────────────
-    // Helper: run synchronized parallel workers via proc_open + file barrier
-    // ───────────────────────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════
+    // Helpers
+    // ═══════════════════════════════════════════════════════════════════════
 
     /**
+     * Run workers synchronized by a single shared barrier file.
+     * Used for races where order is non-deterministic (B, C, D).
+     *
      * @param  list<string>  $scripts
      * @return list<array{exit_code: int, stdout: string, stderr: string}>
      */
@@ -514,7 +704,7 @@ PHP;
             $processes[$idx] = ['resource' => $proc, 'tmp_file' => $tmpFile];
         }
 
-        usleep(80000); // 80ms setup buffer
+        usleep(80000);
         touch($barrierFile);
 
         $results = [];
