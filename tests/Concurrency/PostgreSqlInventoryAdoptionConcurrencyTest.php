@@ -36,10 +36,11 @@ use Tests\TestCase;
  *   Expected: expire() returns false (NOOP). status=active, owner=order, reserved unchanged.
  *
  * RACE A-REVERSE (expiration-first, deterministic):
- *   T1 Expire worker: force TTL past → begin transaction → lock row FOR UPDATE → write EXPIRE_LOCKED
- *                     → sleep briefly → commit expiration
- *   T2 Adopt worker:  poll for EXPIRE_LOCKED → attempt adopt() [will block on row lock until T1 commits]
- *   Expected: adopt() throws typed not-active exception. status=expired, owner_type=null, reserved=0.
+ *   T1 Expire worker: load candidate → call real expire($candidate) → signal EXPIRATION_COMMITTED
+ *   T2 Adopt worker:  poll for EXPIRATION_COMMITTED → call real adopt(...)
+ *   Expected: expire() returns true. adopt() throws typed not-active/expired exception.
+ *             status=expired, owner_type=null, reserved=0.
+ *   ZERO duplicated expiration business logic in workers.
  *
  * Each test cleans up only the exact reservation IDs it created, so it does not
  * poison the migration test suite.
@@ -52,7 +53,7 @@ class PostgreSqlInventoryAdoptionConcurrencyTest extends TestCase
 
     private const string PG_HOST = '127.0.0.1';
 
-    private const int    PG_PORT = 5432;
+    private const int PG_PORT = 5432;
 
     private Tenant $tenant;
 
@@ -280,15 +281,14 @@ PHP;
     // ═══════════════════════════════════════════════════════════════════════
     // Race A-reverse (expiration-first) — DETERMINISTIC PROCESS-LEVEL PROOF
     //
-    // Sequence guaranteed by EXPIRE_LOCKED flag + PostgreSQL row lock serialization:
-    //   T1: force TTL past → begin explicit transaction → lock row FOR UPDATE
-    //       → write EXPIRE_LOCKED → (sleep briefly) → commit expiration
-    //   T2: poll for EXPIRE_LOCKED → call adopt() [blocks on row lock until T1 commits]
-    //   After T1 commits: T2 unblocks → adopt() sees status=expired → throws exception
+    // Sequence guaranteed by EXPIRATION_COMMITTED flag:
+    //   T1: force TTL past → call REAL InventoryReservationServiceInterface::expire($candidate)
+    //       → expire() commits → write EXPIRATION_COMMITTED flag
+    //   T2: poll for EXPIRATION_COMMITTED → call REAL InventoryReservationServiceInterface::adopt(...)
+    //       → adopt() sees status=expired → throws typed ReservationAdoptionException
     //
-    // This is a REAL process-level race: T2 is blocked by the PG row lock, not
-    // by application-level polling. The lock released by T1's commit is what
-    // unblocks T2.
+    // ZERO duplicated expiration business logic in workers.
+    // BOTH workers call exclusively production Inventory service contracts.
     // ═══════════════════════════════════════════════════════════════════════
     public function test_race_a_reverse_deterministic_expiration_first(): void
     {
@@ -310,88 +310,47 @@ PHP;
             ->update(['expires_at' => Carbon::now()->subSeconds(10)]);
 
         $uid = uniqid('race_ar_');
-        $flagLocked = sys_get_temp_dir()."/{$uid}_EXPIRE_LOCKED.flag";
-        $flagCommitted = sys_get_temp_dir()."/{$uid}_EXPIRE_COMMITTED.flag";
+        $flagCommitted = sys_get_temp_dir()."/{$uid}_EXPIRATION_COMMITTED.flag";
 
         $b = $this->baseWorkerBootstrap;
 
         // ── Expire worker ─────────────────────────────────────────────────────
-        // Executes the entire expiration inside an explicit DB transaction.
-        // After acquiring FOR UPDATE, writes EXPIRE_LOCKED so adopt can start.
-        // Sleeps briefly (holding the lock) so adopt worker blocks on the row lock.
-        // Then commits — releasing the lock and allowing adopt to see status=expired.
+        // Calls the REAL production InventoryReservationServiceInterface::expire()
+        // with ZERO duplicated business logic. Signals EXPIRATION_COMMITTED upon commit.
         $workerExpire = <<<PHP
 {$b}
-use Illuminate\Support\Facades\DB;
+use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Models\InventoryReservation;
-use Modules\Inventory\Models\InventoryReservationAllocation;
-use Modules\Inventory\Models\StockItem;
-use Modules\Inventory\Events\InventoryReservationExpired;
-use Modules\Inventory\ValueObjects\Quantity;
-use Carbon\Carbon;
 
-// Execute expiration directly (equivalent to service->expire() but with a deliberate
-// pause between acquiring the lock and committing, to guarantee the adopt worker starts
-// while the expiration lock is held).
+\$candidate = InventoryReservation::find({$reservationId});
+if (!\$candidate) {
+    echo 'EXPIRE_ERROR:candidate_not_found';
+    exit(1);
+}
+
 try {
-    DB::transaction(function () use (&\$expired): void {
-        \$locked = InventoryReservation::query()
-            ->where('id', {$reservationId})
-            ->lockForUpdate()
-            ->first();
-
-        if (!\$locked || \$locked->status !== 'active' || \$locked->owner_type !== null) {
-            \$expired = false;
-            return;
-        }
-
-        // Signal: the row lock is held, adopt worker may now start
-        touch('{$flagLocked}');
-
-        // Hold the lock briefly to ensure adopt worker's FOR UPDATE call is blocked
-        usleep(200000); // 200ms
-
-        // Expire: release reserved stock
-        foreach (\$locked->allocations as \$alloc) {
-            \$stockItem = StockItem::query()->where('id', \$alloc->stock_item_id)->lockForUpdate()->first();
-            if (\$stockItem) {
-                \$allocQty = Quantity::fromString((string)\$alloc->quantity);
-                \$cur = Quantity::fromString((string)\$stockItem->reserved);
-                \$new = \$cur->subtract(\$allocQty);
-                \$stockItem->reserved = \$new->isNegative() ? '0.0000' : \$new->toString();
-                \$stockItem->save();
-            }
-        }
-        \$locked->status = 'expired';
-        \$locked->save();
-        InventoryReservationExpired::dispatch(\$locked);
-        \$expired = true;
-    });
-    // Signal commit done
+    \$expired = app(InventoryReservationServiceInterface::class)->expire(\$candidate);
     touch('{$flagCommitted}');
-    echo \$expired ? 'EXPIRED' : 'EXPIRE_NOOP';
+    echo \$expired ? 'EXPIRED' : 'NOOP';
 } catch (Throwable \$e) {
     echo 'EXPIRE_FAIL:' . \$e->getMessage();
 }
 PHP;
 
         // ── Adopt worker ──────────────────────────────────────────────────────
-        // Waits until EXPIRE_LOCKED (expire has the row lock), then calls adopt().
-        // adopt() will issue its own FOR UPDATE and block until expire commits.
-        // After the commit, adopt() sees status=expired and throws.
+        // Waits until expiration has committed (EXPIRATION_COMMITTED), then calls
+        // the REAL production InventoryReservationServiceInterface::adopt().
         $workerAdopt = <<<PHP
 {$b}
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Enums\ReservationOwnerType;
 
-// Wait until expire worker holds the row lock
 \$waited = 0;
-while (!file_exists('{$flagLocked}')) {
+while (!file_exists('{$flagCommitted}')) {
     usleep(5000);
-    if (++\$waited > 4000) { echo 'ADOPT_ERROR:timeout_waiting_for_lock'; exit(1); }
+    if (++\$waited > 4000) { echo 'ADOPT_ERROR:timeout_waiting_for_expiration'; exit(1); }
 }
 
-// Call adopt() — this issues FOR UPDATE and BLOCKS until expire commits, then sees expired state
 try {
     app(InventoryReservationServiceInterface::class)->adopt(
         {$tenantId},
@@ -413,9 +372,9 @@ PHP;
         $pipes = [[], []];
         $descr = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
 
-        // Start expire worker first — it must acquire the lock before adopt starts
+        // Start expire worker first
         $procExpire = proc_open('php '.escapeshellarg($tmpExpire), $descr, $pipes[0]);
-        // Start adopt worker; it polls for EXPIRE_LOCKED before issuing FOR UPDATE
+        // Start adopt worker; it polls for EXPIRATION_COMMITTED
         $procAdopt = proc_open('php '.escapeshellarg($tmpAdopt), $descr, $pipes[1]);
 
         $expireOut = stream_get_contents($pipes[0][1]);
@@ -431,18 +390,19 @@ PHP;
         proc_close($procAdopt);
         @unlink($tmpExpire);
         @unlink($tmpAdopt);
-        @unlink($flagLocked);
         @unlink($flagCommitted);
 
         // ── Assertions ───────────────────────────────────────────────────────
 
-        // Expire MUST have committed successfully
+        // Expire MUST have committed successfully via production service
         $this->assertSame('EXPIRED', $expireOut,
-            "Expire worker MUST report EXPIRED. Got: [{$expireOut}]");
+            "Expire worker MUST report EXPIRED via production service. Got: [{$expireOut}]");
 
         // Adopt MUST have failed with a typed exception (not 'ADOPTED')
         $this->assertStringContainsString('ADOPT_FAIL', $adoptOut,
             "Adopt worker MUST fail after expiration committed. Got: [{$adoptOut}]");
+        $this->assertStringContainsString('RESERVATION_NOT_ACTIVE', $adoptOut,
+            "Adopt worker MUST receive RESERVATION_NOT_ACTIVE typed exception. Got: [{$adoptOut}]");
         $this->assertStringNotContainsString('ADOPTED', $adoptOut,
             'Adopt must NOT succeed when reservation is expired');
 

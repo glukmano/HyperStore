@@ -4,9 +4,19 @@ declare(strict_types=1);
 
 namespace Tests\Concurrency;
 
+use App\Core\Tenancy\Models\Tenant;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Modules\Catalog\Actions\CreateProductAction;
+use Modules\Catalog\DTOs\ProductData;
+use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
+use Modules\Inventory\DTOs\InventoryContext;
+use Modules\Inventory\Enums\ReservationOwnerType;
 use Modules\Inventory\Models\InventoryReservation;
+use Modules\Inventory\Models\InventorySource;
+use Modules\Inventory\Models\StockItem;
+use Modules\Inventory\Models\Warehouse;
+use Modules\Inventory\ValueObjects\Quantity;
 use Tests\TestCase;
 
 /**
@@ -27,7 +37,7 @@ use Tests\TestCase;
  * Sequence (M-04):
  *   A. Fresh DB + all baseline migrations applied
  *   B. Migration 000082 applied → assertions
- *   C. Create fixture reservation + adopt it (expires_at = null)
+ *   C. Insert adopted fixture (expires_at = null) via insertAdoptedReservationFixture()
  *   D. Insert decoy reservation (unrelated row, tracked by exact ID)
  *   E. Release + delete ONLY the adopted fixture (tracked by exact ID)
  *   F. Assert decoy row still exists and is unmodified
@@ -44,7 +54,7 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
 
     private const string PG_HOST = '127.0.0.1';
 
-    private const int    PG_PORT = 5432;
+    private const int PG_PORT = 5432;
 
     private const string MIGRATION_FILE = '2026_09_01_000082_add_adoption_columns_to_inventory_reservations';
 
@@ -119,28 +129,98 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // M-03: adopt() persists expires_at = NULL in disposable PostgreSQL DB
+    // M-03: Real reserve() and real adopt() persist expires_at = NULL on PostgreSQL
     // ═══════════════════════════════════════════════════════════════════════
     public function test_migration_m03_adopt_persists_null_expires_at(): void
     {
         $this->applyAllMigrationsToDisposableDb();
         $this->seedReferenceData();
 
+        $uid = uniqid('m03_');
+        $tenant = Tenant::create(['name' => 'M03 Tenant', 'slug' => $uid, 'status' => 'active']);
+        $product = app(CreateProductAction::class)->execute(new ProductData(
+            tenantId: $tenant->id,
+            productType: 'physical',
+            sku: 'M03-SKU-'.strtoupper($uid),
+            translations: ['en' => ['name' => 'M03 Product']],
+        ));
+        $wh = Warehouse::create(['tenant_id' => $tenant->id, 'code' => 'WH-'.$uid, 'name' => 'WH', 'country_code' => 'CH']);
+        $src = InventorySource::create(['tenant_id' => $tenant->id, 'warehouse_id' => $wh->id, 'code' => 'SRC-'.$uid, 'name' => 'SRC', 'priority' => 10]);
+        $stockItem = StockItem::create(['tenant_id' => $tenant->id, 'inventory_source_id' => $src->id, 'product_id' => $product->id, 'on_hand' => '5.0000', 'reserved' => '0.0000']);
+
+        $service = app(InventoryReservationServiceInterface::class);
+        $context = new InventoryContext(tenantId: $tenant->id);
         $resKey = 'm03-res-'.uniqid();
-        $resId = $this->createAndAdoptTestReservation($resKey, 'ORDER-M03');
+
+        // 1. Create a NORMAL reservation through the real Inventory reservation service:
+        $reserveResult = $service->reserve(
+            tenantId: $tenant->id,
+            reservationKey: $resKey,
+            productId: $product->id,
+            variantId: null,
+            requestedQuantity: Quantity::fromString('1.0000'),
+            context: $context,
+            ttlMinutes: 60,
+        );
+
+        $this->assertTrue($reserveResult->isSuccess, 'reserve() must succeed');
+        $resId = $reserveResult->reservation->id;
         $this->trackedReservationIds[] = $resId;
 
-        // Verify via ORM
-        $row = InventoryReservation::find($resId);
-        $this->assertNull($row->expires_at, 'expires_at must be null after adoption (ORM)');
-        $this->assertSame('order', $row->owner_type);
+        // 2. Assert BEFORE adoption (ORM + raw SQL + stock):
+        $beforeORM = InventoryReservation::find($resId);
+        $this->assertNotNull($beforeORM);
+        $this->assertSame('active', $beforeORM->status);
+        $this->assertNull($beforeORM->owner_type);
+        $this->assertNull($beforeORM->owner_reference);
+        $this->assertNotNull($beforeORM->expires_at);
 
-        // Verify via raw SQL (not ORM cache)
-        $raw = DB::selectOne('SELECT expires_at FROM inventory_reservations WHERE id = ?', [$resId]);
-        $this->assertNull($raw->expires_at, 'expires_at must be NULL via raw SQL');
+        $beforeRaw = DB::selectOne('SELECT expires_at, owner_type, owner_reference, status FROM inventory_reservations WHERE id = ?', [$resId]);
+        $this->assertNotNull($beforeRaw->expires_at, 'expires_at must be non-null before adoption in raw SQL');
+        $this->assertNull($beforeRaw->owner_type, 'owner_type must be null before adoption in raw SQL');
+        $this->assertSame('active', $beforeRaw->status);
 
-        // Teardown: release stock accounting, delete the exact fixture row
-        $this->releaseAndDeleteExactReservation($resId, $resKey);
+        $stockBefore = $stockItem->fresh()->reserved;
+        $this->assertEquals('1.0000', $stockBefore, 'StockItem.reserved must be 1.0000 before adoption');
+
+        // 3. Call the REAL production adopt() contract:
+        $adoptResult = $service->adopt(
+            tenantId: $tenant->id,
+            reservationKey: $resKey,
+            ownerType: ReservationOwnerType::ORDER,
+            ownerReference: 'ORDER-PG-M03',
+        );
+
+        $this->assertTrue($adoptResult->isSuccess, 'adopt() must succeed on PostgreSQL');
+        $this->assertFalse($adoptResult->wasAlreadyAdopted);
+
+        // 4. Assert AFTER adoption using fresh ORM + raw SQL:
+        $afterORM = InventoryReservation::find($resId);
+        $this->assertNotNull($afterORM);
+        $this->assertSame('active', $afterORM->status);
+        $this->assertSame('order', $afterORM->owner_type);
+        $this->assertSame('ORDER-PG-M03', $afterORM->owner_reference);
+        $this->assertNotNull($afterORM->adopted_at);
+        $this->assertNull($afterORM->expires_at, 'expires_at MUST be null after adoption (ORM)');
+
+        $afterRaw = DB::selectOne('SELECT expires_at, owner_type, owner_reference, status, adopted_at FROM inventory_reservations WHERE id = ?', [$resId]);
+        $this->assertNull($afterRaw->expires_at, 'Raw PostgreSQL value of expires_at MUST be NULL after adoption');
+        $this->assertSame('order', $afterRaw->owner_type);
+        $this->assertSame('ORDER-PG-M03', $afterRaw->owner_reference);
+        $this->assertNotNull($afterRaw->adopted_at);
+        $this->assertSame('active', $afterRaw->status);
+
+        // 5. Assert StockItem.reserved unchanged:
+        $stockAfter = $stockItem->fresh()->reserved;
+        $this->assertEquals($stockBefore, $stockAfter, 'StockItem.reserved must remain unchanged by adoption');
+
+        // 6. Clean up ONLY this exact fixture via accepted Inventory release contract first,
+        // then exact fixture teardown.
+        $released = $service->release($tenant->id, $resKey);
+        $this->assertTrue($released, 'release() must succeed');
+        $this->assertSame('0.0000', $stockItem->fresh()->reserved);
+
+        DB::table('inventory_reservations')->where('id', $resId)->delete();
         $this->trackedReservationIds = array_diff($this->trackedReservationIds, [$resId]);
     }
 
@@ -177,9 +257,9 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
         $this->assertColumnExists('adopted_at');
         $this->assertIndexExists('inv_res_cleanup_index');
 
-        // ── B. Create adopted fixture, track its EXACT ID ──────────────────
+        // ── B. Create adopted fixture via direct-schema helper, track its EXACT ID ──
         $adoptedResKey = 'mig-adopted-'.uniqid();
-        $adoptedResId = $this->createAndAdoptTestReservation($adoptedResKey, 'ORDER-MIG-04');
+        $adoptedResId = $this->insertAdoptedReservationFixture($adoptedResKey, 'ORDER-MIG-04');
         $this->trackedReservationIds[] = $adoptedResId;
 
         $adoptedRowBefore = DB::selectOne('SELECT expires_at, owner_type FROM inventory_reservations WHERE id = ?', [$adoptedResId]);
@@ -286,9 +366,9 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
         $this->applyAllMigrationsToDisposableDb();
         $this->seedReferenceData();
 
-        // Create adopted fixture (expires_at = null)
+        // Create adopted fixture (expires_at = null) via direct-schema helper
         $resKey = 'm05-res-'.uniqid();
-        $resId = $this->createAndAdoptTestReservation($resKey, 'ORDER-M05');
+        $resId = $this->insertAdoptedReservationFixture($resKey, 'ORDER-M05');
         $this->trackedReservationIds[] = $resId;
 
         // Verify adopted row has null expires_at
@@ -392,13 +472,11 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
     }
 
     /**
-     * Create a reservation, adopt it, and return its ID.
-     * All operations use direct DB calls against the disposable database
-     * to avoid any dependency on the test's service container binding.
+     * Direct schema insertion helper: inserts an adopted reservation (expires_at = null, owner set)
+     * bypassing domain services specifically for migration rollback precondition testing.
      */
-    private function createAndAdoptTestReservation(string $resKey, string $ownerRef): int
+    private function insertAdoptedReservationFixture(string $resKey, string $ownerRef): int
     {
-        // Minimal tenant + product + warehouse + source + stock required
         $tenantId = DB::table('tenants')->insertGetId([
             'name' => 'mig-tenant',
             'slug' => $resKey,
@@ -445,7 +523,7 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
             'updated_at' => now(),
         ]);
 
-        // Insert adopted reservation (expires_at = null, owner set)
+        // Direct schema insertion: adopted reservation (expires_at = null, owner set)
         $resId = DB::table('inventory_reservations')->insertGetId([
             'tenant_id' => $tenantId,
             'reservation_key' => $resKey,
@@ -467,7 +545,6 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
      */
     private function createDecoyReservation(string $resKey): int
     {
-        // Reuse any existing tenant in the disposable DB
         $tenantId = DB::table('tenants')->value('id');
 
         $resId = DB::table('inventory_reservations')->insertGetId([
@@ -486,12 +563,10 @@ class PostgreSqlInventoryAdoptionMigrationTest extends TestCase
     }
 
     /**
-     * Release stock accounting for a reservation, then delete ONLY that exact row by ID.
-     * Never performs a WHERE-based batch delete.
+     * Delete ONLY that exact row by ID. Never performs a WHERE-based batch delete.
      */
     private function releaseAndDeleteExactReservation(int $resId, string $resKey): void
     {
-        // Delete the exact reservation row by primary key
         DB::table('inventory_reservations')->where('id', $resId)->delete();
     }
 
