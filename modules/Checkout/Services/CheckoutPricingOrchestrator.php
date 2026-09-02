@@ -31,7 +31,7 @@ class CheckoutPricingOrchestrator
     ) {}
 
     /**
-     * Re-calculates pricing, promotions, taxes, and totals deterministically.
+     * Re-evaluates merchandise, promotions, shipping, and taxes authoritatively.
      *
      * @return array{
      *     totals: CheckoutTotals,
@@ -59,9 +59,10 @@ class CheckoutPricingOrchestrator
 
         // 1. Calculate merchandise lines using PriceResolver with exact fractional quantity support
         $merchandiseSubtotalMinor = 0;
-        $linePricingBreakdown = [];
         $promoItems = [];
         $lineTaxItems = [];
+        $perLineUnitPrices = [];
+        $perLineSubtotals = [];
 
         // Pre-fetch tenant default tax class in case products do not specify one explicitly
         $defaultTaxClass = TaxClass::query()
@@ -92,16 +93,8 @@ class CheckoutPricingOrchestrator
             $lineTotalMinor = $lineTotal->getMinorAmount();
 
             $merchandiseSubtotalMinor += $lineTotalMinor;
-
-            $linePricingBreakdown[] = [
-                'cart_line_id' => $line->id,
-                'product_id' => $line->product_id,
-                'variant_id' => $line->variant_id,
-                'quantity' => $qtyStr,
-                'unit_price_minor' => $unitPriceMinor,
-                'line_total_minor' => $lineTotalMinor,
-                'currency' => $currency,
-            ];
+            $perLineUnitPrices[$line->id] = $unitPriceMinor;
+            $perLineSubtotals[$line->id] = $lineTotalMinor;
 
             $promoItems[] = new PromotionCartItem(
                 productId: $line->product_id,
@@ -169,6 +162,7 @@ class CheckoutPricingOrchestrator
         $taxTotalMinor = 0;
         $taxSnapshot = [];
         $appliedTaxRates = [];
+        $perLineTaxes = [];
 
         if ($shippingAddress !== null && $merchandiseSubtotalMinor > 0) {
             $taxCtx = new TaxContext(
@@ -182,15 +176,68 @@ class CheckoutPricingOrchestrator
             // Calculate per line preserving tax class and exact line totals
             foreach ($lineTaxItems as $taxItem) {
                 $lineTaxRes = $this->taxCalculator->calculate($taxItem['total'], $taxItem['tax_class_id'], $taxCtx);
-                $taxTotalMinor += $lineTaxRes->taxAmount->getMinorAmount();
-                foreach ($lineTaxRes->appliedRates as $r) {
-                    $appliedTaxRates[] = $r;
+                $lineTaxMinor = $lineTaxRes->taxAmount->getMinorAmount();
+                $taxTotalMinor += $lineTaxMinor;
+                $lineRatePercent = null;
+                if (! empty($lineTaxRes->appliedRates)) {
+                    $totRate = '0';
+                    foreach ($lineTaxRes->appliedRates as $r) {
+                        $appliedTaxRates[] = $r;
+                        $pStr = (string) ($r['percentage'] ?? '0');
+                        if (is_numeric($pStr)) {
+                            $totRate = bcadd($totRate, $pStr, 4);
+                        }
+                    }
+                    $lineRatePercent = $totRate;
                 }
+
+                $cartLineId = $taxItem['line']->id;
+                $perLineTaxes[$cartLineId] = [
+                    'tax_minor' => $lineTaxMinor,
+                    'tax_class_id' => $taxItem['tax_class_id'],
+                    'tax_rate_percent' => $lineRatePercent,
+                ];
             }
 
             $taxSnapshot = [
                 'tax_amount_minor' => $taxTotalMinor,
                 'applied_rates' => $appliedTaxRates,
+            ];
+        }
+
+        // Build canonical line pricing breakdown including line-level tax and discount
+        $linePricingBreakdown = [];
+        foreach ($cart->lines as $line) {
+            $cartLineId = $line->id;
+            $subtotalMinor = $perLineSubtotals[$cartLineId];
+            $unitPriceMinor = $perLineUnitPrices[$cartLineId];
+            $taxInfo = $perLineTaxes[$cartLineId] ?? [
+                'tax_minor' => 0,
+                'tax_class_id' => (int) ($line->product->tax_class_id ?? ($defaultTaxClass !== null ? $defaultTaxClass->id : 0)),
+                'tax_rate_percent' => null,
+            ];
+
+            $lineDiscountMinor = 0; // Phase-07 promotions are evaluated at cart level (cart_discounts)
+            $lineTaxMinor = $taxInfo['tax_minor'];
+            $lineTotalMinor = $subtotalMinor - $lineDiscountMinor + $lineTaxMinor;
+
+            $linePricingBreakdown[] = [
+                'cart_line_id' => $cartLineId,
+                'product_id' => $line->product_id,
+                'variant_id' => $line->variant_id,
+                'quantity' => (string) $line->quantity,
+                'unit_price_minor' => $unitPriceMinor,
+                'merchandise_line_subtotal_minor' => $subtotalMinor,
+                'line_discount_minor' => $lineDiscountMinor,
+                'allocated_cart_discount_minor' => 0,
+                'tax_minor' => $lineTaxMinor,
+                'line_total_minor' => $lineTotalMinor,
+                'subtotal_minor' => $subtotalMinor,
+                'discount_minor' => $lineDiscountMinor,
+                'total_minor' => $lineTotalMinor,
+                'tax_class_id' => $taxInfo['tax_class_id'],
+                'tax_rate_percent' => $taxInfo['tax_rate_percent'],
+                'currency' => $currency,
             ];
         }
 

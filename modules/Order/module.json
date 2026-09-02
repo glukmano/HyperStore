@@ -1,0 +1,7 @@
+{
+    "name": "Order",
+    "description": "Order aggregate, lifecycle, commercial snapshots and state machine foundation",
+    "provider": "Modules\\Order\\OrderServiceProvider",
+    "order": 80,
+    "enabled": true
+}

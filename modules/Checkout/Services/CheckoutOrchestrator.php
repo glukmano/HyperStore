@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
+use Modules\Catalog\Models\ProductTranslation;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
@@ -513,15 +514,50 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                     $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote);
                     $totals = $pricingRes['totals'];
 
+                    $lockedSession->cart->loadMissing(['lines.product.translations', 'lines.variant']);
+
                     $lines = [];
+                    $pricingByLineId = [];
+                    if (isset($pricingRes['pricing_snapshot']['lines']) && is_array($pricingRes['pricing_snapshot']['lines'])) {
+                        foreach ($pricingRes['pricing_snapshot']['lines'] as $pLine) {
+                            if (is_array($pLine) && isset($pLine['cart_line_id'])) {
+                                $pricingByLineId[(int) $pLine['cart_line_id']] = $pLine;
+                            }
+                        }
+                    }
+
                     foreach ($lockedSession->cart->lines as $line) {
                         /** @var CartLine $line */
+                        $product = $line->product;
+                        $variant = $line->variant;
+                        $sku = $variant !== null ? $variant->sku : $product->sku;
+                        /** @var ProductTranslation|null $localeTranslation */
+                        $localeTranslation = $product->translations->firstWhere('locale', $lockedSession->locale);
+                        /** @var ProductTranslation|null $firstTranslation */
+                        $firstTranslation = $product->translations->first();
+                        $name = $localeTranslation !== null ? $localeTranslation->name : ($firstTranslation !== null ? $firstTranslation->name : $product->name);
+                        $productType = $product->product_type;
+
+                        $pLine = $pricingByLineId[$line->id] ?? null;
+
                         $lines[] = [
+                            'cart_line_id' => $line->id,
                             'product_id' => $line->product_id,
                             'variant_id' => $line->variant_id,
+                            'sku_snapshot' => $sku,
+                            'name_snapshot' => $name,
+                            'product_type_snapshot' => $productType,
                             'quantity' => (string) $line->quantity,
+                            'signature' => $line->signature,
                             'options' => $line->options,
                             'customizations' => $line->customizations,
+                            'unit_price_minor' => $pLine !== null ? (int) $pLine['unit_price_minor'] : null,
+                            'merchandise_line_subtotal_minor' => $pLine !== null ? (int) $pLine['merchandise_line_subtotal_minor'] : null,
+                            'line_discount_minor' => $pLine !== null ? (int) $pLine['line_discount_minor'] : 0,
+                            'tax_minor' => $pLine !== null ? (int) $pLine['tax_minor'] : 0,
+                            'line_total_minor' => $pLine !== null ? (int) $pLine['line_total_minor'] : null,
+                            'tax_class_id' => $pLine !== null ? (isset($pLine['tax_class_id']) ? (int) $pLine['tax_class_id'] : null) : null,
+                            'tax_rate_percent' => $pLine !== null ? (isset($pLine['tax_rate_percent']) ? (string) $pLine['tax_rate_percent'] : null) : null,
                         ];
                     }
 
@@ -536,6 +572,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                             'market_id' => $lockedSession->market_id,
                             'channel_id' => $lockedSession->channel_id,
                             'currency' => $lockedSession->currency,
+                            'locale' => $lockedSession->locale,
                         ],
                         customerData: $lockedSession->customer_data ?? [],
                         shippingAddress: $lockedSession->shipping_address,
