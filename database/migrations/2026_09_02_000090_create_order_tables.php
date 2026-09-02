@@ -69,7 +69,10 @@ return new class extends Migration
             $table->decimal('quantity', 20, 8);
             $table->bigInteger('unit_price_minor');
             $table->bigInteger('subtotal_minor');
+            $table->bigInteger('line_discount_minor')->default(0);
+            $table->bigInteger('allocated_cart_discount_minor')->default(0);
             $table->bigInteger('discount_minor')->default(0);
+            $table->bigInteger('taxable_amount_minor')->default(0);
             $table->bigInteger('tax_minor')->default(0);
             $table->bigInteger('total_minor');
             $table->unsignedBigInteger('tax_class_id')->nullable();

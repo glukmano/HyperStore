@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Checkout\Services;
 
+use Illuminate\Database\Eloquent\Collection;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
 use Modules\Checkout\DTOs\CheckoutAddress;
@@ -20,6 +21,7 @@ use Modules\Pricing\Models\TaxClass;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Promotions\DTOs\PromotionCartItem;
 use Modules\Promotions\DTOs\PromotionContext;
+use Modules\Promotions\Models\Promotion;
 use Modules\Promotions\Services\PromotionRuleEngine;
 
 class CheckoutPricingOrchestrator
@@ -107,7 +109,8 @@ class CheckoutPricingOrchestrator
             );
 
             // Resolve tax class: product tax_class_id -> tenant default -> throw exception (no hardcoded fallback)
-            $taxClassId = $line->product->tax_class_id ?? ($defaultTaxClass !== null ? $defaultTaxClass->id : null);
+            $productTaxClass = $line->product->tax_class_id ?? ($line->product->metadata['tax_class_id'] ?? null);
+            $taxClassId = $productTaxClass ?? ($defaultTaxClass !== null ? $defaultTaxClass->id : null);
             if ($taxClassId === null) {
                 throw TaxClassUnavailableException::forProduct($line->product_id);
             }
@@ -146,19 +149,209 @@ class CheckoutPricingOrchestrator
         $lineDiscounts = MoneyValue::zero($currency);
         $cartDiscounts = MoneyValue::fromMinor($totalDiscountMinor, $currency);
 
-        // 3. Shipping amount
+        // 3. Proportional Cart Discount Allocation (Largest Remainder Method, integer-only)
+        $perLineAllocatedCartDiscounts = [];
+        $perLineLineDiscounts = [];
+        $remainingSubtotals = [];
+
+        foreach ($cart->lines as $line) {
+            $perLineAllocatedCartDiscounts[$line->id] = 0;
+            $perLineLineDiscounts[$line->id] = 0; // Line-level discounts if any
+            $remainingSubtotals[$line->id] = $perLineSubtotals[$line->id];
+        }
+
+        if ($totalDiscountMinor > 0) {
+            if (! empty($promoResult->discounts)) {
+                $appliedPromoIds = array_values(array_unique(array_filter(array_map(fn ($d) => $d->promotionId, $promoResult->discounts))));
+                /** @var Collection<int, Promotion> $promotionsById */
+                $promotionsById = Promotion::query()
+                    ->whereIn('id', $appliedPromoIds)
+                    ->with(['conditions', 'actions'])
+                    ->get()
+                    ->keyBy('id');
+
+                foreach ($promoResult->discounts as $d) {
+                    $dAmount = $d->discountAmount->getMinorAmount();
+                    if ($dAmount <= 0) {
+                        continue;
+                    }
+
+                    $promo = $promotionsById->get($d->promotionId);
+                    $eligibleLineIds = [];
+
+                    foreach ($cart->lines as $line) {
+                        if ($remainingSubtotals[$line->id] <= 0) {
+                            continue;
+                        }
+
+                        $isEligible = true;
+                        if ($promo !== null) {
+                            foreach ($promo->conditions as $cond) {
+                                $params = $cond->parameters ?? [];
+                                if ($cond->condition_type === 'product') {
+                                    $allowed = $params['product_ids'] ?? [];
+                                    if (! empty($allowed) && ! in_array($line->product_id, $allowed, true)) {
+                                        $isEligible = false;
+                                        break;
+                                    }
+                                } elseif ($cond->condition_type === 'category') {
+                                    $allowed = $params['category_ids'] ?? [];
+                                    $lineCatIds = $line->product->categories->pluck('id')->all();
+                                    if (! empty($allowed) && empty(array_intersect($lineCatIds, $allowed))) {
+                                        $isEligible = false;
+                                        break;
+                                    }
+                                } elseif ($cond->condition_type === 'product_type') {
+                                    $allowed = $params['product_types'] ?? [];
+                                    if (! empty($allowed) && ! in_array((string) $line->product->product_type, $allowed, true)) {
+                                        $isEligible = false;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if ($isEligible) {
+                                foreach ($promo->actions as $act) {
+                                    $params = $act->parameters ?? [];
+                                    if (in_array($act->action_type, ['fixed_price', 'buy_x_get_y'], true)) {
+                                        $targetPid = isset($params['product_id']) ? (int) $params['product_id'] : null;
+                                        if ($targetPid !== null && $targetPid > 0 && (int) $line->product_id !== $targetPid) {
+                                            $isEligible = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if ($isEligible) {
+                            $eligibleLineIds[] = $line->id;
+                        }
+                    }
+
+                    if (empty($eligibleLineIds)) {
+                        throw new \RuntimeException("Cannot allocate promotion discount [{$d->promotionCode}] of [{$dAmount}] minor: no eligible remaining line subtotal.");
+                    }
+
+                    $totalEligibleRemaining = 0;
+                    foreach ($eligibleLineIds as $lid) {
+                        $totalEligibleRemaining += $remainingSubtotals[$lid];
+                    }
+
+                    if ($totalEligibleRemaining <= 0) {
+                        throw new \RuntimeException("Cannot allocate promotion discount [{$d->promotionCode}]: eligible remaining subtotal is zero.");
+                    }
+
+                    if ($dAmount > $totalEligibleRemaining) {
+                        $dAmount = $totalEligibleRemaining;
+                    }
+
+                    // Largest Remainder Method on $dAmount over eligible lines
+                    $floorShares = [];
+                    $remainders = [];
+                    $sumFloor = 0;
+
+                    foreach ($eligibleLineIds as $lid) {
+                        $weight = $remainingSubtotals[$lid];
+                        $prod = bcmul((string) $dAmount, (string) $weight, 0);
+                        $floor = (int) bcdiv($prod, (string) $totalEligibleRemaining, 0);
+                        $rem = (int) bcmod($prod, (string) $totalEligibleRemaining);
+
+                        $floorShares[$lid] = $floor;
+                        $remainders[$lid] = $rem;
+                        $sumFloor += $floor;
+                    }
+
+                    $undistributed = $dAmount - $sumFloor;
+
+                    // Sort by remainder DESC, then cart_line_id ASC tie-breaker
+                    usort($eligibleLineIds, function (int $a, int $b) use ($remainders): int {
+                        $remDiff = $remainders[$b] <=> $remainders[$a];
+                        if ($remDiff !== 0) {
+                            return $remDiff;
+                        }
+
+                        return $a <=> $b;
+                    });
+
+                    for ($k = 0; $k < $undistributed; $k++) {
+                        $floorShares[$eligibleLineIds[$k]] += 1;
+                    }
+
+                    foreach ($floorShares as $lid => $allocatedAmt) {
+                        $perLineAllocatedCartDiscounts[$lid] += $allocatedAmt;
+                        $remainingSubtotals[$lid] -= $allocatedAmt;
+                    }
+                }
+            } else {
+                // Generic cart discount allocation across all lines with positive subtotal
+                $eligibleLineIds = [];
+                $totalEligibleRemaining = 0;
+                foreach ($cart->lines as $line) {
+                    if ($remainingSubtotals[$line->id] > 0) {
+                        $eligibleLineIds[] = $line->id;
+                        $totalEligibleRemaining += $remainingSubtotals[$line->id];
+                    }
+                }
+
+                if ($totalEligibleRemaining > 0) {
+                    $dAmount = min($totalDiscountMinor, $totalEligibleRemaining);
+                    $floorShares = [];
+                    $remainders = [];
+                    $sumFloor = 0;
+
+                    foreach ($eligibleLineIds as $lid) {
+                        $weight = $remainingSubtotals[$lid];
+                        $prod = bcmul((string) $dAmount, (string) $weight, 0);
+                        $floor = (int) bcdiv($prod, (string) $totalEligibleRemaining, 0);
+                        $rem = (int) bcmod($prod, (string) $totalEligibleRemaining);
+
+                        $floorShares[$lid] = $floor;
+                        $remainders[$lid] = $rem;
+                        $sumFloor += $floor;
+                    }
+
+                    $undistributed = $dAmount - $sumFloor;
+
+                    usort($eligibleLineIds, function (int $a, int $b) use ($remainders): int {
+                        $remDiff = $remainders[$b] <=> $remainders[$a];
+                        if ($remDiff !== 0) {
+                            return $remDiff;
+                        }
+
+                        return $a <=> $b;
+                    });
+
+                    for ($k = 0; $k < $undistributed; $k++) {
+                        $floorShares[$eligibleLineIds[$k]] += 1;
+                    }
+
+                    foreach ($floorShares as $lid => $allocatedAmt) {
+                        $perLineAllocatedCartDiscounts[$lid] += $allocatedAmt;
+                        $remainingSubtotals[$lid] -= $allocatedAmt;
+                    }
+                }
+            }
+        }
+
+        // Safety Invariant Check: exact reconciliation of allocated cart discounts
+        $totalAllocatedCheck = array_sum($perLineAllocatedCartDiscounts);
+        if ($totalAllocatedCheck !== $totalDiscountMinor) {
+            throw new \RuntimeException("Cart discount allocation mismatch: allocated [{$totalAllocatedCheck}] !== totalDiscount [{$totalDiscountMinor}].");
+        }
+
+        // 4. Shipping amount
         $shippingOriginalMinor = $selectedShippingQuote !== null ? $selectedShippingQuote->originalAmount->getMinorAmount() : 0;
         $shippingFinalMinor = $selectedShippingQuote !== null ? $selectedShippingQuote->finalAmount->getMinorAmount() : 0;
 
         // Authoritative shipping amounts come directly from SelectedShippingQuote (calculated by ShippingRateEngine)
-
         $shippingDiscountMinor = max(0, $shippingOriginalMinor - $shippingFinalMinor);
 
         $shippingOriginal = MoneyValue::fromMinor($shippingOriginalMinor, $currency);
         $shippingDiscount = MoneyValue::fromMinor($shippingDiscountMinor, $currency);
         $shippingFinal = MoneyValue::fromMinor($shippingFinalMinor, $currency);
 
-        // 4. Line-level Typed Taxes
+        // 5. Line-level Typed Taxes on Discounted Taxable Base
         $taxTotalMinor = 0;
         $taxSnapshot = [];
         $appliedTaxRates = [];
@@ -173,11 +366,25 @@ class CheckoutPricingOrchestrator
                 isTaxInclusive: false
             );
 
-            // Calculate per line preserving tax class and exact line totals
-            foreach ($lineTaxItems as $taxItem) {
-                $lineTaxRes = $this->taxCalculator->calculate($taxItem['total'], $taxItem['tax_class_id'], $taxCtx);
+            // Calculate per line on net taxable amount
+            foreach ($cart->lines as $line) {
+                $cartLineId = $line->id;
+                $subtotalMinor = $perLineSubtotals[$cartLineId];
+                $lineDiscMinor = $perLineLineDiscounts[$cartLineId];
+                $allocCartDiscMinor = $perLineAllocatedCartDiscounts[$cartLineId];
+                $taxableMinor = $subtotalMinor - $lineDiscMinor - $allocCartDiscMinor;
+
+                if ($taxableMinor < 0) {
+                    throw new \RuntimeException("Line [{$cartLineId}] taxable base [{$taxableMinor}] cannot be negative.");
+                }
+
+                $taxClassId = (int) ($line->product->tax_class_id ?? ($line->product->metadata['tax_class_id'] ?? ($defaultTaxClass !== null ? $defaultTaxClass->id : 0)));
+                $taxableMoney = MoneyValue::fromMinor($taxableMinor, $currency);
+
+                $lineTaxRes = $this->taxCalculator->calculate($taxableMoney, $taxClassId, $taxCtx);
                 $lineTaxMinor = $lineTaxRes->taxAmount->getMinorAmount();
                 $taxTotalMinor += $lineTaxMinor;
+
                 $lineRatePercent = null;
                 if (! empty($lineTaxRes->appliedRates)) {
                     $totRate = '0';
@@ -191,10 +398,9 @@ class CheckoutPricingOrchestrator
                     $lineRatePercent = $totRate;
                 }
 
-                $cartLineId = $taxItem['line']->id;
                 $perLineTaxes[$cartLineId] = [
                     'tax_minor' => $lineTaxMinor,
-                    'tax_class_id' => $taxItem['tax_class_id'],
+                    'tax_class_id' => $taxClassId,
                     'tax_rate_percent' => $lineRatePercent,
                 ];
             }
@@ -205,21 +411,24 @@ class CheckoutPricingOrchestrator
             ];
         }
 
-        // Build canonical line pricing breakdown including line-level tax and discount
+        // Build canonical line pricing breakdown including line-level tax, discount, and taxable base
         $linePricingBreakdown = [];
         foreach ($cart->lines as $line) {
             $cartLineId = $line->id;
             $subtotalMinor = $perLineSubtotals[$cartLineId];
             $unitPriceMinor = $perLineUnitPrices[$cartLineId];
+            $lineDiscMinor = $perLineLineDiscounts[$cartLineId];
+            $allocCartDiscMinor = $perLineAllocatedCartDiscounts[$cartLineId];
+            $taxableMinor = $subtotalMinor - $lineDiscMinor - $allocCartDiscMinor;
+
             $taxInfo = $perLineTaxes[$cartLineId] ?? [
                 'tax_minor' => 0,
-                'tax_class_id' => (int) ($line->product->tax_class_id ?? ($defaultTaxClass !== null ? $defaultTaxClass->id : 0)),
+                'tax_class_id' => (int) ($line->product->tax_class_id ?? ($line->product->metadata['tax_class_id'] ?? ($defaultTaxClass !== null ? $defaultTaxClass->id : 0))),
                 'tax_rate_percent' => null,
             ];
 
-            $lineDiscountMinor = 0; // Phase-07 promotions are evaluated at cart level (cart_discounts)
             $lineTaxMinor = $taxInfo['tax_minor'];
-            $lineTotalMinor = $subtotalMinor - $lineDiscountMinor + $lineTaxMinor;
+            $lineTotalMinor = $subtotalMinor - $lineDiscMinor - $allocCartDiscMinor + $lineTaxMinor;
 
             $linePricingBreakdown[] = [
                 'cart_line_id' => $cartLineId,
@@ -228,12 +437,13 @@ class CheckoutPricingOrchestrator
                 'quantity' => (string) $line->quantity,
                 'unit_price_minor' => $unitPriceMinor,
                 'merchandise_line_subtotal_minor' => $subtotalMinor,
-                'line_discount_minor' => $lineDiscountMinor,
-                'allocated_cart_discount_minor' => 0,
+                'line_discount_minor' => $lineDiscMinor,
+                'allocated_cart_discount_minor' => $allocCartDiscMinor,
+                'taxable_amount_minor' => $taxableMinor,
                 'tax_minor' => $lineTaxMinor,
                 'line_total_minor' => $lineTotalMinor,
                 'subtotal_minor' => $subtotalMinor,
-                'discount_minor' => $lineDiscountMinor,
+                'discount_minor' => $lineDiscMinor + $allocCartDiscMinor,
                 'total_minor' => $lineTotalMinor,
                 'tax_class_id' => $taxInfo['tax_class_id'],
                 'tax_rate_percent' => $taxInfo['tax_rate_percent'],
@@ -243,7 +453,7 @@ class CheckoutPricingOrchestrator
 
         $taxTotal = MoneyValue::fromMinor($taxTotalMinor, $currency);
 
-        // 5. Grand Total Reconciliation
+        // 6. Grand Total Reconciliation
         $grandTotalMinor = $merchandiseSubtotalMinor
             - $lineDiscounts->getMinorAmount()
             - $cartDiscounts->getMinorAmount()

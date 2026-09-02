@@ -61,3 +61,15 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 - [ADR-0046: Inventory Idempotency Persistence Strategy](ADR-0046-inventory-idempotency-persistence-strategy.md)
 - [ADR-0047: Inventory Reconciliation and Reservation Integrity Strategy](ADR-0047-inventory-reconciliation-and-reservation-integrity-strategy.md)
 - [ADR-0048: External Supplier and Vendor Stock Extension Boundaries](ADR-0048-external-supplier-and-vendor-stock-extension-boundaries.md)
+
+### Phase 08: Orders, Order Lifecycle & State Machine Foundation
+- [ADR-0083: Order Module Ownership, Core Aggregates & Boundary Separation](ADR-0083-order-module-ownership-core-aggregates-and-boundary-separation.md)
+- [ADR-0084: Immutable CheckoutReadyResult Handoff & Commercial Snapshotting](ADR-0084-immutable-checkoutreadyresult-handoff-and-commercial-snapshotting.md)
+- [ADR-0085: Tenant/Date-Scoped Atomic Order Number Generation Strategy](ADR-0085-tenant-date-scoped-atomic-order-number-generation-strategy.md)
+- [ADR-0086: Three-Dimensional State Machines and Status Ownership Boundaries](ADR-0086-three-dimensional-state-machines-and-status-ownership-boundaries.md)
+- [ADR-0087: Order Item Snapshot Immutability & Historical Independence from Catalog](ADR-0087-order-item-snapshot-immutability-and-historical-independence-from-catalog.md)
+- [ADR-0088: Retained Inventory Reservation Lifecycle & Cancellation Release Contract](ADR-0088-retained-inventory-reservation-lifecycle-and-cancellation-release-contract.md)
+- [ADR-0089: Aggregate-Scoped Order Idempotency & PostgreSQL Concurrency Invariants](ADR-0089-aggregate-scoped-order-idempotency-and-postgresql-concurrency-invariants.md)
+- [ADR-0090: Customer & Guest Order Ownership, Ephemeral Token Return & IDOR Defense](ADR-0090-customer-and-guest-order-ownership-ephemeral-token-return-and-idor-defense.md)
+- [ADR-0091: Order Status History, Audit Trail & Typed Domain Events](ADR-0091-order-status-history-audit-trail-and-typed-domain-events.md)
+- [ADR-0092: Deterministic Cart Discount Allocation for Taxable Line Snapshots](ADR-0092-deterministic-cart-discount-allocation-for-taxable-line-snapshots.md)

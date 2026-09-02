@@ -554,6 +554,8 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                             'unit_price_minor' => $pLine !== null ? (int) $pLine['unit_price_minor'] : null,
                             'merchandise_line_subtotal_minor' => $pLine !== null ? (int) $pLine['merchandise_line_subtotal_minor'] : null,
                             'line_discount_minor' => $pLine !== null ? (int) $pLine['line_discount_minor'] : 0,
+                            'allocated_cart_discount_minor' => $pLine !== null ? (int) $pLine['allocated_cart_discount_minor'] : 0,
+                            'taxable_amount_minor' => $pLine !== null ? (int) $pLine['taxable_amount_minor'] : null,
                             'tax_minor' => $pLine !== null ? (int) $pLine['tax_minor'] : 0,
                             'line_total_minor' => $pLine !== null ? (int) $pLine['line_total_minor'] : null,
                             'tax_class_id' => $pLine !== null ? (isset($pLine['tax_class_id']) ? (int) $pLine['tax_class_id'] : null) : null,

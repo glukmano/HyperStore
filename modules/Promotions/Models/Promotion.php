@@ -5,9 +5,14 @@ declare(strict_types=1);
 namespace Modules\Promotions\Models;
 
 use App\Core\Tenancy\Traits\BelongsToTenant;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * @property-read Collection<int, PromotionCondition> $conditions
+ * @property-read Collection<int, PromotionAction> $actions
+ */
 class Promotion extends Model
 {
     use BelongsToTenant;
@@ -45,11 +50,17 @@ class Promotion extends Model
         'metadata' => 'array',
     ];
 
+    /**
+     * @return HasMany<PromotionCondition, $this>
+     */
     public function conditions(): HasMany
     {
         return $this->hasMany(PromotionCondition::class)->orderBy('sort_order');
     }
 
+    /**
+     * @return HasMany<PromotionAction, $this>
+     */
     public function actions(): HasMany
     {
         return $this->hasMany(PromotionAction::class)->orderBy('sort_order');

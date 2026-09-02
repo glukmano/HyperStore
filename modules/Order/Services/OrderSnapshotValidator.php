@@ -39,7 +39,10 @@ class OrderSnapshotValidator
      *         quantity: string,
      *         unit_price_minor: int,
      *         subtotal_minor: int,
+     *         line_discount_minor: int,
+     *         allocated_cart_discount_minor: int,
      *         discount_minor: int,
+     *         taxable_amount_minor: int,
      *         tax_minor: int,
      *         total_minor: int,
      *         tax_class_id: int|null,
@@ -195,6 +198,8 @@ class OrderSnapshotValidator
             'unit_price_minor',
             'merchandise_line_subtotal_minor',
             'line_discount_minor',
+            'allocated_cart_discount_minor',
+            'taxable_amount_minor',
             'tax_minor',
             'line_total_minor',
             'currency',
@@ -234,6 +239,12 @@ class OrderSnapshotValidator
             }
             if (! is_int($pLine['line_discount_minor']) || $pLine['line_discount_minor'] < 0) {
                 throw CheckoutReadySnapshotMissingException::malformed($checkoutId, "Pricing line [{$pCartLineId}] line_discount_minor must be non-negative integer.");
+            }
+            if (! is_int($pLine['allocated_cart_discount_minor']) || $pLine['allocated_cart_discount_minor'] < 0) {
+                throw CheckoutReadySnapshotMissingException::malformed($checkoutId, "Pricing line [{$pCartLineId}] allocated_cart_discount_minor must be non-negative integer.");
+            }
+            if (! is_int($pLine['taxable_amount_minor']) || $pLine['taxable_amount_minor'] < 0) {
+                throw CheckoutReadySnapshotMissingException::malformed($checkoutId, "Pricing line [{$pCartLineId}] taxable_amount_minor must be non-negative integer.");
             }
             if (! is_int($pLine['tax_minor']) || $pLine['tax_minor'] < 0) {
                 throw CheckoutReadySnapshotMissingException::malformed($checkoutId, "Pricing line [{$pCartLineId}] tax_minor must be non-negative integer.");
@@ -307,15 +318,25 @@ class OrderSnapshotValidator
 
             $unitPriceMinor = $matchedPricing['unit_price_minor'];
             $subtotalMinor = $matchedPricing['merchandise_line_subtotal_minor'];
-            $discountMinor = $matchedPricing['line_discount_minor'];
+            $lineDiscountMinor = $matchedPricing['line_discount_minor'];
+            $allocatedCartDiscountMinor = $matchedPricing['allocated_cart_discount_minor'];
+            $taxableAmountMinor = $matchedPricing['taxable_amount_minor'];
             $taxMinor = $matchedPricing['tax_minor'];
             $totalMinor = $matchedPricing['line_total_minor'];
 
-            $expectedLineTotal = $subtotalMinor - $discountMinor + $taxMinor;
+            $expectedTaxable = $subtotalMinor - $lineDiscountMinor - $allocatedCartDiscountMinor;
+            if ($taxableAmountMinor !== $expectedTaxable) {
+                throw CheckoutReadySnapshotMissingException::malformed(
+                    $checkoutId,
+                    "Taxable amount mismatch for line [{$cartLineId}]: taxable [{$taxableAmountMinor}] !== subtotal [{$subtotalMinor}] - line_discount [{$lineDiscountMinor}] - allocated_cart_discount [{$allocatedCartDiscountMinor}]."
+                );
+            }
+
+            $expectedLineTotal = $expectedTaxable + $taxMinor;
             if ($totalMinor !== $expectedLineTotal) {
                 throw CheckoutReadySnapshotMissingException::malformed(
                     $checkoutId,
-                    "Line total calculation mismatch for line [{$cartLineId}]: total [{$totalMinor}] !== subtotal [{$subtotalMinor}] - discount [{$discountMinor}] + tax [{$taxMinor}]."
+                    "Line total calculation mismatch for line [{$cartLineId}]: total [{$totalMinor}] !== taxable [{$taxableAmountMinor}] + tax [{$taxMinor}]."
                 );
             }
 
@@ -332,7 +353,10 @@ class OrderSnapshotValidator
                 'quantity' => $readyQty,
                 'unit_price_minor' => $unitPriceMinor,
                 'subtotal_minor' => $subtotalMinor,
-                'discount_minor' => $discountMinor,
+                'line_discount_minor' => $lineDiscountMinor,
+                'allocated_cart_discount_minor' => $allocatedCartDiscountMinor,
+                'discount_minor' => $lineDiscountMinor + $allocatedCartDiscountMinor,
+                'taxable_amount_minor' => $taxableAmountMinor,
                 'tax_minor' => $taxMinor,
                 'total_minor' => $totalMinor,
                 'tax_class_id' => $taxClassId,
@@ -351,10 +375,12 @@ class OrderSnapshotValidator
         // Commercial Reconciliation
         $sumLineSubtotals = 0;
         $sumLineDiscounts = 0;
+        $sumLineAllocatedCartDiscounts = 0;
         $sumLineTaxes = 0;
         foreach ($validatedLines as $vLine) {
             $sumLineSubtotals += $vLine['subtotal_minor'];
-            $sumLineDiscounts += $vLine['discount_minor'];
+            $sumLineDiscounts += $vLine['line_discount_minor'];
+            $sumLineAllocatedCartDiscounts += $vLine['allocated_cart_discount_minor'];
             $sumLineTaxes += $vLine['tax_minor'];
         }
 
@@ -369,6 +395,13 @@ class OrderSnapshotValidator
             throw CheckoutReadySnapshotMissingException::malformed(
                 $checkoutId,
                 "Reconciliation failed: Sum of line discounts [{$sumLineDiscounts}] does not match line_discounts [{$lineDiscounts}]."
+            );
+        }
+
+        if ($sumLineAllocatedCartDiscounts !== $cartDiscounts) {
+            throw CheckoutReadySnapshotMissingException::malformed(
+                $checkoutId,
+                "Reconciliation failed: Sum of line allocated cart discounts [{$sumLineAllocatedCartDiscounts}] does not match cart_discounts [{$cartDiscounts}]."
             );
         }
 
