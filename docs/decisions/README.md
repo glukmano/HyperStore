@@ -91,3 +91,12 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 - [ADR-0104: Administrative Journal Reversal vs Commercial Refund Money Movement](ADR-0104-administrative-journal-reversal-vs-commercial-refund-money-movement.md)
 - [ADR-0105: Single-Currency Journal Balancing & Query-Time Balance Derivation](ADR-0105-single-currency-journal-balancing-and-query-time-balance-derivation.md)
 - [ADR-0106: Payment Event Snapshot Adapter, Eventual Consistency & Missing-Posting Recovery](ADR-0106-payment-event-snapshot-adapter-eventual-consistency-and-missing-posting-recovery.md)
+
+### Phase 11: Marketplace / Vendors Foundation
+- [ADR-0107: Marketplace Boundaries, Canonical Product Separation & Vendor Listing](ADR-0107-marketplace-boundaries-canonical-product-separation-and-vendor-listing.md)
+- [ADR-0108: Vendor Operational vs Verification Lifecycles & Exact Owner Invariant](ADR-0108-vendor-operational-vs-verification-lifecycles-and-exact-owner-invariant.md)
+- [ADR-0109: Vendor Plan Subscription Entitlement & Policy-Gated Auto Approval](ADR-0109-vendor-plan-subscription-entitlement-and-policy-gated-auto-approval.md)
+- [ADR-0110: Commission Engine & Checkout READY Snapshot Freezing](ADR-0110-commission-engine-and-checkout-ready-snapshot-freezing.md)
+- [ADR-0111: Configurable Commercial Model & Vendor Payable Subledger](ADR-0111-configurable-commercial-model-and-vendor-payable-subledger.md)
+- [ADR-0112: Payout Allocation Reservation, Directional Payables & Atomic Finalization](ADR-0112-payout-allocation-reservation-directional-payables-and-atomic-finalization.md)
+- [ADR-0113: Global Vendor Slug, Domain Verification & Storefront Resolver](ADR-0113-global-vendor-slug-domain-verification-and-storefront-resolver.md)

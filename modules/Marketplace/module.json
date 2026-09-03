@@ -1,0 +1,10 @@
+{
+    "name": "Marketplace",
+    "slug": "marketplace",
+    "description": "HyperStore Marketplace Bounded Context, Multi-Vendor Platform, Vendor Lifecycle, Listings, Subledger & Payouts",
+    "version": "1.0.0",
+    "provider": "Modules\\Marketplace\\MarketplaceServiceProvider",
+    "requires": ["catalog", "checkout", "order"],
+    "order": 110,
+    "enabled": true
+}

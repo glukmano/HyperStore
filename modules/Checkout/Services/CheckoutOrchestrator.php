@@ -540,6 +540,66 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
                         $pLine = $pricingByLineId[$line->id] ?? null;
 
+                        $vendorUuidSnapshot = null;
+                        $vendorNameSnapshot = null;
+                        $vendorListingUuidSnapshot = null;
+                        $commissionBasisMinor = null;
+                        $commissionRateBps = null;
+                        $commissionFixedFeeMinor = null;
+                        $commissionAmountMinor = null;
+                        $commissionCurrency = null;
+                        $commissionRuleRef = null;
+                        $vendorId = null;
+                        $vendorListingId = null;
+
+                        if (app()->bound(\Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface::class)) {
+                            /** @var \Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface $listingResolver */
+                            $listingResolver = app(\Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface::class);
+                            $resolvedListing = $listingResolver->resolveListing(
+                                tenantId: $lockedSession->tenant_id,
+                                storeId: $lockedSession->store_id,
+                                productId: $line->product_id,
+                                variantId: $line->variant_id
+                            );
+
+                            if ($resolvedListing !== null) {
+                                $vendor = $resolvedListing->vendor;
+                                $vendorUuidSnapshot = $vendor->uuid;
+                                $vendorNameSnapshot = $vendor->name;
+                                $vendorListingUuidSnapshot = $resolvedListing->uuid;
+                                $vendorId = $vendor->id;
+                                $vendorListingId = $resolvedListing->id;
+
+                                if (app()->bound(\Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface::class)) {
+                                    /** @var \Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface $commissionService */
+                                    $commissionService = app(\Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface::class);
+
+                                    $merchSubtotal = $pLine !== null ? (int) $pLine['merchandise_line_subtotal_minor'] : 0;
+                                    $lineDisc = $pLine !== null ? (int) $pLine['line_discount_minor'] : 0;
+                                    $cartDisc = $pLine !== null ? (int) $pLine['allocated_cart_discount_minor'] : 0;
+                                    $commBasis = max(0, $merchSubtotal - $lineDisc - $cartDisc);
+
+                                    $curr = $lockedSession->currency;
+                                    $catId = $product->categories()->first()?->id;
+
+                                    $commQuote = $commissionService->quoteCommission(
+                                        tenantId: $lockedSession->tenant_id,
+                                        vendorId: $vendor->id,
+                                        categoryId: $catId,
+                                        basisMinor: $commBasis,
+                                        currency: $curr
+                                    );
+
+                                    $commissionBasisMinor = $commQuote->basisMinor;
+                                    $commissionRateBps = $commQuote->rateBps;
+                                    $commissionFixedFeeMinor = $commQuote->fixedFeeMinor;
+                                    $commissionAmountMinor = $commQuote->commissionAmountMinor;
+                                    $commissionCurrency = $commQuote->currency;
+                                    $commissionRuleRef = $commQuote->ruleReference;
+                                }
+                            }
+                        }
+
                         $lines[] = [
                             'cart_line_id' => $line->id,
                             'product_id' => $line->product_id,
@@ -560,6 +620,17 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                             'line_total_minor' => $pLine !== null ? (int) $pLine['line_total_minor'] : null,
                             'tax_class_id' => $pLine !== null ? (isset($pLine['tax_class_id']) ? (int) $pLine['tax_class_id'] : null) : null,
                             'tax_rate_percent' => $pLine !== null ? (isset($pLine['tax_rate_percent']) ? (string) $pLine['tax_rate_percent'] : null) : null,
+                            'vendor_uuid_snapshot' => $vendorUuidSnapshot,
+                            'vendor_name_snapshot' => $vendorNameSnapshot,
+                            'vendor_listing_uuid_snapshot' => $vendorListingUuidSnapshot,
+                            'commission_basis_minor' => $commissionBasisMinor,
+                            'commission_rate_bps' => $commissionRateBps,
+                            'commission_fixed_fee_minor' => $commissionFixedFeeMinor,
+                            'commission_amount_minor' => $commissionAmountMinor,
+                            'commission_currency' => $commissionCurrency,
+                            'commission_rule_ref' => $commissionRuleRef,
+                            'vendor_id' => $vendorId,
+                            'vendor_listing_id' => $vendorListingId,
                         ];
                     }
 

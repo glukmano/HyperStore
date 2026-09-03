@@ -259,6 +259,17 @@ class OrderCreationService implements OrderCreationServiceInterface
                 'tax_rate_percent' => $line['tax_rate_percent'],
                 'selected_options_snapshot' => $line['selected_options'],
                 'customization_metadata_snapshot' => $line['customization_metadata'],
+                'vendor_uuid_snapshot' => $line['vendor_uuid_snapshot'] ?? null,
+                'vendor_name_snapshot' => $line['vendor_name_snapshot'] ?? null,
+                'vendor_listing_uuid_snapshot' => $line['vendor_listing_uuid_snapshot'] ?? null,
+                'commission_basis_minor' => $line['commission_basis_minor'] ?? null,
+                'commission_rate_bps' => $line['commission_rate_bps'] ?? null,
+                'commission_fixed_fee_minor' => $line['commission_fixed_fee_minor'] ?? null,
+                'commission_amount_minor' => $line['commission_amount_minor'] ?? null,
+                'commission_currency' => $line['commission_currency'] ?? null,
+                'commission_rule_ref' => $line['commission_rule_ref'] ?? null,
+                'vendor_id' => $line['vendor_id'] ?? null,
+                'vendor_listing_id' => $line['vendor_listing_id'] ?? null,
             ]);
         }
 

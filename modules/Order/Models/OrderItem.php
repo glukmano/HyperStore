@@ -56,6 +56,17 @@ class OrderItem extends Model
         'tax_rate_percent',
         'selected_options_snapshot',
         'customization_metadata_snapshot',
+        'vendor_uuid_snapshot',
+        'vendor_name_snapshot',
+        'vendor_listing_uuid_snapshot',
+        'commission_basis_minor',
+        'commission_rate_bps',
+        'commission_fixed_fee_minor',
+        'commission_amount_minor',
+        'commission_currency',
+        'commission_rule_ref',
+        'vendor_id',
+        'vendor_listing_id',
     ];
 
     /**
