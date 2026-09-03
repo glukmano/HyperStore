@@ -14,9 +14,11 @@ use Modules\Marketplace\Enums\VendorOperationalStatus;
 use Modules\Marketplace\Exceptions\CrossTenantMarketplaceException;
 use Modules\Marketplace\Exceptions\VendorListingQuotaException;
 use Modules\Marketplace\Exceptions\VendorOperationalStatusException;
+use Modules\Marketplace\Exceptions\VendorStoreParticipationException;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorListing;
 use Modules\Marketplace\Models\VendorListingStoreAvailability;
+use Modules\Marketplace\Models\VendorStoreParticipation;
 
 final readonly class VendorListingCreationService implements VendorListingCreationServiceInterface
 {
@@ -80,6 +82,16 @@ final readonly class VendorListingCreationService implements VendorListingCreati
                 $store = Store::find($storeId);
                 if ($store === null || $store->tenant_id !== $tenantId) {
                     throw new CrossTenantMarketplaceException("Store [{$storeId}] does not belong to tenant [{$tenantId}].");
+                }
+
+                $participating = VendorStoreParticipation::where('tenant_id', $tenantId)
+                    ->where('vendor_id', $vendorId)
+                    ->where('store_id', (int) $storeId)
+                    ->where('is_enabled', true)
+                    ->exists();
+
+                if (! $participating) {
+                    throw VendorStoreParticipationException::vendorNotParticipating($vendorId, (int) $storeId);
                 }
             }
 

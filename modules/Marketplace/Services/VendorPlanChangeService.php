@@ -9,7 +9,6 @@ use Illuminate\Support\Facades\DB;
 use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
 use Modules\Marketplace\Contracts\VendorPlanChangeServiceInterface;
 use Modules\Marketplace\Enums\VendorInvitationStatus;
-use Modules\Marketplace\Exceptions\CrossTenantMarketplaceException;
 use Modules\Marketplace\Exceptions\VendorPlanDowngradeQuotaException;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorInvitation;
@@ -33,10 +32,6 @@ final readonly class VendorPlanChangeService implements VendorPlanChangeServiceI
             // 2. Load target Plan under same Tenant
             /** @var VendorPlan $targetPlan */
             $targetPlan = VendorPlan::where('tenant_id', $tenantId)->findOrFail($targetPlanId);
-
-            if ($targetPlan->tenant_id !== $tenantId) {
-                throw new CrossTenantMarketplaceException("Target plan [{$targetPlanId}] does not belong to tenant [{$tenantId}].");
-            }
 
             // 3. Calculate current quota usage:
             // a) Staff usage (active vendor users + pending non-expired invitations)

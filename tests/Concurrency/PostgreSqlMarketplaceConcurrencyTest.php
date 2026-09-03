@@ -21,7 +21,9 @@ use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Marketplace\Contracts\PayoutServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingCreationServiceInterface;
+use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
+use Modules\Marketplace\Contracts\VendorStoreParticipationServiceInterface;
 use Modules\Marketplace\Enums\PayoutAllocationStatus;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
 use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
@@ -1528,5 +1530,120 @@ try {
             $postMutationSnapshotJson,
             'HISTORICAL FREEZE: Subsequent commission rule mutations must never alter the committed checkout ready_snapshot.'
         );
+    }
+
+    public function test_race_vendor_store_participation_disable_vs_listing_creation(): void
+    {
+        $tenantId = $this->tenantA->id;
+        $vendorId = $this->vendor->id;
+        $storeId = $this->storeA->id;
+        $product = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_type' => 'simple',
+            'sku' => 'SKU-PART-RACE-'.uniqid(),
+            'status' => 'active',
+        ]);
+        $productId = $product->id;
+
+        // Ensure initially active participation in Store A
+        app(VendorStoreParticipationServiceInterface::class)->enableParticipation(
+            $tenantId,
+            $vendorId,
+            $storeId
+        );
+
+        $bootstrap = $this->getBootstrapScript();
+
+        // Worker 1: Listing Creation requesting Store A
+        $worker1 = "{$bootstrap}
+
+try {
+    // __BARRIER_WAIT__
+    \$svc = app(\\Modules\\Marketplace\\Contracts\\VendorListingCreationServiceInterface::class);
+    \$listing = \$svc->createListing(
+        {$tenantId},
+        {$vendorId},
+        [
+            'product_id' => {$productId},
+            'product_variant_id' => null,
+            'vendor_sku' => 'SKU-RACE-PART-' . uniqid(),
+            'store_ids' => [{$storeId}],
+        ]
+    );
+    echo 'LISTING_SUCCESS:' . \$listing->id;
+    exit(0);
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorStoreParticipationException \$e) {
+    echo 'LISTING_PARTICIPATION_REJECTED:' . \$e->getMessage();
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        // Worker 2: Participation Disable on Store A via production VendorStoreParticipationService
+        $worker2 = "{$bootstrap}
+
+try {
+    // __BARRIER_WAIT__
+    \$svc = app(\\Modules\\Marketplace\\Contracts\\VendorStoreParticipationServiceInterface::class);
+    \$svc->disableParticipation({$tenantId}, {$vendorId}, {$storeId});
+    echo 'PARTICIPATION_DISABLED';
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        $results = $this->executeConcurrently([$worker1, $worker2]);
+
+        $this->assertSame(0, $results[0]['exit_code'], 'Worker 1 error: '.($results[0]['stdout'] ?: $results[0]['stderr']));
+        $this->assertSame(0, $results[1]['exit_code'], 'Worker 2 error: '.($results[1]['stdout'] ?: $results[1]['stderr']));
+
+        $this->assertSame('PARTICIPATION_DISABLED', $results[1]['stdout']);
+
+        // Final participation state in DB must be disabled
+        $this->assertDatabaseHas('vendor_store_participations', [
+            'tenant_id' => $tenantId,
+            'vendor_id' => $vendorId,
+            'store_id' => $storeId,
+            'is_enabled' => false,
+        ]);
+
+        $outcomeA = str_starts_with($results[0]['stdout'], 'LISTING_SUCCESS:');
+        $outcomeB = str_starts_with($results[0]['stdout'], 'LISTING_PARTICIPATION_REJECTED:');
+
+        $this->assertTrue(
+            $outcomeA || $outcomeB,
+            'Must resolve to either Outcome A (Listing created before disable) or Outcome B (Participation rejected after disable).'
+        );
+
+        if ($outcomeA) {
+            // OUTCOME A: Listing was created while participation was active, but participation was then committed disabled.
+            // DEFENSE IN DEPTH: Runtime storefront resolution MUST withhold the listing because participation is now disabled!
+            $listingId = (int) explode(':', $results[0]['stdout'])[1];
+            $listing = VendorListing::find($listingId);
+            $this->assertNotNull($listing);
+
+            $resolutionService = app(VendorListingResolutionServiceInterface::class);
+            $resolved = $resolutionService->resolveListingByUuid(
+                tenantId: $tenantId,
+                storeId: $storeId,
+                vendorListingUuid: $listing->uuid,
+                productId: $productId
+            );
+
+            $this->assertNull(
+                $resolved,
+                'DEFENSE-IN-DEPTH: Storefront resolver must immediately withhold listing when Vendor Store participation is disabled, even if historical availability row exists.'
+            );
+        } else {
+            // OUTCOME B: Participation disable committed first; listing creation rolled back completely
+            $this->assertDatabaseMissing('vendor_listing_store_availabilities', [
+                'tenant_id' => $tenantId,
+                'store_id' => $storeId,
+            ]);
+        }
     }
 }

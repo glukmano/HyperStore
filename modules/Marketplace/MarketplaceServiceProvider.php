@@ -14,12 +14,14 @@ use Modules\Marketplace\Contracts\VendorApprovalPolicyInterface;
 use Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingCreationServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
+use Modules\Marketplace\Contracts\VendorListingStoreAvailabilityServiceInterface;
 use Modules\Marketplace\Contracts\VendorOperationalLifecycleServiceInterface;
 use Modules\Marketplace\Contracts\VendorPayableAvailabilityPolicyInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
 use Modules\Marketplace\Contracts\VendorPlanChangeServiceInterface;
 use Modules\Marketplace\Contracts\VendorPlanSubscriptionEntitlementServiceInterface;
 use Modules\Marketplace\Contracts\VendorStorefrontResolverInterface;
+use Modules\Marketplace\Contracts\VendorStoreParticipationServiceInterface;
 use Modules\Marketplace\Listeners\OrderPaidAccrueVendorPayableListener;
 use Modules\Marketplace\Services\DnsTxtDomainVerificationResolver;
 use Modules\Marketplace\Services\MarketplaceCommercialPolicy;
@@ -31,6 +33,7 @@ use Modules\Marketplace\Services\VendorDomainVerificationService;
 use Modules\Marketplace\Services\VendorInvitationService;
 use Modules\Marketplace\Services\VendorListingCreationService;
 use Modules\Marketplace\Services\VendorListingResolutionService;
+use Modules\Marketplace\Services\VendorListingStoreAvailabilityService;
 use Modules\Marketplace\Services\VendorOperationalLifecycleService;
 use Modules\Marketplace\Services\VendorOwnershipService;
 use Modules\Marketplace\Services\VendorPayableAvailabilityPolicy;
@@ -39,6 +42,7 @@ use Modules\Marketplace\Services\VendorPlanChangeService;
 use Modules\Marketplace\Services\VendorPlanSubscriptionEntitlementService;
 use Modules\Marketplace\Services\VendorRegistrationService;
 use Modules\Marketplace\Services\VendorStorefrontResolver;
+use Modules\Marketplace\Services\VendorStoreParticipationService;
 use Modules\Order\Events\OrderStatusChanged;
 
 class MarketplaceServiceProvider extends ModuleServiceProvider
@@ -63,6 +67,8 @@ class MarketplaceServiceProvider extends ModuleServiceProvider
         $this->app->singleton(VendorListingCreationServiceInterface::class, VendorListingCreationService::class);
         $this->app->singleton(VendorPlanChangeServiceInterface::class, VendorPlanChangeService::class);
         $this->app->singleton(VendorOperationalLifecycleServiceInterface::class, VendorOperationalLifecycleService::class);
+        $this->app->singleton(VendorStoreParticipationServiceInterface::class, VendorStoreParticipationService::class);
+        $this->app->singleton(VendorListingStoreAvailabilityServiceInterface::class, VendorListingStoreAvailabilityService::class);
         $this->app->singleton(DomainVerificationResolverInterface::class, DnsTxtDomainVerificationResolver::class);
 
         $this->app->singleton(VendorRegistrationService::class);
