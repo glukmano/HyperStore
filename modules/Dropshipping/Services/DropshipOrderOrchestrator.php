@@ -12,11 +12,11 @@ use Illuminate\Support\Str;
 use Modules\Dropshipping\Contracts\DropshipOrderOrchestratorInterface;
 use Modules\Dropshipping\Contracts\ExternalSupplierPortInterface;
 use Modules\Dropshipping\Enums\PurchaseOrderStatus;
-use Modules\Dropshipping\Exceptions\MissingSupplierProcurementContractException;
+use Modules\Dropshipping\Exceptions\MissingFrozenSupplierRoutingDecisionException;
 use Modules\Dropshipping\Models\PurchaseOrder;
 use Modules\Dropshipping\Models\PurchaseOrderLine;
 use Modules\Dropshipping\Models\Supplier;
-use Modules\Dropshipping\Models\SupplierOffer;
+use Modules\Dropshipping\Models\SupplierProductVariant;
 use Modules\Fulfillment\Models\OrderFulfillment;
 
 class DropshipOrderOrchestrator implements DropshipOrderOrchestratorInterface
@@ -117,14 +117,47 @@ class DropshipOrderOrchestrator implements DropshipOrderOrchestratorInterface
             $fulfillment->loadMissing('items.orderItem');
             $totalCostMinor = 0;
 
-            // Check if routing_snapshot has frozen line decisions
+            // Automatic dropship procurement is historically reproducible ONLY from a
+            // frozen SupplierRoutingEngine decision (SupplierRoutingEngine -> selected
+            // SupplierOffer -> OrderFulfillment.routing_snapshot -> PurchaseOrder).
+            // A mutable re-lookup of the current cheapest/available SupplierOffer at
+            // PO-creation time is explicitly forbidden: it would let a PO silently use
+            // a different cost/offer/supplier than what the customer's order was
+            // actually routed against. Missing frozen data fails closed.
             $routingSnapshot = $fulfillment->routing_snapshot;
+
+            if (! is_array($routingSnapshot) || ! isset($routingSnapshot['items']) || ! is_array($routingSnapshot['items'])) {
+                throw MissingFrozenSupplierRoutingDecisionException::forFulfillment(
+                    $fulfillment->id,
+                    'routing_snapshot is missing or has no frozen [items] decisions'
+                );
+            }
+
+            // The frozen decision must still point at the exact Supplier (and
+            // Location, when the fulfillment carries one) it was routed against —
+            // it must never be silently reinterpreted against a different Supplier
+            // or Location the fulfillment happens to carry now.
+            if (! isset($routingSnapshot['supplier_id']) || (int) $routingSnapshot['supplier_id'] !== $supplier->id) {
+                throw MissingFrozenSupplierRoutingDecisionException::forFulfillment(
+                    $fulfillment->id,
+                    "frozen routing_snapshot supplier_id does not match Fulfillment Supplier [{$supplier->id}]"
+                );
+            }
+
+            if ($fulfillment->supplier_location_id !== null
+                && (! isset($routingSnapshot['supplier_location_id'])
+                    || (int) $routingSnapshot['supplier_location_id'] !== (int) $fulfillment->supplier_location_id)
+            ) {
+                throw MissingFrozenSupplierRoutingDecisionException::forFulfillment(
+                    $fulfillment->id,
+                    "frozen routing_snapshot supplier_location_id does not match Fulfillment supplier_location_id [{$fulfillment->supplier_location_id}]"
+                );
+            }
+
             $frozenLinesByOrderItemId = [];
-            if (is_array($routingSnapshot) && isset($routingSnapshot['items']) && is_array($routingSnapshot['items'])) {
-                foreach ($routingSnapshot['items'] as $snapItem) {
-                    if (isset($snapItem['order_item_id'])) {
-                        $frozenLinesByOrderItemId[(int) $snapItem['order_item_id']] = $snapItem;
-                    }
+            foreach ($routingSnapshot['items'] as $snapItem) {
+                if (isset($snapItem['order_item_id'])) {
+                    $frozenLinesByOrderItemId[(int) $snapItem['order_item_id']] = $snapItem;
                 }
             }
 
@@ -132,51 +165,54 @@ class DropshipOrderOrchestrator implements DropshipOrderOrchestratorInterface
                 $orderItem = $fItem->orderItem;
                 $orderItemId = (int) $orderItem->id;
 
-                if (isset($frozenLinesByOrderItemId[$orderItemId])) {
-                    // Consume frozen routing decision
-                    $lineData = $frozenLinesByOrderItemId[$orderItemId];
-                    $supplierSku = (string) $lineData['supplier_sku'];
-                    $unitCostMinor = (int) $lineData['procurement_cost_minor'];
-                } else {
-                    // Look up authoritative contract
-                    $spv = $supplier->productVariants()
-                        ->where('product_id', $orderItem->product_id)
-                        ->where('product_variant_id', $orderItem->variant_id)
-                        ->first();
-
-                    if ($spv === null) {
-                        throw MissingSupplierProcurementContractException::forItem(
-                            $orderItem->id,
-                            $orderItem->sku_snapshot ?? 'unknown',
-                            $supplier->id,
-                            'No SupplierProductVariant mapping exists'
-                        );
-                    }
-
-                    $offerQuery = SupplierOffer::query()
-                        ->where('supplier_id', $supplier->id)
-                        ->where('supplier_product_variant_id', $spv->id)
-                        ->where('is_available', true);
-
-                    if ($fulfillment->supplier_location_id !== null) {
-                        $offerQuery->where('supplier_location_id', $fulfillment->supplier_location_id);
-                    }
-
-                    /** @var SupplierOffer|null $offer */
-                    $offer = $offerQuery->first();
-
-                    if ($offer === null) {
-                        throw MissingSupplierProcurementContractException::forItem(
-                            $orderItem->id,
-                            $orderItem->sku_snapshot ?? 'unknown',
-                            $supplier->id,
-                            'No active SupplierOffer exists for location'
-                        );
-                    }
-
-                    $supplierSku = $spv->supplier_sku;
-                    $unitCostMinor = $offer->cost_minor;
+                if (! isset($frozenLinesByOrderItemId[$orderItemId])) {
+                    throw MissingFrozenSupplierRoutingDecisionException::forItem(
+                        $fulfillment->id,
+                        $orderItemId,
+                        'no frozen routing line exists for this OrderItem'
+                    );
                 }
+
+                $lineData = $frozenLinesByOrderItemId[$orderItemId];
+
+                foreach (['supplier_product_variant_id', 'supplier_sku', 'procurement_cost_minor', 'procurement_currency'] as $requiredKey) {
+                    if (! isset($lineData[$requiredKey])) {
+                        throw MissingFrozenSupplierRoutingDecisionException::forItem(
+                            $fulfillment->id,
+                            $orderItemId,
+                            "frozen routing line is missing required key [{$requiredKey}]"
+                        );
+                    }
+                }
+
+                // Validate the frozen mapping identity is still structurally referentially
+                // valid (it belongs to this Supplier) — NOT that its current price/stock/
+                // priority still matches. Historical reproducibility means the frozen
+                // cost/SKU below are authoritative regardless of what the mapping looks
+                // like today.
+                $spv = SupplierProductVariant::query()
+                    ->where('id', (int) $lineData['supplier_product_variant_id'])
+                    ->where('supplier_id', $supplier->id)
+                    ->first();
+
+                if ($spv === null) {
+                    throw MissingFrozenSupplierRoutingDecisionException::forItem(
+                        $fulfillment->id,
+                        $orderItemId,
+                        "frozen supplier_product_variant_id [{$lineData['supplier_product_variant_id']}] no longer exists or no longer belongs to Supplier [{$supplier->id}]"
+                    );
+                }
+
+                if ((string) $lineData['procurement_currency'] !== $supplier->currency) {
+                    throw MissingFrozenSupplierRoutingDecisionException::forItem(
+                        $fulfillment->id,
+                        $orderItemId,
+                        "frozen procurement_currency [{$lineData['procurement_currency']}] does not match Supplier currency [{$supplier->currency}]"
+                    );
+                }
+
+                $supplierSku = (string) $lineData['supplier_sku'];
+                $unitCostMinor = (int) $lineData['procurement_cost_minor'];
 
                 // Procurement decimal money math using brick/math
                 $qtyDec = BigDecimal::of((string) $fItem->quantity);

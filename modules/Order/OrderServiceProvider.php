@@ -18,11 +18,13 @@ use Modules\Order\Contracts\OrderStateMachineServiceInterface;
 use Modules\Order\Contracts\ReturnRefundOrchestratorInterface;
 use Modules\Order\Contracts\ReturnRequestServiceInterface;
 use Modules\Order\Contracts\SellerOrderOwnershipServiceInterface;
+use Modules\Order\Contracts\ShippingRefundPolicyInterface;
 use Modules\Order\Services\BusinessTimezoneResolver;
 use Modules\Order\Services\DecimalReturnAllocationService;
 use Modules\Order\Services\JointShippingAllocationService;
 use Modules\Order\Services\MasterOrderSplitService;
 use Modules\Order\Services\NoOpOrderCreationConcurrencyBarrier;
+use Modules\Order\Services\NotRefundableByDefaultShippingRefundPolicy;
 use Modules\Order\Services\OrderCancellationService;
 use Modules\Order\Services\OrderCreationService;
 use Modules\Order\Services\OrderIdempotencyService;
@@ -60,6 +62,7 @@ class OrderServiceProvider extends ModuleServiceProvider
         $this->app->singleton(DecimalReturnAllocationService::class);
         $this->app->singleton(ReturnRequestServiceInterface::class, ReturnRequestService::class);
         $this->app->singleton(ReturnRequestService::class);
+        $this->app->singleton(ShippingRefundPolicyInterface::class, NotRefundableByDefaultShippingRefundPolicy::class);
         $this->app->singleton(ReturnRefundOrchestratorInterface::class, ReturnRefundOrchestrator::class);
         $this->app->singleton(ReturnRefundOrchestrator::class);
     }

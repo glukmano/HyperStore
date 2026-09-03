@@ -9,6 +9,7 @@ use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
 use Modules\Order\Contracts\ReturnRefundOrchestratorInterface;
+use Modules\Order\Contracts\ShippingRefundPolicyInterface;
 use Modules\Order\Enums\RefundEligibilityStatus;
 use Modules\Order\Enums\SellerReturnStatus;
 use Modules\Order\Models\SellerReturn;
@@ -20,7 +21,8 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
 {
     public function __construct(
         private readonly PaymentRefundService $paymentRefundService,
-        private readonly VendorPayableSubledgerServiceInterface $vendorPayableSubledger
+        private readonly VendorPayableSubledgerServiceInterface $vendorPayableSubledger,
+        private readonly ShippingRefundPolicyInterface $shippingRefundPolicy
     ) {}
 
     public function finalizeRefund(int $tenantId, int $sellerReturnId): SellerReturn
@@ -42,9 +44,23 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
                 throw new InvalidArgumentException("SellerReturn [{$sellerReturnId}] is not eligible for refund.");
             }
 
-            if ($sellerReturn->net_customer_refund_minor <= 0) {
+            // Phase-13 customer refund formula:
+            //   customer_refund_minor = merchandise_refund - discount_reversal
+            //                          + tax_refund + approved_shipping_refund
+            // net_customer_refund_minor already holds merchandise - discount + tax
+            // (see DecimalReturnAllocationService); the shipping term is resolved
+            // through the explicit ShippingRefundPolicyInterface seam (Phase-13
+            // default: NOT_REFUNDABLE_BY_DEFAULT, i.e. 0 unless a future policy
+            // explicitly authorizes otherwise). This never touches vendor payable
+            // debit, which is computed independently and excludes tax and shipping.
+            $approvedShippingRefundMinor = $this->shippingRefundPolicy->approvedShippingRefundMinor($sellerReturn);
+            $totalCustomerRefundMinor = $sellerReturn->net_customer_refund_minor + $approvedShippingRefundMinor;
+
+            if ($totalCustomerRefundMinor <= 0) {
                 throw new InvalidArgumentException("SellerReturn [{$sellerReturnId}] has zero refundable amount.");
             }
+
+            $sellerReturn->refund_shipping_minor = $approvedShippingRefundMinor;
 
             // Persist refund_operation_uuid before external remote call
             if ($sellerReturn->refund_operation_uuid === null) {
@@ -65,7 +81,7 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
             $refundRes = $this->paymentRefundService->refund(
                 tenantId: $tenantId,
                 paymentUuid: $payment->uuid,
-                amountMinor: $sellerReturn->net_customer_refund_minor,
+                amountMinor: $totalCustomerRefundMinor,
                 idempotencyKey: $sellerReturn->refund_operation_uuid,
                 metadata: [
                     'seller_return_id' => $sellerReturn->id,

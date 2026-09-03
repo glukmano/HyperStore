@@ -8,6 +8,7 @@ use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Cart\Models\Cart;
 use Modules\Catalog\Models\Product;
@@ -18,7 +19,7 @@ use Modules\Dropshipping\Contracts\SupplierInvoiceReconciliationServiceInterface
 use Modules\Dropshipping\Contracts\SupplierRoutingEngineInterface;
 use Modules\Dropshipping\Enums\PurchaseOrderStatus;
 use Modules\Dropshipping\Enums\SupplierInvoiceReconciliationStatus;
-use Modules\Dropshipping\Exceptions\MissingSupplierProcurementContractException;
+use Modules\Dropshipping\Exceptions\MissingFrozenSupplierRoutingDecisionException;
 use Modules\Dropshipping\Models\Supplier;
 use Modules\Dropshipping\Models\SupplierLocation;
 use Modules\Dropshipping\Models\SupplierOffer;
@@ -438,11 +439,15 @@ test('orchestrates purchase order materialization and invoice reconciliation wit
             'supplier_location_id' => $this->location1->id,
             'routing_snapshot' => [
                 'selected_offer_id' => $this->offer1->id,
+                'supplier_id' => $this->platformSupplier->id,
+                'supplier_location_id' => $this->location1->id,
                 'items' => [
                     [
                         'order_item_id' => $orderItem->id,
+                        'supplier_product_variant_id' => $this->spv1->id,
                         'supplier_sku' => 'FROZEN-SKU-001',
                         'procurement_cost_minor' => 1200,
+                        'procurement_currency' => 'EUR',
                     ],
                 ],
             ],
@@ -510,7 +515,7 @@ test('orchestrates purchase order materialization and invoice reconciliation wit
         ->and($discrepancyInvoice->total_minor)->toBe(1500);
 });
 
-test('fails closed with MissingSupplierProcurementContractException when mapping is missing', function (): void {
+test('Test C: missing routing_snapshot fails closed with MissingFrozenSupplierRoutingDecisionException', function (): void {
     $unmappedProduct = Product::create([
         'tenant_id' => $this->tenant->id,
         'sku' => 'PROD-DS-UNMAPPED',
@@ -624,8 +629,10 @@ test('fails closed with MissingSupplierProcurementContractException when mapping
     ]);
 
     // Attempting PO creation must FAIL CLOSED with typed exception!
-    $this->expectException(MissingSupplierProcurementContractException::class);
-    $this->expectExceptionMessage('No SupplierProductVariant mapping exists');
+    // No routing_snapshot was provided: automatic procurement must never fall back
+    // to a live/mutable SupplierProductVariant + SupplierOffer lookup.
+    $this->expectException(MissingFrozenSupplierRoutingDecisionException::class);
+    $this->expectExceptionMessage('routing_snapshot is missing or has no frozen [items] decisions');
 
     $this->poOrchestrator->createPurchaseOrderForFulfillment($fulfillments[0]);
 });
@@ -719,6 +726,19 @@ test('calculates fractional procurement decimal money math accurately without fl
             'mode' => FulfillmentMode::DROPSHIPPING->value,
             'supplier_id' => $this->platformSupplier->id,
             'supplier_location_id' => $this->location1->id,
+            'routing_snapshot' => [
+                'supplier_id' => $this->platformSupplier->id,
+                'supplier_location_id' => $this->location1->id,
+                'items' => [
+                    [
+                        'order_item_id' => $orderItem->id,
+                        'supplier_product_variant_id' => $this->spv1->id,
+                        'supplier_sku' => 'FROZEN-SKU-FRAC',
+                        'procurement_cost_minor' => 1200,
+                        'procurement_currency' => 'EUR',
+                    ],
+                ],
+            ],
             'items' => [
                 ['order_item_id' => $orderItem->id, 'quantity' => '0.33333333'],
             ],
@@ -730,4 +750,250 @@ test('calculates fractional procurement decimal money math accurately without fl
     // 0.33333333 * 1200 minor = 399.999996 -> rounds to 400 minor with HalfUp!
     expect($po->lines->first()->total_cost_minor)->toBe(400)
         ->and($po->total_minor)->toBe(400);
+});
+
+test('Test A: PO still uses the frozen original cost after the routed Offer price later changes', function (): void {
+    $cart = Cart::create([
+        'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id, 'market_id' => $this->market->id,
+        'channel_id' => $this->channel->id, 'currency' => 'EUR', 'locale' => 'de', 'status' => 'active',
+    ]);
+    $session = CheckoutSession::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'cart_id' => $cart->id,
+        'store_id' => $this->store->id, 'market_id' => $this->market->id, 'channel_id' => $this->channel->id,
+        'currency' => 'EUR', 'locale' => 'de', 'state' => 'ready_for_order',
+    ]);
+    $order = Order::create([
+        'order_number' => 'ORD-DS-FROZEN-A', 'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id,
+        'market_id' => $this->market->id, 'channel_id' => $this->channel->id, 'checkout_id' => $session->id,
+        'currency' => 'EUR', 'locale' => 'de', 'order_status' => 'placed', 'payment_status' => 'paid',
+        'fulfillment_status' => 'unfulfilled', 'merchandise_subtotal_minor' => 3000, 'discount_total_minor' => 0,
+        'tax_total_minor' => 0, 'shipping_total_minor' => 0, 'grand_total_minor' => 3000,
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record', 'customer_snapshot' => ['email' => 'a@example.com'],
+        'version' => 1, 'placed_at' => now(),
+    ]);
+    $orderItem = OrderItem::create([
+        'tenant_id' => $this->tenant->id, 'order_id' => $order->id, 'product_id' => $this->product->id,
+        'variant_id' => $this->variant->id, 'sku_snapshot' => $this->variant->sku, 'name_snapshot' => $this->product->name,
+        'product_type_snapshot' => 'physical', 'requires_shipping_snapshot' => true, 'quantity' => '1.00000000',
+        'unit_price_minor' => 3000, 'subtotal_minor' => 3000, 'discount_minor' => 0, 'tax_minor' => 0, 'total_minor' => 3000,
+    ]);
+    $sellerOrder = SellerOrder::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id,
+        'order_id' => $order->id, 'seller_order_number' => 'ORD-DS-FROZEN-A-PLT', 'seller_type' => 'platform',
+        'vendor_id' => null, 'commercial_model' => 'platform_as_merchant_of_record', 'currency' => 'EUR',
+        'subtotal_minor' => 3000, 'discount_minor' => 0, 'tax_minor' => 0, 'shipping_original_minor' => 0,
+        'shipping_discount_minor' => 0, 'shipping_final_minor' => 0, 'total_minor' => 3000, 'commission_total_minor' => 0,
+        'status' => 'open',
+    ]);
+
+    // SupplierRoutingEngine selects Offer A (cost 1200 at the time of routing).
+    $routeResult = $this->routingEngine->routeVariant(
+        tenantId: $this->tenant->id,
+        vendorId: null,
+        variant: $this->variant,
+        quantity: '1.00000000',
+        targetCurrency: 'EUR',
+    );
+    expect($routeResult['selected_offer']->id)->toBe($this->offer1->id);
+
+    $fulfillments = $this->fulfService->createFulfillments($sellerOrder, [
+        [
+            'mode' => FulfillmentMode::DROPSHIPPING->value,
+            'supplier_id' => $this->platformSupplier->id,
+            'supplier_location_id' => $this->location1->id,
+            'routing_snapshot' => [
+                'supplier_id' => $this->platformSupplier->id,
+                'supplier_location_id' => $this->location1->id,
+                'selected_offer_id' => $this->offer1->id,
+                'items' => [
+                    [
+                        'order_item_id' => $orderItem->id,
+                        'supplier_product_variant_id' => $this->spv1->id,
+                        'supplier_sku' => $this->spv1->supplier_sku,
+                        'procurement_cost_minor' => $routeResult['normalized_cost_minor'],
+                        'procurement_currency' => 'EUR',
+                    ],
+                ],
+            ],
+            'items' => [['order_item_id' => $orderItem->id, 'quantity' => '1.00000000']],
+        ],
+    ]);
+
+    // Offer A's price changes AFTER the routing decision was frozen.
+    $this->offer1->update(['location_wholesale_cost_minor' => 9999]);
+
+    $po = $this->poOrchestrator->createPurchaseOrderForFulfillment($fulfillments[0]);
+
+    expect($po->lines->first()->unit_cost_minor)->toBe(1200)
+        ->and($po->total_minor)->toBe(1200)
+        ->and($po->total_minor)->not->toBe(9999);
+});
+
+test('Test B: PO still uses the frozen Offer A cost even though a cheaper Offer B exists before PO creation', function (): void {
+    $cart = Cart::create([
+        'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id, 'market_id' => $this->market->id,
+        'channel_id' => $this->channel->id, 'currency' => 'EUR', 'locale' => 'de', 'status' => 'active',
+    ]);
+    $session = CheckoutSession::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'cart_id' => $cart->id,
+        'store_id' => $this->store->id, 'market_id' => $this->market->id, 'channel_id' => $this->channel->id,
+        'currency' => 'EUR', 'locale' => 'de', 'state' => 'ready_for_order',
+    ]);
+    $order = Order::create([
+        'order_number' => 'ORD-DS-FROZEN-B', 'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id,
+        'market_id' => $this->market->id, 'channel_id' => $this->channel->id, 'checkout_id' => $session->id,
+        'currency' => 'EUR', 'locale' => 'de', 'order_status' => 'placed', 'payment_status' => 'paid',
+        'fulfillment_status' => 'unfulfilled', 'merchandise_subtotal_minor' => 3000, 'discount_total_minor' => 0,
+        'tax_total_minor' => 0, 'shipping_total_minor' => 0, 'grand_total_minor' => 3000,
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record', 'customer_snapshot' => ['email' => 'b@example.com'],
+        'version' => 1, 'placed_at' => now(),
+    ]);
+    $orderItem = OrderItem::create([
+        'tenant_id' => $this->tenant->id, 'order_id' => $order->id, 'product_id' => $this->product->id,
+        'variant_id' => $this->variant->id, 'sku_snapshot' => $this->variant->sku, 'name_snapshot' => $this->product->name,
+        'product_type_snapshot' => 'physical', 'requires_shipping_snapshot' => true, 'quantity' => '1.00000000',
+        'unit_price_minor' => 3000, 'subtotal_minor' => 3000, 'discount_minor' => 0, 'tax_minor' => 0, 'total_minor' => 3000,
+    ]);
+    $sellerOrder = SellerOrder::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id,
+        'order_id' => $order->id, 'seller_order_number' => 'ORD-DS-FROZEN-B-PLT', 'seller_type' => 'platform',
+        'vendor_id' => null, 'commercial_model' => 'platform_as_merchant_of_record', 'currency' => 'EUR',
+        'subtotal_minor' => 3000, 'discount_minor' => 0, 'tax_minor' => 0, 'shipping_original_minor' => 0,
+        'shipping_discount_minor' => 0, 'shipping_final_minor' => 0, 'total_minor' => 3000, 'commission_total_minor' => 0,
+        'status' => 'open',
+    ]);
+
+    // Route selects Offer A (cost 1200) at the same Supplier / Location.
+    $routeResult = $this->routingEngine->routeVariant(
+        tenantId: $this->tenant->id,
+        vendorId: null,
+        variant: $this->variant,
+        quantity: '1.00000000',
+        targetCurrency: 'EUR',
+    );
+    expect($routeResult['selected_offer']->id)->toBe($this->offer1->id);
+
+    $fulfillments = $this->fulfService->createFulfillments($sellerOrder, [
+        [
+            'mode' => FulfillmentMode::DROPSHIPPING->value,
+            'supplier_id' => $this->platformSupplier->id,
+            'supplier_location_id' => $this->location1->id,
+            'routing_snapshot' => [
+                'supplier_id' => $this->platformSupplier->id,
+                'supplier_location_id' => $this->location1->id,
+                'selected_offer_id' => $this->offer1->id,
+                'items' => [
+                    [
+                        'order_item_id' => $orderItem->id,
+                        'supplier_product_variant_id' => $this->spv1->id,
+                        'supplier_sku' => $this->spv1->supplier_sku,
+                        'procurement_cost_minor' => $routeResult['normalized_cost_minor'],
+                        'procurement_currency' => 'EUR',
+                    ],
+                ],
+            ],
+            'items' => [['order_item_id' => $orderItem->id, 'quantity' => '1.00000000']],
+        ],
+    ]);
+
+    // A second, cheaper Offer B for the SAME variant becomes available before PO creation.
+    // If PurchaseOrder creation ever re-ran routing, it would prefer this one.
+    $location2 = SupplierLocation::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'supplier_id' => $this->platformSupplier->id,
+        'code' => 'EU-WEST', 'city' => 'Amsterdam', 'postal_code' => '1000AA', 'address_line1' => 'Dam 1',
+        'name' => 'Amsterdam Warehouse', 'country_code' => 'NL', 'is_active' => true,
+    ]);
+    SupplierOffer::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'supplier_id' => $this->platformSupplier->id,
+        'supplier_product_variant_id' => $this->spv1->id, 'supplier_location_id' => $location2->id,
+        'location_wholesale_cost_minor' => 100, 'currency' => 'EUR', 'stock_quantity' => '100.00000000',
+        'lead_time_days' => 1, 'is_available' => true,
+    ]);
+
+    $po = $this->poOrchestrator->createPurchaseOrderForFulfillment($fulfillments[0]);
+
+    expect($po->lines->first()->unit_cost_minor)->toBe(1200)
+        ->and($po->total_minor)->toBe(1200)
+        ->and($po->total_minor)->not->toBe(100);
+});
+
+test('Test D: PO cannot silently substitute a different Supplier/Location than the frozen routing decision', function (): void {
+    $otherSupplier = Supplier::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'scope_type' => 'tenant',
+        'name' => 'Other Supplier', 'code' => 'OTHER_SUPP', 'contact_email' => 'other@supplier.com',
+        'currency' => 'EUR', 'status' => 'active',
+    ]);
+    $otherLocation = SupplierLocation::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'supplier_id' => $otherSupplier->id,
+        'code' => 'OTHER-LOC', 'city' => 'Paris', 'postal_code' => '75001', 'address_line1' => 'Rue 1',
+        'name' => 'Paris Warehouse', 'country_code' => 'FR', 'is_active' => true,
+    ]);
+
+    $cart = Cart::create([
+        'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id, 'market_id' => $this->market->id,
+        'channel_id' => $this->channel->id, 'currency' => 'EUR', 'locale' => 'de', 'status' => 'active',
+    ]);
+    $session = CheckoutSession::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'cart_id' => $cart->id,
+        'store_id' => $this->store->id, 'market_id' => $this->market->id, 'channel_id' => $this->channel->id,
+        'currency' => 'EUR', 'locale' => 'de', 'state' => 'ready_for_order',
+    ]);
+    $order = Order::create([
+        'order_number' => 'ORD-DS-FROZEN-D', 'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id,
+        'market_id' => $this->market->id, 'channel_id' => $this->channel->id, 'checkout_id' => $session->id,
+        'currency' => 'EUR', 'locale' => 'de', 'order_status' => 'placed', 'payment_status' => 'paid',
+        'fulfillment_status' => 'unfulfilled', 'merchandise_subtotal_minor' => 3000, 'discount_total_minor' => 0,
+        'tax_total_minor' => 0, 'shipping_total_minor' => 0, 'grand_total_minor' => 3000,
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record', 'customer_snapshot' => ['email' => 'd@example.com'],
+        'version' => 1, 'placed_at' => now(),
+    ]);
+    $orderItem = OrderItem::create([
+        'tenant_id' => $this->tenant->id, 'order_id' => $order->id, 'product_id' => $this->product->id,
+        'variant_id' => $this->variant->id, 'sku_snapshot' => $this->variant->sku, 'name_snapshot' => $this->product->name,
+        'product_type_snapshot' => 'physical', 'requires_shipping_snapshot' => true, 'quantity' => '1.00000000',
+        'unit_price_minor' => 3000, 'subtotal_minor' => 3000, 'discount_minor' => 0, 'tax_minor' => 0, 'total_minor' => 3000,
+    ]);
+    $sellerOrder = SellerOrder::create([
+        'uuid' => (string) Str::uuid(), 'tenant_id' => $this->tenant->id, 'store_id' => $this->store->id,
+        'order_id' => $order->id, 'seller_order_number' => 'ORD-DS-FROZEN-D-PLT', 'seller_type' => 'platform',
+        'vendor_id' => null, 'commercial_model' => 'platform_as_merchant_of_record', 'currency' => 'EUR',
+        'subtotal_minor' => 3000, 'discount_minor' => 0, 'tax_minor' => 0, 'shipping_original_minor' => 0,
+        'shipping_discount_minor' => 0, 'shipping_final_minor' => 0, 'total_minor' => 3000, 'commission_total_minor' => 0,
+        'status' => 'open',
+    ]);
+
+    // Routed and frozen against Supplier A / Location A (platformSupplier / location1).
+    $fulfillments = $this->fulfService->createFulfillments($sellerOrder, [
+        [
+            'mode' => FulfillmentMode::DROPSHIPPING->value,
+            'supplier_id' => $this->platformSupplier->id,
+            'supplier_location_id' => $this->location1->id,
+            'routing_snapshot' => [
+                'supplier_id' => $this->platformSupplier->id,
+                'supplier_location_id' => $this->location1->id,
+                'items' => [
+                    [
+                        'order_item_id' => $orderItem->id,
+                        'supplier_product_variant_id' => $this->spv1->id,
+                        'supplier_sku' => $this->spv1->supplier_sku,
+                        'procurement_cost_minor' => 1200,
+                        'procurement_currency' => 'EUR',
+                    ],
+                ],
+            ],
+            'items' => [['order_item_id' => $orderItem->id, 'quantity' => '1.00000000']],
+        ],
+    ]);
+    $fulfillment = $fulfillments[0];
+
+    // Simulate an attempted substitution: the Fulfillment row now points at Supplier B /
+    // Location B, while the frozen routing_snapshot still records Supplier A / Location A.
+    DB::table('order_fulfillments')
+        ->where('id', $fulfillment->id)
+        ->update(['supplier_id' => $otherSupplier->id, 'supplier_location_id' => $otherLocation->id]);
+
+    $this->expectException(MissingFrozenSupplierRoutingDecisionException::class);
+    $this->expectExceptionMessage('frozen routing_snapshot supplier_id does not match Fulfillment Supplier');
+
+    $this->poOrchestrator->createPurchaseOrderForFulfillment($fulfillment->fresh());
 });

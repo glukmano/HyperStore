@@ -15,6 +15,7 @@ use Modules\Cart\Models\Cart;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Dropshipping\Models\Supplier;
 use Modules\Dropshipping\Models\SupplierLocation;
+use Modules\Dropshipping\Models\SupplierProductVariant;
 use Modules\Dropshipping\Models\TenantSupplierAccess;
 use Modules\Fulfillment\Contracts\FulfillmentExecutionServiceInterface;
 use Modules\Fulfillment\Enums\FulfillmentMode;
@@ -542,6 +543,10 @@ try {
             'uuid' => (string) Str::uuid(), 'supplier_id' => $supplier->id, 'code' => 'R4-LOC', 'name' => 'R4 Loc',
             'country_code' => 'DE', 'city' => 'Munich', 'postal_code' => '80331', 'address_line1' => 'St 1', 'is_active' => true,
         ]);
+        $spv = SupplierProductVariant::create([
+            'tenant_id' => $this->tenant->id, 'supplier_id' => $supplier->id, 'product_id' => $platformItem->product_id,
+            'supplier_sku' => 'R4-SKU', 'canonical_wholesale_cost_minor' => 1500, 'currency' => 'EUR',
+        ]);
 
         $fulfillments = app(FulfillmentExecutionServiceInterface::class)->createFulfillments($platformSo, [
             [
@@ -549,8 +554,16 @@ try {
                 'supplier_id' => $supplier->id,
                 'supplier_location_id' => $location->id,
                 'routing_snapshot' => [
+                    'supplier_id' => $supplier->id,
+                    'supplier_location_id' => $location->id,
                     'items' => [
-                        ['order_item_id' => $platformItem->id, 'supplier_sku' => 'R4-SKU', 'procurement_cost_minor' => 1500],
+                        [
+                            'order_item_id' => $platformItem->id,
+                            'supplier_product_variant_id' => $spv->id,
+                            'supplier_sku' => 'R4-SKU',
+                            'procurement_cost_minor' => 1500,
+                            'procurement_currency' => 'EUR',
+                        ],
                     ],
                 ],
                 'items' => [['order_item_id' => $platformItem->id, 'quantity' => '1.00000000']],
@@ -629,6 +642,10 @@ try {
             'uuid' => (string) Str::uuid(), 'supplier_id' => $supplier->id, 'code' => 'R5-LOC', 'name' => 'R5 Loc',
             'country_code' => 'DE', 'city' => 'Munich', 'postal_code' => '80331', 'address_line1' => 'St 1', 'is_active' => true,
         ]);
+        $spv = SupplierProductVariant::create([
+            'tenant_id' => $this->tenant->id, 'supplier_id' => $supplier->id, 'product_id' => $platformItem->product_id,
+            'supplier_sku' => 'R5-SKU', 'canonical_wholesale_cost_minor' => 1500, 'currency' => 'EUR',
+        ]);
 
         $fulfillments = app(FulfillmentExecutionServiceInterface::class)->createFulfillments($platformSo, [
             [
@@ -636,8 +653,16 @@ try {
                 'supplier_id' => $supplier->id,
                 'supplier_location_id' => $location->id,
                 'routing_snapshot' => [
+                    'supplier_id' => $supplier->id,
+                    'supplier_location_id' => $location->id,
                     'items' => [
-                        ['order_item_id' => $platformItem->id, 'supplier_sku' => 'R5-SKU', 'procurement_cost_minor' => 1500],
+                        [
+                            'order_item_id' => $platformItem->id,
+                            'supplier_product_variant_id' => $spv->id,
+                            'supplier_sku' => 'R5-SKU',
+                            'procurement_cost_minor' => 1500,
+                            'procurement_currency' => 'EUR',
+                        ],
                     ],
                 ],
                 'items' => [['order_item_id' => $platformItem->id, 'quantity' => '1.00000000']],

@@ -18,12 +18,16 @@ use Modules\Marketplace\Models\VendorPlan;
 use Modules\Order\Contracts\MasterOrderSplitServiceInterface;
 use Modules\Order\Contracts\ReturnRefundOrchestratorInterface;
 use Modules\Order\Contracts\ReturnRequestServiceInterface;
+use Modules\Order\Contracts\ShippingRefundPolicyInterface;
 use Modules\Order\Enums\RefundEligibilityStatus;
 use Modules\Order\Enums\ReturnRequestStatus;
 use Modules\Order\Enums\SellerReturnStatus;
 use Modules\Order\Models\Order;
 use Modules\Order\Models\OrderItem;
+use Modules\Order\Models\SellerReturn;
+use Modules\Order\Services\ReturnRefundOrchestrator;
 use Modules\Payment\DTOs\InitiatePaymentDTO;
+use Modules\Payment\Models\PaymentTransaction;
 use Modules\Payment\Services\PaymentInitiationService;
 
 uses(RefreshDatabase::class);
@@ -326,4 +330,156 @@ test('finalizes refund idempotently via payment port and marketplace subledger',
         ->count();
 
     expect($payableCount)->toBe(1);
+});
+
+test('Test A: normal merchandise return has shipping refund = 0 by explicit ShippingRefundPolicy', function (): void {
+    $this->paymentInitiationService->initiatePayment(new InitiatePaymentDTO(
+        tenantId: $this->tenant->id,
+        orderId: $this->order->id,
+        amountMinor: 10710,
+        currency: 'EUR',
+        providerCode: 'fake',
+        captureImmediately: true
+    ));
+
+    $returnRequest = $this->returnService->createReturnRequest(
+        tenantId: $this->tenant->id,
+        orderId: $this->order->id,
+        customerId: null,
+        items: [
+            ['order_item_id' => $this->vendorItem->id, 'quantity' => '1.00000000', 'reason' => 'Wrong size', 'condition' => 'unopened'],
+        ]
+    );
+    $vendorSr = $returnRequest->sellerReturns->firstWhere('seller_type', 'vendor');
+    $this->returnService->approveReturnItem(
+        tenantId: $this->tenant->id,
+        sellerReturnId: $vendorSr->id,
+        orderItemId: $this->vendorItem->id,
+        quantityToApprove: '1.00000000'
+    );
+
+    $finalized = $this->refundOrchestrator->finalizeRefund(tenantId: $this->tenant->id, sellerReturnId: $vendorSr->id);
+
+    // Under the Phase-13 default policy (NOT_REFUNDABLE_BY_DEFAULT), shipping
+    // is an explicit typed zero, not an accidental one.
+    expect($finalized->refund_shipping_minor)->toBe(0);
+
+    // The actually-executed customer refund transaction must equal exactly
+    // merchandise_refund - discount_reversal + tax_refund (2142), proving the
+    // zero shipping term was consumed by the formula, not just left unwritten.
+    $refundTx = PaymentTransaction::query()
+        ->where('tenant_id', $this->tenant->id)
+        ->where('id', $finalized->payment_refund_transaction_id)
+        ->first();
+
+    expect($refundTx)->not->toBeNull()
+        ->and($refundTx->amount_minor)->toBe(2142)
+        ->and($finalized->net_customer_refund_minor)->toBe(2142);
+});
+
+test('Test B: vendor payable debit never contains shipping, even when a non-zero shipping refund is authorized', function (): void {
+    $this->paymentInitiationService->initiatePayment(new InitiatePaymentDTO(
+        tenantId: $this->tenant->id,
+        orderId: $this->order->id,
+        amountMinor: 10710,
+        currency: 'EUR',
+        providerCode: 'fake',
+        captureImmediately: true
+    ));
+
+    $returnRequest = $this->returnService->createReturnRequest(
+        tenantId: $this->tenant->id,
+        orderId: $this->order->id,
+        customerId: null,
+        items: [
+            ['order_item_id' => $this->vendorItem->id, 'quantity' => '1.00000000', 'reason' => 'Wrong size', 'condition' => 'unopened'],
+        ]
+    );
+    $vendorSr = $returnRequest->sellerReturns->firstWhere('seller_type', 'vendor');
+    $this->returnService->approveReturnItem(
+        tenantId: $this->tenant->id,
+        sellerReturnId: $vendorSr->id,
+        orderItemId: $this->vendorItem->id,
+        quantityToApprove: '1.00000000'
+    );
+
+    // Swap in a future/authorized policy that approves a non-zero shipping refund,
+    // via the accepted seam (ShippingRefundPolicyInterface), resolving a fresh
+    // orchestrator so the override actually takes effect.
+    app()->forgetInstance(ReturnRefundOrchestratorInterface::class);
+    app()->forgetInstance(ReturnRefundOrchestrator::class);
+    app()->singleton(ShippingRefundPolicyInterface::class, fn () => new class implements ShippingRefundPolicyInterface
+    {
+        public function approvedShippingRefundMinor(SellerReturn $sellerReturn): int
+        {
+            return 500;
+        }
+    });
+    $overriddenOrchestrator = app(ReturnRefundOrchestratorInterface::class);
+
+    $finalized = $overriddenOrchestrator->finalizeRefund(tenantId: $this->tenant->id, sellerReturnId: $vendorSr->id);
+
+    $payableEntry = VendorPayableEntry::query()
+        ->where('tenant_id', $this->tenant->id)
+        ->where('vendor_id', $this->vendor->id)
+        ->where('entry_type', 'refund_adjustment')
+        ->first();
+
+    // Vendor payable debit is computed purely from subtotal/discount/commission
+    // reversal and is completely unaffected by the shipping refund authorization.
+    expect($payableEntry->net_amount_minor)->toBe(1500)
+        ->and($finalized->vendor_payable_debit_minor)->toBe(1500);
+});
+
+test('Test C: customer refund formula consumes refund_shipping_minor when a non-zero value is authorized through the policy seam', function (): void {
+    $this->paymentInitiationService->initiatePayment(new InitiatePaymentDTO(
+        tenantId: $this->tenant->id,
+        orderId: $this->order->id,
+        amountMinor: 10710,
+        currency: 'EUR',
+        providerCode: 'fake',
+        captureImmediately: true
+    ));
+
+    $returnRequest = $this->returnService->createReturnRequest(
+        tenantId: $this->tenant->id,
+        orderId: $this->order->id,
+        customerId: null,
+        items: [
+            ['order_item_id' => $this->vendorItem->id, 'quantity' => '1.00000000', 'reason' => 'Wrong size', 'condition' => 'unopened'],
+        ]
+    );
+    $vendorSr = $returnRequest->sellerReturns->firstWhere('seller_type', 'vendor');
+    $this->returnService->approveReturnItem(
+        tenantId: $this->tenant->id,
+        sellerReturnId: $vendorSr->id,
+        orderItemId: $this->vendorItem->id,
+        quantityToApprove: '1.00000000'
+    );
+
+    app()->forgetInstance(ReturnRefundOrchestratorInterface::class);
+    app()->forgetInstance(ReturnRefundOrchestrator::class);
+    app()->singleton(ShippingRefundPolicyInterface::class, fn () => new class implements ShippingRefundPolicyInterface
+    {
+        public function approvedShippingRefundMinor(SellerReturn $sellerReturn): int
+        {
+            return 500;
+        }
+    });
+    $overriddenOrchestrator = app(ReturnRefundOrchestratorInterface::class);
+
+    $finalized = $overriddenOrchestrator->finalizeRefund(tenantId: $this->tenant->id, sellerReturnId: $vendorSr->id);
+
+    expect($finalized->refund_shipping_minor)->toBe(500)
+        ->and($finalized->net_customer_refund_minor)->toBe(2142);
+
+    // customer_refund_minor = merchandise_refund - discount_reversal + tax_refund
+    //                        + approved_shipping_refund = 2142 + 500 = 2642
+    $refundTx = PaymentTransaction::query()
+        ->where('tenant_id', $this->tenant->id)
+        ->where('id', $finalized->payment_refund_transaction_id)
+        ->first();
+
+    expect($refundTx)->not->toBeNull()
+        ->and($refundTx->amount_minor)->toBe(2642);
 });
