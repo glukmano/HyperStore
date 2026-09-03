@@ -79,6 +79,7 @@ function createOrderHelper($test, ?int $userId = null): array
         'channel_id' => $test->channelA->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'status' => 'active',
     ]);
 
@@ -93,6 +94,7 @@ function createOrderHelper($test, ?int $userId = null): array
         'channel_id' => $test->channelA->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'state' => 'ready_for_order',
         'customer_data' => ['email' => 'sec@example.com'],
         'shipping_address' => ['country_code' => 'CH'],
@@ -104,6 +106,7 @@ function createOrderHelper($test, ?int $userId = null): array
                 'channel_id' => $test->channelA->id,
                 'currency' => 'EUR',
                 'locale' => 'en',
+                'commercial_model_snapshot' => 'platform_as_merchant_of_record',
             ],
             'totals' => [
                 'merchandise_subtotal' => 1000,
@@ -122,6 +125,7 @@ function createOrderHelper($test, ?int $userId = null): array
                 'sku_snapshot' => 'SEC-SKU-001',
                 'name_snapshot' => 'Security Product',
                 'product_type_snapshot' => 'physical',
+                'requires_shipping_snapshot' => true,
                 'quantity' => '1.00000000',
             ]],
             'pricing_snapshot' => [
@@ -208,6 +212,7 @@ test('idempotency replay returns same order without plaintext guest token', func
         'channel_id' => $this->channelA->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'status' => 'active',
     ]);
 
@@ -222,6 +227,7 @@ test('idempotency replay returns same order without plaintext guest token', func
         'channel_id' => $this->channelA->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'state' => 'ready_for_order',
         'ready_snapshot' => [
             'context' => [
@@ -230,6 +236,7 @@ test('idempotency replay returns same order without plaintext guest token', func
                 'channel_id' => $this->channelA->id,
                 'currency' => 'EUR',
                 'locale' => 'en',
+                'commercial_model_snapshot' => 'platform_as_merchant_of_record',
             ],
             'totals' => [
                 'merchandise_subtotal' => 1000,
@@ -248,6 +255,7 @@ test('idempotency replay returns same order without plaintext guest token', func
                 'sku_snapshot' => 'SEC-SKU-001',
                 'name_snapshot' => 'Security Product',
                 'product_type_snapshot' => 'physical',
+                'requires_shipping_snapshot' => true,
                 'quantity' => '1.00000000',
             ]],
             'pricing_snapshot' => [

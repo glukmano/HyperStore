@@ -1,0 +1,7 @@
+{
+    "name": "Dropshipping",
+    "description": "Multi-supplier procurement, dropshipping orchestration, and PO reconciliation module",
+    "provider": "Modules\\Dropshipping\\DropshippingServiceProvider",
+    "order": 85,
+    "enabled": true
+}

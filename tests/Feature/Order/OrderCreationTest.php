@@ -125,6 +125,7 @@ function createReadyCheckoutSession($test, ?int $userId = null, int $grandTotal 
         'channel_id' => $test->channel->id,
         'currency' => 'EUR',
         'locale' => $locale,
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'status' => 'active',
     ]);
 
@@ -143,6 +144,7 @@ function createReadyCheckoutSession($test, ?int $userId = null, int $grandTotal 
             'channel_id' => $test->channel->id,
             'currency' => 'EUR',
             'locale' => $locale,
+            'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         ],
         'customer_data' => [
             'email' => 'customer@example.com',
@@ -173,6 +175,7 @@ function createReadyCheckoutSession($test, ?int $userId = null, int $grandTotal 
                 'sku_snapshot' => 'ORDER-SKU-001',
                 'name_snapshot' => 'Test Physical Item',
                 'product_type_snapshot' => 'physical',
+                'requires_shipping_snapshot' => true,
                 'quantity' => '1.00000000',
                 'signature' => 'sig-101',
                 'selected_options' => ['color' => 'blue'],
@@ -232,6 +235,7 @@ function createReadyCheckoutSession($test, ?int $userId = null, int $grandTotal 
         'channel_id' => $test->channel->id,
         'currency' => 'EUR',
         'locale' => $locale,
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'state' => 'ready_for_order',
         'customer_data' => $readySnapshot['customer_data'],
         'shipping_address' => $readySnapshot['shipping_address'],
@@ -507,6 +511,7 @@ test('case a: same product_id with different variants joins pricing exactly by c
             'sku_snapshot' => 'VAR-1',
             'name_snapshot' => 'Variant 1 Item',
             'product_type_snapshot' => 'physical',
+            'requires_shipping_snapshot' => true,
             'quantity' => '1.00000000',
         ],
         [
@@ -516,6 +521,7 @@ test('case a: same product_id with different variants joins pricing exactly by c
             'sku_snapshot' => 'VAR-2',
             'name_snapshot' => 'Variant 2 Item',
             'product_type_snapshot' => 'physical',
+            'requires_shipping_snapshot' => true,
             'quantity' => '2.00000000',
         ],
     ];
@@ -589,6 +595,7 @@ test('case b: same product and variant with different options on separate lines 
             'sku_snapshot' => 'ORDER-SKU-001',
             'name_snapshot' => 'Item Custom Red',
             'product_type_snapshot' => 'physical',
+            'requires_shipping_snapshot' => true,
             'quantity' => '1.00000000',
             'selected_options' => ['color' => 'red'],
         ],
@@ -599,6 +606,7 @@ test('case b: same product and variant with different options on separate lines 
             'sku_snapshot' => 'ORDER-SKU-001',
             'name_snapshot' => 'Item Custom Green',
             'product_type_snapshot' => 'physical',
+            'requires_shipping_snapshot' => true,
             'quantity' => '1.00000000',
             'selected_options' => ['color' => 'green'],
         ],

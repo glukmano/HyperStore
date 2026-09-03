@@ -41,6 +41,7 @@ use Modules\Order\Enums\PaymentStatus;
  * @property int $shipping_total_minor
  * @property int $tax_total_minor
  * @property int $grand_total_minor
+ * @property string|null $commercial_model_snapshot
  * @property array<string, mixed> $customer_snapshot
  * @property array<string, mixed>|null $shipping_address_snapshot
  * @property array<string, mixed>|null $billing_address_snapshot
@@ -64,6 +65,8 @@ use Modules\Order\Enums\PaymentStatus;
  * @property-read User|null $user
  * @property-read Collection<int, OrderItem> $items
  * @property-read Collection<int, OrderStatusHistory> $statusHistory
+ * @property-read Collection<int, SellerOrder> $sellerOrders
+ * @property-read Collection<int, ReturnRequest> $returnRequests
  */
 class Order extends Model
 {
@@ -91,6 +94,7 @@ class Order extends Model
         'shipping_total_minor',
         'tax_total_minor',
         'grand_total_minor',
+        'commercial_model_snapshot',
         'customer_snapshot',
         'shipping_address_snapshot',
         'billing_address_snapshot',
@@ -107,79 +111,47 @@ class Order extends Model
         'cancelled_at',
     ];
 
-    /**
-     * @return array<string, string>
-     */
-    protected function casts(): array
-    {
-        return [
-            'tenant_id' => 'integer',
-            'store_id' => 'integer',
-            'market_id' => 'integer',
-            'channel_id' => 'integer',
-            'user_id' => 'integer',
-            'checkout_id' => 'integer',
-            'merchandise_subtotal_minor' => 'integer',
-            'discount_total_minor' => 'integer',
-            'shipping_total_minor' => 'integer',
-            'tax_total_minor' => 'integer',
-            'grand_total_minor' => 'integer',
-            'customer_snapshot' => 'array',
-            'shipping_address_snapshot' => 'array',
-            'billing_address_snapshot' => 'array',
-            'pricing_snapshot' => 'array',
-            'tax_snapshot' => 'array',
-            'promotion_snapshot' => 'array',
-            'shipping_snapshot' => 'array',
-            'fulfillment_snapshot' => 'array',
-            'reservation_references' => 'array',
-            'version' => 'integer',
-            'placed_at' => 'datetime',
-            'confirmed_at' => 'datetime',
-            'completed_at' => 'datetime',
-            'cancelled_at' => 'datetime',
-            'created_at' => 'datetime',
-            'updated_at' => 'datetime',
-        ];
-    }
+    protected $casts = [
+        'merchandise_subtotal_minor' => 'integer',
+        'discount_total_minor' => 'integer',
+        'shipping_total_minor' => 'integer',
+        'tax_total_minor' => 'integer',
+        'grand_total_minor' => 'integer',
+        'customer_snapshot' => 'array',
+        'shipping_address_snapshot' => 'array',
+        'billing_address_snapshot' => 'array',
+        'pricing_snapshot' => 'array',
+        'tax_snapshot' => 'array',
+        'promotion_snapshot' => 'array',
+        'shipping_snapshot' => 'array',
+        'fulfillment_snapshot' => 'array',
+        'reservation_references' => 'array',
+        'version' => 'integer',
+        'placed_at' => 'datetime',
+        'confirmed_at' => 'datetime',
+        'completed_at' => 'datetime',
+        'cancelled_at' => 'datetime',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
+    ];
 
     protected static function boot(): void
     {
         parent::boot();
 
-        static::creating(function (Order $order) {
-            if (empty($order->uuid)) {
-                $order->uuid = (string) Str::uuid();
-            }
-            if (empty($order->version)) {
-                $order->version = 1;
-            }
-            if (empty($order->order_status)) {
-                $order->order_status = OrderStatus::PLACED->value;
-            }
-            if (empty($order->payment_status)) {
-                $order->payment_status = PaymentStatus::PENDING->value;
-            }
-            if (empty($order->fulfillment_status)) {
-                $order->fulfillment_status = FulfillmentStatus::UNFULFILLED->value;
+        static::creating(function (self $model): void {
+            if (empty($model->uuid)) {
+                $model->uuid = (string) Str::uuid();
             }
         });
     }
 
     /**
-     * @return HasMany<OrderItem, $this>
+     * @return BelongsTo<Tenant, $this>
      */
-    public function items(): HasMany
+    public function tenant(): BelongsTo
     {
-        return $this->hasMany(OrderItem::class, 'order_id');
-    }
-
-    /**
-     * @return HasMany<OrderStatusHistory, $this>
-     */
-    public function statusHistory(): HasMany
-    {
-        return $this->hasMany(OrderStatusHistory::class, 'order_id')->orderBy('created_at');
+        return $this->belongsTo(Tenant::class, 'tenant_id');
     }
 
     /**
@@ -214,9 +186,46 @@ class Order extends Model
         return $this->belongsTo(User::class, 'user_id');
     }
 
-    public function isGuest(): bool
+    /**
+     * @return HasMany<OrderItem, $this>
+     */
+    public function items(): HasMany
     {
-        return $this->user_id === null;
+        return $this->hasMany(OrderItem::class, 'order_id');
+    }
+
+    /**
+     * @return HasMany<OrderStatusHistory, $this>
+     */
+    public function statusHistory(): HasMany
+    {
+        return $this->hasMany(OrderStatusHistory::class, 'order_id')->orderBy('created_at', 'asc');
+    }
+
+    /**
+     * @return HasMany<SellerOrder, $this>
+     */
+    public function sellerOrders(): HasMany
+    {
+        return $this->hasMany(SellerOrder::class, 'order_id');
+    }
+
+    /**
+     * @return HasMany<ReturnRequest, $this>
+     */
+    public function returnRequests(): HasMany
+    {
+        return $this->hasMany(ReturnRequest::class, 'order_id');
+    }
+
+    public function isPlaced(): bool
+    {
+        return $this->order_status === OrderStatus::PLACED->value;
+    }
+
+    public function isConfirmed(): bool
+    {
+        return $this->order_status === OrderStatus::CONFIRMED->value;
     }
 
     public function isCancelled(): bool
@@ -224,12 +233,31 @@ class Order extends Model
         return $this->order_status === OrderStatus::CANCELLED->value;
     }
 
+    public function isCompleted(): bool
+    {
+        return $this->order_status === OrderStatus::COMPLETED->value;
+    }
+
+    public function isGuest(): bool
+    {
+        return $this->user_id === null;
+    }
+
     public function isTerminal(): bool
     {
         return in_array($this->order_status, [
             OrderStatus::COMPLETED->value,
             OrderStatus::CANCELLED->value,
-            OrderStatus::FAILED->value,
         ], true);
+    }
+
+    public function isPaid(): bool
+    {
+        return $this->payment_status === PaymentStatus::PAID->value;
+    }
+
+    public function isFulfilled(): bool
+    {
+        return $this->fulfillment_status === FulfillmentStatus::FULFILLED->value;
     }
 }

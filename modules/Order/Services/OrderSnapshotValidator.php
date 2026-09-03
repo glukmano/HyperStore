@@ -13,7 +13,7 @@ class OrderSnapshotValidator
      *
      * @param  array<string, mixed>|null  $snapshot
      * @return array{
-     *     context: array{store_id: int, market_id: int, channel_id: int, currency: string, locale: string},
+     *     context: array{store_id: int, market_id: int, channel_id: int, currency: string, locale: string, commercial_model_snapshot: string|null},
      *     customer_data: array<string, mixed>,
      *     shipping_address: array<string, mixed>|null,
      *     billing_address: array<string, mixed>|null,
@@ -36,6 +36,7 @@ class OrderSnapshotValidator
      *         sku_snapshot: string|null,
      *         name_snapshot: string|null,
      *         product_type_snapshot: string|null,
+     *         requires_shipping_snapshot: bool|null,
      *         quantity: string,
      *         unit_price_minor: int,
      *         subtotal_minor: int,
@@ -83,6 +84,11 @@ class OrderSnapshotValidator
 
         if ($locale === '') {
             throw CheckoutReadySnapshotMissingException::malformed($checkoutId, 'Missing or empty authoritative context [locale].');
+        }
+
+        $commercialModelSnapshot = isset($context['commercial_model_snapshot']) && is_string($context['commercial_model_snapshot']) ? trim($context['commercial_model_snapshot']) : '';
+        if ($commercialModelSnapshot === '') {
+            throw CheckoutReadySnapshotMissingException::malformed($checkoutId, 'Missing or empty authoritative context [commercial_model_snapshot].');
         }
 
         // 2. Customer data validation
@@ -343,8 +349,14 @@ class OrderSnapshotValidator
             $taxClassId = $matchedPricing['tax_class_id'] !== null ? (int) $matchedPricing['tax_class_id'] : null;
             $taxRatePercent = $matchedPricing['tax_rate_percent'] !== null ? (string) $matchedPricing['tax_rate_percent'] : null;
 
+            if (! array_key_exists('requires_shipping_snapshot', $line) || ! is_bool($line['requires_shipping_snapshot'])) {
+                throw CheckoutReadySnapshotMissingException::malformed($checkoutId, "Line [{$cartLineId}] is missing required boolean [requires_shipping_snapshot].");
+            }
+            $requiresShippingSnapshot = (bool) $line['requires_shipping_snapshot'];
+
             $validatedLines[] = [
                 'cart_line_id' => $cartLineId,
+                'requires_shipping_snapshot' => $requiresShippingSnapshot,
                 'product_id' => $productId,
                 'variant_id' => $variantId,
                 'sku_snapshot' => isset($line['sku_snapshot']) ? (string) $line['sku_snapshot'] : null,
@@ -434,6 +446,7 @@ class OrderSnapshotValidator
                 'channel_id' => $channelId,
                 'currency' => $currency,
                 'locale' => $locale,
+                'commercial_model_snapshot' => $commercialModelSnapshot,
             ],
             'customer_data' => $customerData,
             'shipping_address' => is_array($snapshot['shipping_address'] ?? null) ? $snapshot['shipping_address'] : null,

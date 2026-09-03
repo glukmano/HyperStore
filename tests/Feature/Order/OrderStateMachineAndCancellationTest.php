@@ -100,6 +100,7 @@ function createTestOrder($test, array $reservationKeys = []): Order
         'channel_id' => $test->channel->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'status' => 'active',
     ]);
 
@@ -116,6 +117,7 @@ function createTestOrder($test, array $reservationKeys = []): Order
         'channel_id' => $test->channel->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'state' => 'ready_for_order',
         'ready_snapshot' => [
             'context' => [
@@ -124,6 +126,7 @@ function createTestOrder($test, array $reservationKeys = []): Order
                 'channel_id' => $test->channel->id,
                 'currency' => 'EUR',
                 'locale' => 'en',
+                'commercial_model_snapshot' => 'platform_as_merchant_of_record',
             ],
             'totals' => [
                 'merchandise_subtotal' => 1000,
@@ -142,6 +145,7 @@ function createTestOrder($test, array $reservationKeys = []): Order
                 'sku_snapshot' => 'STATE-SKU-001',
                 'name_snapshot' => 'State Product',
                 'product_type_snapshot' => 'physical',
+                'requires_shipping_snapshot' => true,
                 'quantity' => '1.00000000',
             ]],
             'pricing_snapshot' => [

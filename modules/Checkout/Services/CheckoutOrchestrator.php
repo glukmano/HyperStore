@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
+use Modules\Catalog\Contracts\ProductTypeRegistryInterface;
 use Modules\Catalog\Models\ProductTranslation;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
@@ -19,6 +20,7 @@ use Modules\Checkout\DTOs\SelectedShippingQuote;
 use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Marketplace\Contracts\MarketplaceCommercialPolicyInterface;
 use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
 use Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
@@ -618,8 +620,15 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                             }
                         }
 
+                        $requiresShippingSnapshot = true;
+                        if (app()->bound(ProductTypeRegistryInterface::class)) {
+                            $productTypeDef = app(ProductTypeRegistryInterface::class)->get($productType);
+                            $requiresShippingSnapshot = $productTypeDef->requiresShipping();
+                        }
+
                         $lines[] = [
                             'cart_line_id' => $line->id,
+                            'requires_shipping_snapshot' => $requiresShippingSnapshot,
                             'product_id' => $line->product_id,
                             'variant_id' => $line->variant_id,
                             'sku_snapshot' => $sku,
@@ -652,6 +661,16 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                         ];
                     }
 
+                    $commercialModelSnapshot = 'platform_as_merchant_of_record';
+                    if (app()->bound(MarketplaceCommercialPolicyInterface::class)) {
+                        try {
+                            $commercialModelSnapshot = app(MarketplaceCommercialPolicyInterface::class)
+                                ->resolveModel($lockedSession->tenant_id, $lockedSession->store_id)->value;
+                        } catch (\Throwable) {
+                            $commercialModelSnapshot = 'platform_as_merchant_of_record';
+                        }
+                    }
+
                     $readyResult = new CheckoutReadyResult(
                         checkoutSessionId: $lockedSession->id,
                         checkoutUuid: $lockedSession->uuid,
@@ -664,6 +683,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                             'channel_id' => $lockedSession->channel_id,
                             'currency' => $lockedSession->currency,
                             'locale' => $lockedSession->locale,
+                            'commercial_model_snapshot' => $commercialModelSnapshot,
                         ],
                         customerData: $lockedSession->customer_data ?? [],
                         shippingAddress: $lockedSession->shipping_address,

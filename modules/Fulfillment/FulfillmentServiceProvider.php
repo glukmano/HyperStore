@@ -6,12 +6,14 @@ namespace Modules\Fulfillment;
 
 use App\Core\Modular\ModuleServiceProvider;
 use Livewire\Livewire;
+use Modules\Fulfillment\Contracts\FulfillmentExecutionServiceInterface;
 use Modules\Fulfillment\Contracts\FulfillmentPlanningServiceInterface;
 use Modules\Fulfillment\Contracts\PackingStrategyInterface;
 use Modules\Fulfillment\Livewire\FulfillmentPreviewTool;
 use Modules\Fulfillment\Livewire\FulfillmentSourceManager;
 use Modules\Fulfillment\Livewire\FulfillmentStrategyManager;
 use Modules\Fulfillment\Services\DefaultPackingService;
+use Modules\Fulfillment\Services\FulfillmentExecutionService;
 use Modules\Fulfillment\Services\FulfillmentPlanningService;
 
 class FulfillmentServiceProvider extends ModuleServiceProvider
@@ -27,6 +29,8 @@ class FulfillmentServiceProvider extends ModuleServiceProvider
 
         $this->app->singleton(PackingStrategyInterface::class, DefaultPackingService::class);
         $this->app->singleton(FulfillmentPlanningServiceInterface::class, FulfillmentPlanningService::class);
+        $this->app->singleton(FulfillmentExecutionServiceInterface::class, FulfillmentExecutionService::class);
+        $this->app->singleton(FulfillmentExecutionService::class);
     }
 
     public function boot(): void

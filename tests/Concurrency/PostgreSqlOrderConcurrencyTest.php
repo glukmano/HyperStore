@@ -686,6 +686,7 @@ PHP;
             'channel_id' => $this->channel->id,
             'currency' => 'CHF',
             'locale' => 'en',
+            'commercial_model_snapshot' => 'platform_as_merchant_of_record',
             'state' => 'ready_for_order',
             'customer_data' => ['email' => 'raceg@example.com'],
             'shipping_address' => ['country_code' => 'CH'],
@@ -697,6 +698,7 @@ PHP;
                     'channel_id' => $this->channel->id,
                     'currency' => 'CHF',
                     'locale' => 'en',
+                    'commercial_model_snapshot' => 'platform_as_merchant_of_record',
                 ],
                 'totals' => [
                     'merchandise_subtotal' => 5000,
@@ -715,6 +717,7 @@ PHP;
                     'sku_snapshot' => 'RACE-G',
                     'name_snapshot' => 'Race G Product',
                     'product_type_snapshot' => 'physical',
+                    'requires_shipping_snapshot' => true,
                     'quantity' => '5.00000000',
                 ]],
                 'pricing_snapshot' => [
@@ -821,6 +824,7 @@ PHP;
             'channel_id' => $this->channel->id,
             'currency' => 'CHF',
             'locale' => 'en',
+            'commercial_model_snapshot' => 'platform_as_merchant_of_record',
             'state' => 'ready_for_order',
             'customer_data' => ['email' => 'raceh@example.com'],
             'shipping_address' => ['country_code' => 'CH'],
@@ -832,6 +836,7 @@ PHP;
                     'channel_id' => $this->channel->id,
                     'currency' => 'CHF',
                     'locale' => 'en',
+                    'commercial_model_snapshot' => 'platform_as_merchant_of_record',
                 ],
                 'totals' => [
                     'merchandise_subtotal' => 2000,
@@ -850,6 +855,7 @@ PHP;
                     'sku_snapshot' => 'RACE-H',
                     'name_snapshot' => 'Race H Product',
                     'product_type_snapshot' => 'physical',
+                    'requires_shipping_snapshot' => true,
                     'quantity' => '2.00000000',
                 ]],
                 'pricing_snapshot' => [

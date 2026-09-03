@@ -17,6 +17,7 @@ use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
 use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Exceptions\PayoutAllocationException;
 use Modules\Marketplace\Models\PayoutRequestAllocation;
+use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorPayableEntry;
 
 final class VendorPayableSubledgerService implements VendorPayableSubledgerServiceInterface
@@ -76,6 +77,25 @@ final class VendorPayableSubledgerService implements VendorPayableSubledgerServi
     ): ?VendorPayableEntry {
         if (! $this->commercialPolicy->doesPlatformOweVendorPayable($tenantId, $storeId)) {
             return null;
+        }
+
+        // Lock Vendor for concurrency serialization against payout allocations
+        Vendor::query()
+            ->where('tenant_id', $tenantId)
+            ->where('id', $vendorId)
+            ->lockForUpdate()
+            ->firstOrFail();
+
+        // Idempotency check: return existing entry if already recorded
+        $existing = VendorPayableEntry::query()
+            ->where('tenant_id', $tenantId)
+            ->where('source_type', $sourceType)
+            ->where('source_uuid', $sourceUuid)
+            ->where('entry_type', VendorPayableEntryType::RefundAdjustment->value)
+            ->first();
+
+        if ($existing !== null) {
+            return $existing;
         }
 
         $netMinor = $amountMinor - $commissionMinor;

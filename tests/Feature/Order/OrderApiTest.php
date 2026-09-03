@@ -71,6 +71,7 @@ function makeReadyCheckoutForApi($test, ?int $userId = null, ?string $guestToken
         'channel_id' => $test->channel->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'status' => 'active',
     ]);
 
@@ -85,6 +86,7 @@ function makeReadyCheckoutForApi($test, ?int $userId = null, ?string $guestToken
         'channel_id' => $test->channel->id,
         'currency' => 'EUR',
         'locale' => 'en',
+        'commercial_model_snapshot' => 'platform_as_merchant_of_record',
         'state' => 'ready_for_order',
         'customer_data' => [
             'email' => 'api@example.com',
@@ -108,6 +110,7 @@ function makeReadyCheckoutForApi($test, ?int $userId = null, ?string $guestToken
                 'channel_id' => $test->channel->id,
                 'currency' => 'EUR',
                 'locale' => 'en',
+                'commercial_model_snapshot' => 'platform_as_merchant_of_record',
             ],
             'totals' => [
                 'merchandise_subtotal' => 3000,
@@ -126,6 +129,7 @@ function makeReadyCheckoutForApi($test, ?int $userId = null, ?string $guestToken
                 'sku_snapshot' => 'API-SKU-001',
                 'name_snapshot' => 'API Product',
                 'product_type_snapshot' => 'physical',
+                'requires_shipping_snapshot' => true,
                 'quantity' => '1.00000000',
             ]],
             'pricing_snapshot' => [
