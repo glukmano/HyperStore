@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Core\SuperAdmin\Services;
 
 use App\Core\Stores\Models\Store;
+use App\Core\Stores\Models\StoreUser;
 use App\Core\SuperAdmin\Contracts\ContextualMutationAuthorizerInterface;
 use App\Core\SuperAdmin\Exceptions\UnauthorizedContextException;
 use App\Core\Tenancy\Models\TenantUser;
@@ -45,7 +46,33 @@ final readonly class ContextualMutationAuthorizer implements ContextualMutationA
                 throw UnauthorizedContextException::invalidContext("Store [{$storeId}] does not belong to Tenant [{$tenantId}].");
             }
 
-            return $this->executeTenantAuthorized($tenantId, $userId, $requiredRole, $mutation);
+            // 1. Check if user holds inherited Tenant-level authority (owner or admin)
+            /** @var ?TenantUser $tenantMembership */
+            $tenantMembership = TenantUser::where('tenant_id', $tenantId)
+                ->where('user_id', $userId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($tenantMembership !== null && $tenantMembership->is_active && in_array($tenantMembership->role, ['owner', 'admin'], true)) {
+                return $mutation();
+            }
+
+            // 2. Otherwise, check store-scoped membership (StoreUser)
+            /** @var ?StoreUser $storeMembership */
+            $storeMembership = StoreUser::where('store_id', $storeId)
+                ->where('user_id', $userId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($storeMembership === null || ! $storeMembership->is_active) {
+                throw UnauthorizedContextException::invalidContext("Active StoreUser membership required for Store [{$storeId}].");
+            }
+
+            if ($requiredRole !== '' && $storeMembership->role !== $requiredRole && $storeMembership->role !== 'admin' && $storeMembership->role !== 'owner') {
+                throw UnauthorizedContextException::invalidContext("Store role [{$storeMembership->role}] does not satisfy required role [{$requiredRole}].");
+            }
+
+            return $mutation();
         });
     }
 

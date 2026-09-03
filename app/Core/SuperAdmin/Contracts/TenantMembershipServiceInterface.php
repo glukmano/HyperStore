@@ -8,5 +8,5 @@ use App\Core\Tenancy\Models\TenantUser;
 
 interface TenantMembershipServiceInterface
 {
-    public function revokeMembership(int $tenantId, int $userId): TenantUser;
+    public function revokeMembership(int $tenantId, int $targetUserId, ?int $actorUserId = null): TenantUser;
 }

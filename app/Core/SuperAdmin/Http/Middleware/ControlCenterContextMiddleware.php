@@ -46,6 +46,9 @@ final readonly class ControlCenterContextMiddleware
             $impersonationSession = $this->impersonationService->authenticateToken($impersonationToken);
         }
 
+        $isSuperAdmin = $user->isSuperAdmin();
+        $isAuthorizedImpersonator = ($impersonationSession !== null && $impersonationSession->impersonator_user_id === $user->id);
+
         // 2. Resolve requested Tenant if provided in route, header, or impersonation session
         $rawTenant = $request->route('tenant') ?? $request->header('X-Tenant-Id') ?? $impersonationSession?->tenant_id;
         $tenantId = null;
@@ -62,24 +65,23 @@ final readonly class ControlCenterContextMiddleware
                 throw UnauthorizedContextException::invalidContext("Tenant [{$tenantId}] does not exist.");
             }
 
-            // Verify active tenant status
-            if (! $tenant->isActive()) {
+            // Verify active tenant status (Super Admins are exempt to permit management and reactivation)
+            if (! $isSuperAdmin && ! $tenant->isActive()) {
                 $statusVal = is_string($tenant->status) ? $tenant->status : $tenant->status->value;
                 throw TenantSuspendedException::forTenant($tenant->id, $statusVal);
             }
 
-            // Verify active tenant license
-            /** @var ?TenantLicense $license */
-            $license = TenantLicense::where('tenant_id', $tenant->id)->first();
-            if ($license === null || ! $license->isActive()) {
-                $statusStr = $license !== null ? $license->status : 'missing';
-                throw TenantLicenseInactiveException::forTenant($tenant->id, $statusStr);
+            // Verify active tenant license (Super Admins are exempt to permit license management and overrides)
+            if (! $isSuperAdmin) {
+                /** @var ?TenantLicense $license */
+                $license = TenantLicense::where('tenant_id', $tenant->id)->first();
+                if ($license === null || ! $license->isActive()) {
+                    $statusStr = $license !== null ? $license->status : 'missing';
+                    throw TenantLicenseInactiveException::forTenant($tenant->id, $statusStr);
+                }
             }
 
             // Verify user belongs to tenant (unless user is Super Admin or authorized impersonator)
-            $isSuperAdmin = $user->isSuperAdmin();
-            $isAuthorizedImpersonator = ($impersonationSession !== null && $impersonationSession->impersonator_user_id === $user->id);
-
             if (! $isSuperAdmin && ! $isAuthorizedImpersonator && ! $user->isMemberOfTenant($tenant->id)) {
                 throw UnauthorizedContextException::invalidContext("User does not hold membership in Tenant [{$tenant->id}].");
             }
