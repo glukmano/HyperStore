@@ -10,6 +10,8 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Modules\Dropshipping\Models\Supplier;
+use Modules\Dropshipping\Models\TenantSupplierAccess;
 use Modules\Fulfillment\Contracts\FulfillmentExecutionServiceInterface;
 use Modules\Fulfillment\Enums\FulfillmentMode;
 use Modules\Fulfillment\Enums\FulfillmentStatus;
@@ -17,6 +19,8 @@ use Modules\Fulfillment\Enums\ShipmentStatus;
 use Modules\Fulfillment\Models\OrderFulfillment;
 use Modules\Fulfillment\Models\OrderFulfillmentItem;
 use Modules\Fulfillment\Models\OrderShipment;
+use Modules\Order\Enums\OrderStatus;
+use Modules\Order\Models\Order;
 use Modules\Order\Models\SellerOrder;
 
 class FulfillmentExecutionService implements FulfillmentExecutionServiceInterface
@@ -25,7 +29,6 @@ class FulfillmentExecutionService implements FulfillmentExecutionServiceInterfac
     {
         return DB::transaction(function () use ($sellerOrder, $fulfillmentGroups): Collection {
             $createdFulfillments = [];
-            $order = $sellerOrder->order;
 
             foreach ($fulfillmentGroups as $index => $group) {
                 $mode = FulfillmentMode::from($group['mode']);
@@ -35,11 +38,14 @@ class FulfillmentExecutionService implements FulfillmentExecutionServiceInterfac
                 $supplierId = $mode === FulfillmentMode::HYBRID ? null : ($group['supplier_id'] ?? null);
                 $locationId = $mode === FulfillmentMode::HYBRID ? null : ($group['supplier_location_id'] ?? $group['inventory_location_id'] ?? null);
 
+                if ($supplierId !== null) {
+                    $this->authorizeSupplierForFulfillment($supplierId, $sellerOrder);
+                }
+
                 /** @var OrderFulfillment $fulfillment */
                 $fulfillment = OrderFulfillment::create([
                     'uuid' => (string) Str::uuid(),
                     'tenant_id' => $sellerOrder->tenant_id,
-                    'order_id' => $order->id,
                     'seller_order_id' => $sellerOrder->id,
                     'parent_fulfillment_id' => null,
                     'fulfillment_number' => $fNumber,
@@ -92,18 +98,22 @@ class FulfillmentExecutionService implements FulfillmentExecutionServiceInterfac
                         }
 
                         $childNumber = $fNumber.'-C'.($childIndex + 1);
+                        $childSupplierId = $childGroup['supplier_id'] ?? null;
+
+                        if ($childSupplierId !== null) {
+                            $this->authorizeSupplierForFulfillment($childSupplierId, $sellerOrder);
+                        }
 
                         /** @var OrderFulfillment $childFulfillment */
                         $childFulfillment = OrderFulfillment::create([
                             'uuid' => (string) Str::uuid(),
                             'tenant_id' => $sellerOrder->tenant_id,
-                            'order_id' => $order->id,
                             'seller_order_id' => $sellerOrder->id,
                             'parent_fulfillment_id' => $fulfillment->id,
                             'fulfillment_number' => $childNumber,
                             'fulfillment_mode' => $childMode->value,
                             'status' => FulfillmentStatus::PENDING->value,
-                            'supplier_id' => $childGroup['supplier_id'] ?? null,
+                            'supplier_id' => $childSupplierId,
                             'supplier_location_id' => $childMode === FulfillmentMode::DROPSHIPPING ? ($childGroup['supplier_location_id'] ?? null) : null,
                             'inventory_location_id' => $childMode !== FulfillmentMode::DROPSHIPPING ? ($childGroup['inventory_location_id'] ?? null) : null,
                             'routing_snapshot' => $childGroup['routing_snapshot'] ?? null,
@@ -161,6 +171,63 @@ class FulfillmentExecutionService implements FulfillmentExecutionServiceInterfac
         });
     }
 
+    /**
+     * Fail closed authorization check mirroring DropshipOrderOrchestrator's scope
+     * enforcement, applied at fulfillment-creation time (not only at PurchaseOrder
+     * time). Locks the Supplier row (and, for platform suppliers, the
+     * TenantSupplierAccess row) so this is serialized against a concurrent
+     * deactivation / access revocation.
+     */
+    private function authorizeSupplierForFulfillment(int $supplierId, SellerOrder $sellerOrder): void
+    {
+        /** @var Supplier|null $supplier */
+        $supplier = Supplier::query()
+            ->where('id', $supplierId)
+            ->lockForUpdate()
+            ->first();
+
+        if ($supplier === null) {
+            throw new DomainException("Supplier [{$supplierId}] does not exist.");
+        }
+
+        if (! $supplier->is_active) {
+            throw new DomainException("Supplier [{$supplierId}] has been deactivated.");
+        }
+
+        if ($supplier->isPlatform()) {
+            $access = TenantSupplierAccess::query()
+                ->where('tenant_id', $sellerOrder->tenant_id)
+                ->where('supplier_id', $supplier->id)
+                ->where('is_enabled', true)
+                ->lockForUpdate()
+                ->first();
+
+            if ($access === null) {
+                throw new DomainException(
+                    "Platform supplier [{$supplier->id}] is not enabled for tenant [{$sellerOrder->tenant_id}]."
+                );
+            }
+        } elseif ($supplier->isTenant()) {
+            if ($supplier->tenant_id !== $sellerOrder->tenant_id) {
+                throw new DomainException(
+                    "Fulfillment tenant [{$sellerOrder->tenant_id}] does not match Tenant supplier [{$supplier->id}] tenant [{$supplier->tenant_id}]."
+                );
+            }
+        } elseif ($supplier->isPrivateVendor()) {
+            if ($supplier->tenant_id !== $sellerOrder->tenant_id) {
+                throw new DomainException(
+                    "Fulfillment tenant [{$sellerOrder->tenant_id}] does not match Private Vendor supplier [{$supplier->id}] tenant [{$supplier->tenant_id}]."
+                );
+            }
+
+            if ($sellerOrder->vendor_id === null || $supplier->vendor_id !== $sellerOrder->vendor_id) {
+                throw new DomainException(
+                    "Vendor isolation violation: SellerOrder vendor [{$sellerOrder->vendor_id}] cannot use Supplier belonging to vendor [{$supplier->vendor_id}]."
+                );
+            }
+        }
+    }
+
     public function shipFulfillment(
         OrderFulfillment $fulfillment,
         string $carrierCode,
@@ -183,6 +250,26 @@ class FulfillmentExecutionService implements FulfillmentExecutionServiceInterfac
             if ($locked->isHybrid()) {
                 throw new DomainException(
                     'Cannot ship a hybrid fulfillment directly. Disassemble and ship atomic child fulfillments.'
+                );
+            }
+
+            // 1b. Master Order cancellation guard: lock the same Order row that
+            // OrderCancellationService locks, so a concurrent cancellation and a
+            // concurrent dispatch are serialized against each other and dispatch
+            // fails closed once cancellation has committed.
+            $sellerOrder = SellerOrder::query()
+                ->where('id', $locked->seller_order_id)
+                ->firstOrFail();
+
+            /** @var Order $lockedOrder */
+            $lockedOrder = Order::query()
+                ->where('id', $sellerOrder->order_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ($lockedOrder->order_status === OrderStatus::CANCELLED->value) {
+                throw new DomainException(
+                    "Cannot ship fulfillment [{$locked->id}]: master Order [{$lockedOrder->id}] has been cancelled."
                 );
             }
 

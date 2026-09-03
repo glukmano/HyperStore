@@ -8,6 +8,7 @@ use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Modules\Pricing\Contracts\CurrencyConversionInterface;
+use Modules\Pricing\DTOs\CurrencyConversionResult;
 use Modules\Pricing\ValueObjects\MoneyValue;
 use Modules\Shipping\Contracts\CarrierProviderInterface;
 use Modules\Shipping\Contracts\ShippingRateEngineInterface;
@@ -45,6 +46,20 @@ class FakeCurrencyConverter implements CurrencyConversionInterface
         }
 
         return MoneyValue::fromMinor($amount->getMinorAmount(), $targetCurrency);
+    }
+
+    public function convertWithAudit(MoneyValue $amount, string $targetCurrency, ?int $tenantId = null): CurrencyConversionResult
+    {
+        $converted = $this->convert($amount, $targetCurrency, $tenantId);
+
+        return new CurrencyConversionResult(
+            originalAmount: $amount,
+            convertedAmount: $converted,
+            exchangeRateApplied: '1.00',
+            exchangeRateId: null,
+            isInverseRate: false,
+            conversionTimestamp: now()->toIso8601String(),
+        );
     }
 }
 
