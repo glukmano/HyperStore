@@ -14,4 +14,13 @@ enum VendorPayableAvailabilityStatus: string
     {
         return $this === self::Available;
     }
+
+    public function canTransitionTo(self $target): bool
+    {
+        return match ($this) {
+            self::Pending => in_array($target, [self::Available, self::Held], true),
+            self::Available => $target === self::Held,
+            self::Held => in_array($target, [self::Available, self::Pending], true),
+        };
+    }
 }

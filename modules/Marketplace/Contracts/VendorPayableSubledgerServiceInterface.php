@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Contracts;
 
+use Carbon\CarbonImmutable;
 use Modules\Marketplace\DTOs\VendorBalanceDTO;
 use Modules\Marketplace\Models\VendorPayableEntry;
 
@@ -42,6 +43,12 @@ interface VendorPayableSubledgerServiceInterface
         int $amountMinor,
         string $reason
     ): VendorPayableEntry;
+
+    public function maturePendingPayables(int $tenantId, ?CarbonImmutable $asOf = null): int;
+
+    public function holdEntry(int $entryId, string $reason): VendorPayableEntry;
+
+    public function releaseHold(int $entryId): VendorPayableEntry;
 
     public function getBalances(int $tenantId, int $vendorId, string $currency): VendorBalanceDTO;
 

@@ -101,9 +101,10 @@ class VendorListingStoreAvailabilityTest extends TestCase
             'is_enabled' => true,
         ]);
 
-        $resolved = $this->resolutionService->resolveListing(
+        $resolved = $this->resolutionService->resolveListingByUuid(
             tenantId: $this->tenant->id,
             storeId: $this->storeA->id,
+            vendorListingUuid: $this->listing->uuid,
             productId: $this->product->id
         );
 
@@ -121,9 +122,10 @@ class VendorListingStoreAvailabilityTest extends TestCase
             'is_enabled' => false,
         ]);
 
-        $resolved = $this->resolutionService->resolveListing(
+        $resolved = $this->resolutionService->resolveListingByUuid(
             tenantId: $this->tenant->id,
             storeId: $this->storeB->id,
+            vendorListingUuid: $this->listing->uuid,
             productId: $this->product->id
         );
 
@@ -143,9 +145,10 @@ class VendorListingStoreAvailabilityTest extends TestCase
         $this->vendor->operational_status = VendorOperationalStatus::Suspended;
         $this->vendor->save();
 
-        $resolved = $this->resolutionService->resolveListing(
+        $resolved = $this->resolutionService->resolveListingByUuid(
             tenantId: $this->tenant->id,
             storeId: $this->storeA->id,
+            vendorListingUuid: $this->listing->uuid,
             productId: $this->product->id
         );
 

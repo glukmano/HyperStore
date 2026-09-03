@@ -15,31 +15,43 @@ use Modules\Marketplace\Models\VendorStoreParticipation;
 
 final class VendorListingResolutionService implements VendorListingResolutionServiceInterface
 {
-    public function resolveListing(int $tenantId, int $storeId, int $productId, ?int $variantId = null): ?VendorListing
-    {
-        $query = VendorListing::where('tenant_id', $tenantId)
-            ->where('product_id', $productId)
-            ->where('status', VendorListingStatus::Active->value);
-
-        if ($variantId !== null) {
-            $query->where('product_variant_id', $variantId);
-        } else {
-            $query->whereNull('product_variant_id');
-        }
-
+    public function resolveListingByUuid(
+        int $tenantId,
+        int $storeId,
+        string $vendorListingUuid,
+        ?int $productId = null,
+        ?int $variantId = null
+    ): ?VendorListing {
         /** @var VendorListing|null $listing */
-        $listing = $query->first();
+        $listing = VendorListing::where('tenant_id', $tenantId)
+            ->where('uuid', $vendorListingUuid)
+            ->first();
+
         if ($listing === null) {
             return null;
         }
 
-        // Verify vendor is active
+        if ($listing->status !== VendorListingStatus::Active) {
+            return null;
+        }
+
+        if ($productId !== null && $listing->product_id !== $productId) {
+            return null;
+        }
+
+        if ($variantId !== null) {
+            if ($listing->product_variant_id !== $variantId) {
+                return null;
+            }
+        } elseif ($productId !== null && $listing->product_variant_id !== null) {
+            return null;
+        }
+
         $vendor = $listing->vendor;
         if ($vendor->operational_status !== VendorOperationalStatus::Active) {
             return null;
         }
 
-        // Verify vendor participates in store
         $participating = VendorStoreParticipation::where('tenant_id', $tenantId)
             ->where('vendor_id', $vendor->id)
             ->where('store_id', $storeId)
@@ -50,7 +62,6 @@ final class VendorListingResolutionService implements VendorListingResolutionSer
             return null;
         }
 
-        // Verify listing is enabled in store
         $enabledInStore = VendorListingStoreAvailability::where('tenant_id', $tenantId)
             ->where('vendor_listing_id', $listing->id)
             ->where('store_id', $storeId)

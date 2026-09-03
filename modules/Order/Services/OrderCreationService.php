@@ -239,6 +239,7 @@ class OrderCreationService implements OrderCreationServiceInterface
         // 6. Create Order Items from validated lines
         foreach ($validatedSnapshot['lines'] as $line) {
             OrderItem::create([
+                'uuid' => (string) Str::uuid(),
                 'tenant_id' => $dto->tenantId,
                 'order_id' => $order->id,
                 'product_id' => $line['product_id'],

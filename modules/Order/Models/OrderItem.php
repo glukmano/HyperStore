@@ -7,6 +7,7 @@ namespace Modules\Order\Models;
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 /**
  * @property int $id
@@ -33,9 +34,20 @@ class OrderItem extends Model
 {
     use BelongsToTenant;
 
+    protected static function boot(): void
+    {
+        parent::boot();
+        static::creating(function (self $model): void {
+            if (empty($model->uuid)) {
+                $model->uuid = (string) Str::uuid();
+            }
+        });
+    }
+
     protected $table = 'order_items';
 
     protected $fillable = [
+        'uuid',
         'tenant_id',
         'order_id',
         'product_id',

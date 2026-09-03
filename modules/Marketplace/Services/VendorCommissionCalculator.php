@@ -23,10 +23,10 @@ final class VendorCommissionCalculator implements VendorCommissionQuoteServiceIn
             throw CommissionCalculationException::negativeBasis($basisMinor);
         }
 
-        // 4-tier precedence resolution:
+        // 4-tier deterministic precedence resolution:
         // 1. Vendor + Category rule
         $rule = null;
-        $ruleSource = 'tenant_default';
+        $ruleSource = null;
         $ruleRef = null;
 
         if ($categoryId !== null) {
@@ -64,13 +64,14 @@ final class VendorCommissionCalculator implements VendorCommissionQuoteServiceIn
             $vendor = Vendor::with('plan')->where('tenant_id', $tenantId)->find($vendorId);
             if ($vendor !== null && $vendor->plan !== null) {
                 $plan = $vendor->plan;
-                if ($plan->commission_rate_bps > 0 || $plan->fixed_fee_minor > 0) {
+                // An explicit plan commission configuration
+                if ($plan->commission_rate_bps !== null) {
                     if ($plan->fixed_fee_minor > 0 && strtoupper($plan->currency) !== strtoupper($currency)) {
                         throw CommissionCalculationException::currencyMismatch($currency, $plan->currency);
                     }
 
-                    $rateBps = $plan->commission_rate_bps;
-                    $fixedFee = $plan->fixed_fee_minor;
+                    $rateBps = (int) $plan->commission_rate_bps;
+                    $fixedFee = (int) $plan->fixed_fee_minor;
                     $ruleSource = 'plan_base';
                     $ruleRef = $plan->uuid;
 
@@ -94,18 +95,9 @@ final class VendorCommissionCalculator implements VendorCommissionQuoteServiceIn
             }
         }
 
-        if ($rule === null) {
-            // Default zero commission fallback if no tenant rule defined
-            return new CommissionQuoteDTO(
-                basisMinor: $basisMinor,
-                rateBps: 0,
-                fixedFeeMinor: 0,
-                commissionAmountMinor: 0,
-                vendorNetAmountMinor: $basisMinor,
-                currency: $currency,
-                ruleSource: 'default_zero',
-                ruleReference: null,
-            );
+        // If no authoritative rule matches any tier, FAIL CLOSED. Never fall back to silent zero.
+        if ($rule === null || $ruleSource === null) {
+            throw CommissionCalculationException::noRuleMatched();
         }
 
         if ($rule->fixed_fee_minor > 0 && strtoupper($rule->currency) !== strtoupper($currency)) {
@@ -114,8 +106,8 @@ final class VendorCommissionCalculator implements VendorCommissionQuoteServiceIn
 
         return $this->computeCommissionQuote(
             $basisMinor,
-            $rule->rate_basis_points,
-            $rule->fixed_fee_minor,
+            (int) $rule->rate_basis_points,
+            (int) $rule->fixed_fee_minor,
             $currency,
             $ruleSource,
             $ruleRef
@@ -134,8 +126,9 @@ final class VendorCommissionCalculator implements VendorCommissionQuoteServiceIn
             throw CommissionCalculationException::invalidRateBps($rateBps);
         }
 
-        // Integer half-up rounding: floor((basis * bps + 5000) / 10000)
-        $variableMinor = (int) floor((($basisMinor * $rateBps) + 5000) / 10000);
+        // Exact integer half-up arithmetic: intdiv((basis * rate_bps) + 5000, 10000)
+        // Strictly avoids floating point division (/), floor(), round(), or double conversion.
+        $variableMinor = intdiv(($basisMinor * $rateBps) + 5000, 10000);
         $totalCommissionMinor = $variableMinor + $fixedFeeMinor;
 
         // Guard: 0 <= total <= basis

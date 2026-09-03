@@ -18,6 +18,8 @@ use Modules\Checkout\DTOs\SelectedShippingQuote;
 use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface;
+use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
 use RuntimeException;
 
 class CheckoutOrchestrator implements CheckoutOrchestratorInterface
@@ -552,12 +554,15 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                         $vendorId = null;
                         $vendorListingId = null;
 
-                        if (app()->bound(\Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface::class)) {
-                            /** @var \Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface $listingResolver */
-                            $listingResolver = app(\Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface::class);
-                            $resolvedListing = $listingResolver->resolveListing(
+                        $vendorListingUuid = $line->options['vendor_listing_uuid'] ?? ($line->customizations['vendor_listing_uuid'] ?? null);
+
+                        if ($vendorListingUuid !== null && is_string($vendorListingUuid) && app()->bound(VendorListingResolutionServiceInterface::class)) {
+                            /** @var VendorListingResolutionServiceInterface $listingResolver */
+                            $listingResolver = app(VendorListingResolutionServiceInterface::class);
+                            $resolvedListing = $listingResolver->resolveListingByUuid(
                                 tenantId: $lockedSession->tenant_id,
                                 storeId: $lockedSession->store_id,
+                                vendorListingUuid: $vendorListingUuid,
                                 productId: $line->product_id,
                                 variantId: $line->variant_id
                             );
@@ -570,9 +575,9 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                                 $vendorId = $vendor->id;
                                 $vendorListingId = $resolvedListing->id;
 
-                                if (app()->bound(\Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface::class)) {
-                                    /** @var \Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface $commissionService */
-                                    $commissionService = app(\Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface::class);
+                                if (app()->bound(VendorCommissionQuoteServiceInterface::class)) {
+                                    /** @var VendorCommissionQuoteServiceInterface $commissionService */
+                                    $commissionService = app(VendorCommissionQuoteServiceInterface::class);
 
                                     $merchSubtotal = $pLine !== null ? (int) $pLine['merchandise_line_subtotal_minor'] : 0;
                                     $lineDisc = $pLine !== null ? (int) $pLine['line_discount_minor'] : 0;

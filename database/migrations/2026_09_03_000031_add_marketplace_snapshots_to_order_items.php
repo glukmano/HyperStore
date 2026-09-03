@@ -11,6 +11,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('order_items', function (Blueprint $table): void {
+            $table->uuid('uuid')->nullable()->unique()->after('id');
             $table->uuid('vendor_uuid_snapshot')->nullable()->after('customization_metadata_snapshot');
             $table->string('vendor_name_snapshot', 255)->nullable()->after('vendor_uuid_snapshot');
             $table->uuid('vendor_listing_uuid_snapshot')->nullable()->after('vendor_name_snapshot');
@@ -38,6 +39,7 @@ return new class extends Migration
             $table->dropForeign('fk_order_items_vendor_listing');
             $table->dropForeign('fk_order_items_vendor');
             $table->dropColumn([
+                'uuid',
                 'vendor_uuid_snapshot',
                 'vendor_name_snapshot',
                 'vendor_listing_uuid_snapshot',

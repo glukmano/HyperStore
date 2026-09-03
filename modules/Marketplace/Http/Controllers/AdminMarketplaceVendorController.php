@@ -147,9 +147,17 @@ final class AdminMarketplaceVendorController extends Controller
         ]);
     }
 
-    public function finalizePayout(int $id, PayoutServiceInterface $service): JsonResponse
+    public function finalizePayout(Request $request, int $id, PayoutServiceInterface $service): JsonResponse
     {
-        $payout = $service->finalizePayout($id);
+        $validated = $request->validate([
+            'settlement_reference' => ['required', 'string', 'max:255'],
+            'metadata' => ['nullable', 'array'],
+        ]);
+
+        $settlementReference = (string) $validated['settlement_reference'];
+        $metadata = (array) ($validated['metadata'] ?? []);
+
+        $payout = $service->finalizePayout($id, $settlementReference, $metadata);
 
         return response()->json([
             'message' => 'Payout finalized and settled.',

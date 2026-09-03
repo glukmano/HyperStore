@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace Modules\Marketplace\Services;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Facades\DB;
 use Modules\Marketplace\Contracts\MarketplaceCommercialPolicyInterface;
+use Modules\Marketplace\Contracts\VendorPayableAvailabilityPolicyInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
 use Modules\Marketplace\DTOs\VendorBalanceDTO;
 use Modules\Marketplace\Enums\PayoutAllocationStatus;
+use Modules\Marketplace\Enums\VendorOperationalStatus;
 use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
 use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Exceptions\PayoutAllocationException;
@@ -18,7 +22,8 @@ use Modules\Marketplace\Models\VendorPayableEntry;
 final class VendorPayableSubledgerService implements VendorPayableSubledgerServiceInterface
 {
     public function __construct(
-        private readonly MarketplaceCommercialPolicyInterface $commercialPolicy
+        private readonly MarketplaceCommercialPolicyInterface $commercialPolicy,
+        private readonly VendorPayableAvailabilityPolicyInterface $availabilityPolicy,
     ) {}
 
     public function accrueEarning(
@@ -32,12 +37,12 @@ final class VendorPayableSubledgerService implements VendorPayableSubledgerServi
         int $commissionMinor,
         ?int $storeId = null
     ): ?VendorPayableEntry {
-        // Policy-gating: If platform does NOT owe vendor payable (e.g. Seller-MoR), do NOT accrue!
         if (! $this->commercialPolicy->doesPlatformOweVendorPayable($tenantId, $storeId)) {
             return null;
         }
 
         $netMinor = $amountMinor - $commissionMinor;
+        $availableAt = $this->availabilityPolicy->calculateAvailableAt($tenantId, $storeId);
 
         /** @var VendorPayableEntry $entry */
         $entry = VendorPayableEntry::create([
@@ -51,8 +56,8 @@ final class VendorPayableSubledgerService implements VendorPayableSubledgerServi
             'amount_minor' => $amountMinor,
             'commission_amount_minor' => $commissionMinor,
             'net_amount_minor' => $netMinor,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
-            'available_at' => CarbonImmutable::now(),
+            'availability_status' => VendorPayableAvailabilityStatus::Pending,
+            'available_at' => $availableAt,
         ]);
 
         return $entry;
@@ -125,9 +130,82 @@ final class VendorPayableSubledgerService implements VendorPayableSubledgerServi
         return $entry;
     }
 
+    public function maturePendingPayables(int $tenantId, ?CarbonImmutable $asOf = null): int
+    {
+        $cutoff = $asOf ?? CarbonImmutable::now();
+
+        return DB::transaction(function () use ($tenantId, $cutoff): int {
+            /** @var Collection<int, VendorPayableEntry> $pendingEntries */
+            $pendingEntries = VendorPayableEntry::where('tenant_id', $tenantId)
+                ->where('entry_type', VendorPayableEntryType::Earning->value)
+                ->where('availability_status', VendorPayableAvailabilityStatus::Pending->value)
+                ->where('available_at', '<=', $cutoff)
+                ->lockForUpdate()
+                ->get();
+
+            $maturedCount = 0;
+            foreach ($pendingEntries as $entry) {
+                $vendor = $entry->vendor;
+                if ($vendor->operational_status !== VendorOperationalStatus::Active) {
+                    continue;
+                }
+
+                if ($entry->held_reason !== null || $entry->availability_status !== VendorPayableAvailabilityStatus::Pending) {
+                    continue;
+                }
+
+                $entry->availability_status = VendorPayableAvailabilityStatus::Available;
+                $entry->save();
+                $maturedCount++;
+            }
+
+            return $maturedCount;
+        });
+    }
+
+    public function holdEntry(int $entryId, string $reason): VendorPayableEntry
+    {
+        return DB::transaction(function () use ($entryId, $reason): VendorPayableEntry {
+            /** @var VendorPayableEntry $entry */
+            $entry = VendorPayableEntry::lockForUpdate()->findOrFail($entryId);
+
+            if (! $entry->availability_status->canTransitionTo(VendorPayableAvailabilityStatus::Held)) {
+                throw new \DomainException("Cannot transition entry from {$entry->availability_status->value} to held.");
+            }
+
+            $entry->availability_status = VendorPayableAvailabilityStatus::Held;
+            $entry->held_reason = $reason;
+            $entry->save();
+
+            return $entry;
+        });
+    }
+
+    public function releaseHold(int $entryId): VendorPayableEntry
+    {
+        return DB::transaction(function () use ($entryId): VendorPayableEntry {
+            /** @var VendorPayableEntry $entry */
+            $entry = VendorPayableEntry::lockForUpdate()->findOrFail($entryId);
+
+            if ($entry->availability_status !== VendorPayableAvailabilityStatus::Held) {
+                throw new \DomainException("Entry {$entryId} is not held.");
+            }
+
+            $now = CarbonImmutable::now();
+            $targetStatus = ($entry->available_at !== null && $entry->available_at <= $now)
+                ? VendorPayableAvailabilityStatus::Available
+                : VendorPayableAvailabilityStatus::Pending;
+
+            $entry->availability_status = $targetStatus;
+            $entry->held_reason = null;
+            $entry->save();
+
+            return $entry;
+        });
+    }
+
     public function getBalances(int $tenantId, int $vendorId, string $currency): VendorBalanceDTO
     {
-        // 1. Pending Balance: earnings with availability_status = 'pending'
         $pendingMinor = (int) VendorPayableEntry::where('tenant_id', $tenantId)
             ->where('vendor_id', $vendorId)
             ->where('currency', $currency)
@@ -135,15 +213,12 @@ final class VendorPayableSubledgerService implements VendorPayableSubledgerServi
             ->where('availability_status', VendorPayableAvailabilityStatus::Pending->value)
             ->sum('net_amount_minor');
 
-        // 2. Held Balance: any entry with availability_status = 'held'
         $heldMinor = (int) VendorPayableEntry::where('tenant_id', $tenantId)
             ->where('vendor_id', $vendorId)
             ->where('currency', $currency)
             ->where('availability_status', VendorPayableAvailabilityStatus::Held->value)
             ->sum('net_amount_minor');
 
-        // 3. Global Available Economic Balance:
-        // sum(credits) - sum(debits) for available entries
         $earningsMinor = (int) VendorPayableEntry::where('tenant_id', $tenantId)
             ->where('vendor_id', $vendorId)
             ->where('currency', $currency)
@@ -178,7 +253,6 @@ final class VendorPayableSubledgerService implements VendorPayableSubledgerServi
 
         $availableEconomicMinor = ($earningsMinor + $manualCreditsMinor) - ($refundAdjustmentsMinor + $manualDebitsMinor + $payoutDisbursementsMinor);
 
-        // 4. Reserved for Payout: sum(payout_request_allocations.allocated_amount_minor where status = 'reserved')
         $reservedForPayoutMinor = (int) PayoutRequestAllocation::where('tenant_id', $tenantId)
             ->whereHas('request', function ($q) use ($vendorId, $currency): void {
                 $q->where('vendor_id', $vendorId)->where('currency', $currency);
@@ -186,7 +260,6 @@ final class VendorPayableSubledgerService implements VendorPayableSubledgerServi
             ->where('status', PayoutAllocationStatus::Reserved->value)
             ->sum('allocated_amount_minor');
 
-        // 5. Withdrawable Balance: available economic balance - reserved for payout
         $withdrawableMinor = max(0, $availableEconomicMinor - $reservedForPayoutMinor);
 
         return new VendorBalanceDTO(

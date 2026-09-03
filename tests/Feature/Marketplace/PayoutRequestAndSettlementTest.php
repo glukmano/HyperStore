@@ -6,6 +6,7 @@ namespace Tests\Feature\Marketplace;
 
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Modules\Marketplace\Contracts\PayoutServiceInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
@@ -15,6 +16,7 @@ use Modules\Marketplace\Enums\VendorOperationalStatus;
 use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
 use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Exceptions\InsufficientPayableBalanceException;
+use Modules\Marketplace\Exceptions\PayoutFinalizationException;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorPayableEntry;
 use Modules\Marketplace\Models\VendorPlan;
@@ -42,6 +44,7 @@ class PayoutRequestAndSettlementTest extends TestCase
             'settings' => [
                 'marketplace' => [
                     'commercial_model' => 'platform_as_merchant_of_record',
+                    'payable_hold_days' => 14,
                 ],
             ],
         ]);
@@ -69,8 +72,8 @@ class PayoutRequestAndSettlementTest extends TestCase
 
     public function test_payout_request_reserves_allocation_and_finalization_settles_atomically(): void
     {
-        // 1. Accrue 10,000 EUR earning
-        $earning = VendorPayableEntry::create([
+        // 1. Accrue 10,000 EUR earning (available)
+        VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
             'entry_type' => VendorPayableEntryType::Earning,
@@ -110,10 +113,19 @@ class PayoutRequestAndSettlementTest extends TestCase
         $approved = $this->payoutService->approvePayout($request->id, $adminUser->id);
         $this->assertSame(PayoutRequestStatus::Approved, $approved->status);
 
-        // 4. Finalize payout
-        $finalized = $this->payoutService->finalizePayout($approved->id);
+        // 4. Mark processing
+        $processing = $this->payoutService->markProcessing($approved->id);
+        $this->assertSame(PayoutRequestStatus::Processing, $processing->status);
+
+        // 5. Finalize payout with settlement evidence
+        $finalized = $this->payoutService->finalizePayout(
+            payoutRequestId: $processing->id,
+            settlementReference: 'SEPA-TX-998811',
+            settlementMetadata: ['channel' => 'manual_wire', 'batch' => 'B10']
+        );
         $this->assertSame(PayoutRequestStatus::Paid, $finalized->status);
         $this->assertNotNull($finalized->paid_at);
+        $this->assertSame('SEPA-TX-998811', $finalized->destination_details['settlement']['reference']);
 
         // Assert allocation consumed
         $this->assertSame(PayoutAllocationStatus::Consumed, $allocation->fresh()->status);
@@ -134,14 +146,39 @@ class PayoutRequestAndSettlementTest extends TestCase
         $this->assertSame(0, $balAfter->reservedForPayoutMinor);
         $this->assertSame(6000, $balAfter->withdrawableBalanceMinor);
 
-        // 5. Idempotent replay: calling finalize again returns paid state without second disbursement
-        $replayed = $this->payoutService->finalizePayout($approved->id);
+        // 6. Idempotent replay: calling finalize again returns paid state without second disbursement
+        $replayed = $this->payoutService->finalizePayout($processing->id, 'SEPA-TX-998811');
         $this->assertSame(PayoutRequestStatus::Paid, $replayed->status);
 
         $disbursementCount = VendorPayableEntry::where('source_type', 'payout_request')
             ->where('source_uuid', $request->uuid)
             ->count();
         $this->assertSame(1, $disbursementCount);
+    }
+
+    public function test_finalize_without_processing_fails_closed(): void
+    {
+        VendorPayableEntry::create([
+            'tenant_id' => $this->tenant->id,
+            'vendor_id' => $this->vendor->id,
+            'entry_type' => VendorPayableEntryType::Earning,
+            'source_type' => 'order_item',
+            'source_uuid' => 'oi_direct',
+            'currency' => 'EUR',
+            'amount_minor' => 5000,
+            'commission_amount_minor' => 0,
+            'net_amount_minor' => 5000,
+            'availability_status' => VendorPayableAvailabilityStatus::Available,
+        ]);
+
+        $request = $this->payoutService->requestPayout($this->tenant->id, $this->vendor->id, 2000, 'EUR');
+        $adminUser = User::factory()->create();
+        $approved = $this->payoutService->approvePayout($request->id, $adminUser->id);
+
+        // Attempt finalize without markProcessing -> must fail
+        $this->expectException(PayoutFinalizationException::class);
+        $this->expectExceptionMessage("expected 'processing'");
+        $this->payoutService->finalizePayout($approved->id, 'TX-REF-DIRECT');
     }
 
     public function test_payout_request_exceeding_balance_fails_closed(): void
@@ -166,5 +203,72 @@ class PayoutRequestAndSettlementTest extends TestCase
             amountMinor: 8000,
             currency: 'EUR'
         );
+    }
+
+    public function test_payout_safety_lifecycle_pending_maturity_and_held_invariants(): void
+    {
+        // 1. Accrue new earning through subledger: begins as PENDING
+        $earning = $this->subledger->accrueEarning(
+            tenantId: $this->tenant->id,
+            vendorId: $this->vendor->id,
+            orderItemId: null,
+            sourceType: 'order_item',
+            sourceUuid: 'oi_pending_test',
+            currency: 'EUR',
+            amountMinor: 10000,
+            commissionMinor: 1500
+        );
+
+        $this->assertNotNull($earning);
+        $this->assertSame(VendorPayableAvailabilityStatus::Pending, $earning->availability_status);
+        $this->assertSame(8500, $earning->net_amount_minor);
+        $this->assertNotNull($earning->available_at);
+
+        // 2. Balances check: Withdrawable balance is ZERO
+        $bal = $this->subledger->getBalances($this->tenant->id, $this->vendor->id, 'EUR');
+        $this->assertSame(8500, $bal->pendingBalanceMinor);
+        $this->assertSame(0, $bal->availableEconomicBalanceMinor);
+        $this->assertSame(0, $bal->withdrawableBalanceMinor);
+
+        // 3. Attempt payout before maturity: REJECTED with InsufficientPayableBalanceException
+        try {
+            $this->payoutService->requestPayout($this->tenant->id, $this->vendor->id, 5000, 'EUR');
+            $this->fail('Expected payout request on pending funds to fail.');
+        } catch (InsufficientPayableBalanceException $e) {
+            $this->assertStringContainsString('exceeds available withdrawable balance', $e->getMessage());
+        }
+
+        // 4. Maturity processing before cutoff: 0 matured
+        $matured = $this->subledger->maturePendingPayables($this->tenant->id, CarbonImmutable::now());
+        $this->assertSame(0, $matured);
+
+        // 5. Maturity processing at future cutoff (>= available_at): 1 matured!
+        $futureCutoff = CarbonImmutable::now()->addDays(15);
+        $matured = $this->subledger->maturePendingPayables($this->tenant->id, $futureCutoff);
+        $this->assertSame(1, $matured);
+        $this->assertSame(VendorPayableAvailabilityStatus::Available, $earning->fresh()->availability_status);
+
+        // Withdrawable balance now equals 8,500
+        $balAfterMaturity = $this->subledger->getBalances($this->tenant->id, $this->vendor->id, 'EUR');
+        $this->assertSame(0, $balAfterMaturity->pendingBalanceMinor);
+        $this->assertSame(8500, $balAfterMaturity->withdrawableBalanceMinor);
+
+        // 6. Held test: If an entry is put on hold, it cannot mature or be withdrawn
+        $entry2 = $this->subledger->accrueEarning(
+            tenantId: $this->tenant->id,
+            vendorId: $this->vendor->id,
+            orderItemId: null,
+            sourceType: 'order_item',
+            sourceUuid: 'oi_held_test',
+            currency: 'EUR',
+            amountMinor: 3000,
+            commissionMinor: 0
+        );
+        $this->subledger->holdEntry($entry2->id, 'KYC review hold');
+        $this->assertSame(VendorPayableAvailabilityStatus::Held, $entry2->fresh()->availability_status);
+
+        // Even with future maturity run, held entry remains held!
+        $this->subledger->maturePendingPayables($this->tenant->id, $futureCutoff);
+        $this->assertSame(VendorPayableAvailabilityStatus::Held, $entry2->fresh()->availability_status);
     }
 }

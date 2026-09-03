@@ -11,11 +11,15 @@ use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Modules\Catalog\Models\Product;
+use Modules\Catalog\Models\ProductVariant;
+use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
+use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorCommissionRule;
 use Modules\Marketplace\Models\VendorDomain;
 use Modules\Marketplace\Models\VendorListing;
 use Modules\Marketplace\Models\VendorListingStoreAvailability;
+use Modules\Marketplace\Models\VendorPayableEntry;
 use Modules\Marketplace\Models\VendorPlan;
 use Modules\Marketplace\Models\VendorStoreParticipation;
 use Modules\Marketplace\Models\VendorUser;
@@ -37,11 +41,11 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
 
     private Vendor $vendorA;
 
-    private User $userA;
+    private Product $productA;
 
-    private User $userB;
+    private Product $productB;
 
-    private Product $product;
+    private ProductVariant $variantA;
 
     protected function setUp(): void
     {
@@ -93,18 +97,164 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
             'email' => 'vendorA@test.com',
         ]);
 
-        $this->userA = User::factory()->create();
-        $this->userB = User::factory()->create();
-
-        $this->product = Product::create([
+        $this->productA = Product::create([
             'tenant_id' => $this->tenantA->id,
             'product_type' => 'simple',
-            'sku' => 'CANON-SKU-'.uniqid(),
+            'sku' => 'SKU-PA-'.uniqid(),
+            'status' => 'active',
+        ]);
+
+        $this->productB = Product::create([
+            'tenant_id' => $this->tenantB->id,
+            'product_type' => 'simple',
+            'sku' => 'SKU-PB-'.uniqid(),
+            'status' => 'active',
+        ]);
+
+        $this->variantA = ProductVariant::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_id' => $this->productA->id,
+            'sku' => 'VAR-A-'.uniqid(),
+            'combination_hash' => md5('var-a-'.uniqid()),
             'status' => 'active',
         ]);
     }
 
-    public function test_postgres_rejects_duplicate_global_platform_slug_across_tenants(): void
+    public function test_postgres_trigger_rejects_cross_tenant_product_vendor_listing(): void
+    {
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Cross-tenant catalog reference prohibited');
+
+        // VendorListing belonging to Tenant A attempts to reference Product B belonging to Tenant B
+        VendorListing::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'product_id' => $this->productB->id, // Tenant B product!
+            'product_variant_id' => null,
+            'vendor_sku' => 'V-SKU-X1',
+        ]);
+    }
+
+    public function test_postgres_trigger_rejects_cross_tenant_variant_vendor_listing(): void
+    {
+        // Variant belonging to Tenant B
+        $variantB = ProductVariant::create([
+            'tenant_id' => $this->tenantB->id,
+            'product_id' => $this->productB->id,
+            'sku' => 'VAR-B-'.uniqid(),
+            'combination_hash' => md5('var-b-'.uniqid()),
+            'status' => 'active',
+        ]);
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Cross-tenant catalog variant reference prohibited');
+
+        VendorListing::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'product_id' => $this->productA->id,
+            'product_variant_id' => $variantB->id, // Tenant B variant!
+            'vendor_sku' => 'V-SKU-X2',
+        ]);
+    }
+
+    public function test_postgres_trigger_rejects_variant_product_mismatch(): void
+    {
+        // Second product belonging to Tenant A
+        $secondProductA = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_type' => 'simple',
+            'sku' => 'SKU-PA2-'.uniqid(),
+            'status' => 'active',
+        ]);
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Catalog variant mismatch prohibited');
+
+        // References $secondProductA with $variantA which belongs to $productA
+        VendorListing::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'product_id' => $secondProductA->id,
+            'product_variant_id' => $this->variantA->id,
+            'vendor_sku' => 'V-SKU-X3',
+        ]);
+    }
+
+    public function test_postgres_trigger_rejects_cross_tenant_default_store_on_vendor(): void
+    {
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Cross-tenant default store prohibited');
+
+        Vendor::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_plan_id' => $this->planA->id,
+            'default_store_id' => $this->storeB->id, // Tenant B store!
+            'name' => 'Cross Store Vendor',
+            'platform_slug' => 'cross-store-'.uniqid(),
+            'legal_name' => 'Cross LLC',
+            'email' => 'cross@store.com',
+        ]);
+    }
+
+    public function test_postgres_trigger_rejects_cross_tenant_store_participation(): void
+    {
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Cross-tenant store relationship is prohibited');
+
+        VendorStoreParticipation::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'store_id' => $this->storeB->id,
+            'is_enabled' => true,
+        ]);
+    }
+
+    public function test_postgres_trigger_rejects_cross_tenant_listing_store_availability(): void
+    {
+        $listing = VendorListing::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'product_id' => $this->productA->id,
+            'product_variant_id' => null,
+            'vendor_sku' => 'SKU-AVAIL-1',
+        ]);
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Cross-tenant store relationship is prohibited');
+
+        VendorListingStoreAvailability::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_listing_id' => $listing->id,
+            'store_id' => $this->storeB->id,
+            'is_enabled' => true,
+        ]);
+    }
+
+    public function test_postgres_partial_unique_index_rejects_second_active_owner(): void
+    {
+        $user1 = User::factory()->create();
+        $user2 = User::factory()->create();
+
+        VendorUser::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'user_id' => $user1->id,
+            'role' => 'owner',
+            'is_active' => true,
+        ]);
+
+        $this->expectException(QueryException::class);
+        VendorUser::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'user_id' => $user2->id,
+            'role' => 'owner',
+            'is_active' => true,
+        ]);
+    }
+
+    public function test_postgres_rejects_duplicate_global_platform_slug(): void
     {
         $slug = 'global-slug-'.uniqid();
 
@@ -118,20 +268,19 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         ]);
 
         $this->expectException(QueryException::class);
-        // Tenant B attempts same platform slug
         Vendor::create([
             'tenant_id' => $this->tenantB->id,
             'vendor_plan_id' => $this->planB->id,
-            'name' => 'Second Slug Owner Across Tenants',
+            'name' => 'Second Slug Owner',
             'platform_slug' => $slug,
             'legal_name' => 'Second LLC',
             'email' => 'second@slug.com',
         ]);
     }
 
-    public function test_postgres_rejects_duplicate_normalized_custom_domain(): void
+    public function test_postgres_rejects_duplicate_custom_domain(): void
     {
-        $domain = 'vendor-shop-'.uniqid().'.com';
+        $domain = 'custom-'.uniqid().'.com';
 
         VendorDomain::create([
             'tenant_id' => $this->tenantA->id,
@@ -141,7 +290,6 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         ]);
 
         $this->expectException(QueryException::class);
-        // Attempt duplicate domain
         VendorDomain::create([
             'tenant_id' => $this->tenantB->id,
             'vendor_id' => $this->vendorA->id,
@@ -150,50 +298,27 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         ]);
     }
 
-    public function test_postgres_partial_unique_index_rejects_second_active_owner(): void
-    {
-        // First active owner
-        VendorUser::create([
-            'tenant_id' => $this->tenantA->id,
-            'vendor_id' => $this->vendorA->id,
-            'user_id' => $this->userA->id,
-            'role' => 'owner',
-            'is_active' => true,
-        ]);
-
-        $this->expectException(QueryException::class);
-        // Second active owner for same vendor must be rejected by PostgreSQL partial index uq_vendor_single_owner
-        VendorUser::create([
-            'tenant_id' => $this->tenantA->id,
-            'vendor_id' => $this->vendorA->id,
-            'user_id' => $this->userB->id,
-            'role' => 'owner',
-            'is_active' => true,
-        ]);
-    }
-
-    public function test_postgres_partial_unique_index_rejects_duplicate_canonical_product_listing(): void
+    public function test_postgres_partial_unique_index_rejects_duplicate_nullable_product_listing(): void
     {
         VendorListing::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
-            'product_id' => $this->product->id,
+            'product_id' => $this->productA->id,
             'product_variant_id' => null,
-            'vendor_sku' => 'SKU-C1',
+            'vendor_sku' => 'SKU-L1',
         ]);
 
         $this->expectException(QueryException::class);
-        // Duplicate listing for same product with NULL variant must be rejected by uq_vendor_listings_product
         VendorListing::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
-            'product_id' => $this->product->id,
+            'product_id' => $this->productA->id,
             'product_variant_id' => null,
-            'vendor_sku' => 'SKU-C2',
+            'vendor_sku' => 'SKU-L2',
         ]);
     }
 
-    public function test_postgres_partial_unique_index_rejects_overlapping_vendor_global_commission_rules(): void
+    public function test_postgres_partial_unique_index_rejects_overlapping_commission_rules(): void
     {
         VendorCommissionRule::create([
             'tenant_id' => $this->tenantA->id,
@@ -205,7 +330,6 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         ]);
 
         $this->expectException(QueryException::class);
-        // Second active global rule for same vendor and currency rejected by uq_commission_vendor_global
         VendorCommissionRule::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
@@ -216,39 +340,75 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         ]);
     }
 
-    public function test_postgres_trigger_rejects_cross_tenant_store_participation(): void
+    public function test_postgres_trigger_strictly_prohibits_delete_on_vendor_payable_entries(): void
     {
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage('Cross-tenant store relationship is prohibited');
-
-        // Vendor belonging to Tenant A attempts to participate in Store B belonging to Tenant B
-        VendorStoreParticipation::create([
+        $entry = VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
-            'store_id' => $this->storeB->id, // Belongs to Tenant B!
-            'is_enabled' => true,
+            'entry_type' => VendorPayableEntryType::Earning,
+            'source_type' => 'order_item',
+            'source_uuid' => 'oi_nodelete_'.uniqid(),
+            'currency' => 'EUR',
+            'amount_minor' => 5000,
+            'commission_amount_minor' => 500,
+            'net_amount_minor' => 4500,
+            'availability_status' => VendorPayableAvailabilityStatus::Pending,
+        ]);
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Deleting rows from vendor_payable_entries is strictly prohibited');
+
+        // Direct raw SQL delete must be rejected by PostgreSQL trigger
+        DB::table('vendor_payable_entries')->where('id', $entry->id)->delete();
+    }
+
+    public function test_postgres_trigger_strictly_prohibits_update_of_economic_fields_on_payable_entries(): void
+    {
+        $entry = VendorPayableEntry::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendorA->id,
+            'entry_type' => VendorPayableEntryType::Earning,
+            'source_type' => 'order_item',
+            'source_uuid' => 'oi_noupdate_'.uniqid(),
+            'currency' => 'EUR',
+            'amount_minor' => 5000,
+            'commission_amount_minor' => 500,
+            'net_amount_minor' => 4500,
+            'availability_status' => VendorPayableAvailabilityStatus::Pending,
+        ]);
+
+        $this->expectException(QueryException::class);
+        $this->expectExceptionMessage('Economic fields of vendor_payable_entries are immutable');
+
+        // Direct raw SQL update of amount_minor must be rejected by PostgreSQL trigger
+        DB::table('vendor_payable_entries')->where('id', $entry->id)->update([
+            'amount_minor' => 9999,
         ]);
     }
 
-    public function test_postgres_trigger_rejects_cross_tenant_listing_store_availability(): void
+    public function test_postgres_permits_controlled_availability_field_updates_on_payable_entries(): void
     {
-        $listing = VendorListing::create([
+        $entry = VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
-            'product_id' => $this->product->id,
-            'product_variant_id' => null,
-            'vendor_sku' => 'SKU-AVAIL-1',
+            'entry_type' => VendorPayableEntryType::Earning,
+            'source_type' => 'order_item',
+            'source_uuid' => 'oi_legal_'.uniqid(),
+            'currency' => 'EUR',
+            'amount_minor' => 5000,
+            'commission_amount_minor' => 500,
+            'net_amount_minor' => 4500,
+            'availability_status' => VendorPayableAvailabilityStatus::Pending,
         ]);
 
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage('Cross-tenant store relationship is prohibited');
-
-        // Listing belonging to Tenant A attempts availability in Store B belonging to Tenant B
-        VendorListingStoreAvailability::create([
-            'tenant_id' => $this->tenantA->id,
-            'vendor_listing_id' => $listing->id,
-            'store_id' => $this->storeB->id, // Belongs to Tenant B!
-            'is_enabled' => true,
+        // Updating availability_status, available_at, or held_reason is permitted
+        DB::table('vendor_payable_entries')->where('id', $entry->id)->update([
+            'availability_status' => 'available',
+            'available_at' => now(),
+            'held_reason' => null,
+            'updated_at' => now(),
         ]);
+
+        $this->assertSame('available', DB::table('vendor_payable_entries')->where('id', $entry->id)->value('availability_status'));
     }
 }

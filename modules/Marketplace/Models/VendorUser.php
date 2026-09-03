@@ -12,7 +12,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Str;
 use Modules\Marketplace\Enums\VendorRole;
 use Modules\Marketplace\Exceptions\VendorOwnerInvariantViolationException;
-use Modules\Marketplace\Services\VendorOwnershipService;
 
 /**
  * @property int $id
@@ -60,28 +59,24 @@ class VendorUser extends Model
         });
 
         static::updating(function (self $model): void {
-            if (! VendorOwnershipService::$transferInProgress) {
-                $origRole = $model->getOriginal('role');
-                $origRoleVal = $origRole instanceof VendorRole ? $origRole->value : (string) $origRole;
-                $origActive = (bool) $model->getOriginal('is_active');
+            $origRole = $model->getOriginal('role');
+            $origRoleVal = $origRole instanceof VendorRole ? $origRole->value : (string) $origRole;
+            $origActive = (bool) $model->getOriginal('is_active');
 
-                if ($origRoleVal === VendorRole::Owner->value && $origActive === true) {
-                    if ($model->role !== VendorRole::Owner || $model->is_active === false) {
-                        throw VendorOwnerInvariantViolationException::cannotDemoteOrDeleteOwner();
-                    }
+            if ($origRoleVal === VendorRole::Owner->value && $origActive === true) {
+                if ($model->role !== VendorRole::Owner || $model->is_active === false) {
+                    throw VendorOwnerInvariantViolationException::cannotDemoteOrDeleteOwner();
                 }
             }
         });
 
         static::deleting(function (self $model): void {
-            if (! VendorOwnershipService::$transferInProgress) {
-                $origRole = $model->getOriginal('role');
-                $origRoleVal = $origRole instanceof VendorRole ? $origRole->value : (string) $origRole;
-                $origActive = (bool) $model->getOriginal('is_active');
+            $origRole = $model->getOriginal('role');
+            $origRoleVal = $origRole instanceof VendorRole ? $origRole->value : (string) $origRole;
+            $origActive = (bool) $model->getOriginal('is_active');
 
-                if ($origRoleVal === VendorRole::Owner->value && $origActive === true) {
-                    throw VendorOwnerInvariantViolationException::cannotDemoteOrDeleteOwner();
-                }
+            if ($origRoleVal === VendorRole::Owner->value && $origActive === true) {
+                throw VendorOwnerInvariantViolationException::cannotDemoteOrDeleteOwner();
             }
         });
     }

@@ -23,8 +23,8 @@ return new class extends Migration
             $table->integer('product_limit')->nullable();
             $table->integer('staff_limit')->default(1);
             $table->boolean('auto_approval')->default(false);
-            $table->integer('commission_rate_bps')->default(0);
-            $table->bigInteger('fixed_fee_minor')->default(0);
+            $table->integer('commission_rate_bps')->nullable();
+            $table->bigInteger('fixed_fee_minor')->nullable();
             $table->string('currency', 3)->default('EUR');
             $table->boolean('can_manage_suppliers')->default(false);
             $table->boolean('can_dropship')->default(false);
@@ -100,6 +100,29 @@ return new class extends Migration
         if ($isPgsql) {
             DB::statement("ALTER TABLE vendors ADD CONSTRAINT chk_vendors_operational_status CHECK (operational_status IN ('draft', 'pending_approval', 'active', 'suspended', 'terminated'))");
             DB::statement("ALTER TABLE vendors ADD CONSTRAINT chk_vendors_verification_status CHECK (verification_status IN ('unverified', 'pending', 'verified', 'rejected', 'needs_review'))");
+
+            // PostgreSQL trigger enforcing vendors.default_store_id tenant isolation
+            DB::statement("
+                CREATE OR REPLACE FUNCTION trg_verify_vendor_default_store()
+                RETURNS TRIGGER AS $$
+                DECLARE
+                    store_tenant_id BIGINT;
+                BEGIN
+                    IF NEW.default_store_id IS NOT NULL THEN
+                        SELECT tenant_id INTO store_tenant_id FROM stores WHERE id = NEW.default_store_id;
+                        IF store_tenant_id IS NULL OR store_tenant_id != NEW.tenant_id THEN
+                            RAISE EXCEPTION 'Cross-tenant default store prohibited: store % does not belong to tenant %', NEW.default_store_id, NEW.tenant_id;
+                        END IF;
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+            ");
+            DB::statement('
+                CREATE TRIGGER check_vendors_default_store
+                BEFORE INSERT OR UPDATE ON vendors
+                FOR EACH ROW EXECUTE FUNCTION trg_verify_vendor_default_store();
+            ');
         }
 
         // 4. vendor_plan_subscriptions
@@ -292,8 +315,46 @@ return new class extends Migration
         if ($isPgsql) {
             DB::statement("ALTER TABLE vendor_listings ADD CONSTRAINT chk_vendor_listings_status CHECK (status IN ('active', 'inactive'))");
             // Partial unique indexes resolving PostgreSQL NULL behavior:
-            DB::statement("CREATE UNIQUE INDEX uq_vendor_listings_product ON vendor_listings (tenant_id, vendor_id, product_id) WHERE product_variant_id IS NULL");
-            DB::statement("CREATE UNIQUE INDEX uq_vendor_listings_variant ON vendor_listings (tenant_id, vendor_id, product_id, product_variant_id) WHERE product_variant_id IS NOT NULL");
+            DB::statement('CREATE UNIQUE INDEX uq_vendor_listings_product ON vendor_listings (tenant_id, vendor_id, product_id) WHERE product_variant_id IS NULL');
+            DB::statement('CREATE UNIQUE INDEX uq_vendor_listings_variant ON vendor_listings (tenant_id, vendor_id, product_id, product_variant_id) WHERE product_variant_id IS NOT NULL');
+
+            // PostgreSQL trigger enforcing cross-tenant catalog boundaries and variant-product integrity:
+            DB::statement("
+                CREATE OR REPLACE FUNCTION trg_verify_vendor_listing_catalog()
+                RETURNS TRIGGER AS $$
+                DECLARE
+                    prod_tenant_id BIGINT;
+                    var_tenant_id BIGINT;
+                    var_product_id BIGINT;
+                BEGIN
+                    SELECT tenant_id INTO prod_tenant_id FROM products WHERE id = NEW.product_id;
+                    IF prod_tenant_id IS NULL OR prod_tenant_id != NEW.tenant_id THEN
+                        RAISE EXCEPTION 'Cross-tenant catalog reference prohibited: product % does not belong to tenant %', NEW.product_id, NEW.tenant_id;
+                    END IF;
+
+                    IF NEW.product_variant_id IS NOT NULL THEN
+                        SELECT p.tenant_id, pv.product_id INTO var_tenant_id, var_product_id
+                        FROM product_variants pv
+                        JOIN products p ON p.id = pv.product_id
+                        WHERE pv.id = NEW.product_variant_id;
+
+                        IF var_tenant_id IS NULL OR var_tenant_id != NEW.tenant_id THEN
+                            RAISE EXCEPTION 'Cross-tenant catalog variant reference prohibited: variant % does not belong to tenant %', NEW.product_variant_id, NEW.tenant_id;
+                        END IF;
+                        IF var_product_id != NEW.product_id THEN
+                            RAISE EXCEPTION 'Catalog variant mismatch prohibited: variant % does not belong to product %', NEW.product_variant_id, NEW.product_id;
+                        END IF;
+                    END IF;
+
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+            ");
+            DB::statement('
+                CREATE TRIGGER check_vendor_listings_catalog
+                BEFORE INSERT OR UPDATE ON vendor_listings
+                FOR EACH ROW EXECUTE FUNCTION trg_verify_vendor_listing_catalog();
+            ');
         }
 
         // 12. vendor_listing_store_availabilities
@@ -328,19 +389,19 @@ return new class extends Migration
                 END;
                 $$ LANGUAGE plpgsql;
             ");
-            DB::statement("
+            DB::statement('
                 CREATE TRIGGER check_vendor_store_participations_tenant
                 BEFORE INSERT OR UPDATE ON vendor_store_participations
                 FOR EACH ROW EXECUTE FUNCTION trg_verify_store_tenant();
-            ");
-            DB::statement("
+            ');
+            DB::statement('
                 CREATE TRIGGER check_vendor_listing_store_availabilities_tenant
                 BEFORE INSERT OR UPDATE ON vendor_listing_store_availabilities
                 FOR EACH ROW EXECUTE FUNCTION trg_verify_store_tenant();
-            ");
+            ');
         }
 
-        // 13. vendor_commission_rules
+        // 13. vendor_commission_rules (Without effective_from / effective_to per Phase-11 closure)
         Schema::create('vendor_commission_rules', function (Blueprint $table): void {
             $table->bigIncrements('id');
             $table->uuid('uuid')->unique();
@@ -348,10 +409,8 @@ return new class extends Migration
             $table->unsignedBigInteger('vendor_id')->nullable();
             $table->unsignedBigInteger('category_id')->nullable();
             $table->integer('rate_basis_points');
-            $table->bigInteger('fixed_fee_minor')->default(0);
+            $table->bigInteger('fixed_fee_minor')->nullable();
             $table->string('currency', 3)->default('EUR');
-            $table->timestampTz('effective_from')->nullable();
-            $table->timestampTz('effective_to')->nullable();
             $table->boolean('is_active')->default(true);
             $table->timestampTz('created_at')->useCurrent();
             $table->timestampTz('updated_at')->useCurrent();
@@ -366,9 +425,9 @@ return new class extends Migration
             DB::statement('ALTER TABLE vendor_commission_rules ADD CONSTRAINT chk_commission_rules_rate CHECK (rate_basis_points >= 0 AND rate_basis_points <= 10000)');
             DB::statement('ALTER TABLE vendor_commission_rules ADD CONSTRAINT chk_commission_rules_fixed_fee CHECK (fixed_fee_minor >= 0)');
             // Non-overlapping commission scope partial unique indexes:
-            DB::statement("CREATE UNIQUE INDEX uq_commission_tenant_default ON vendor_commission_rules (tenant_id, currency) WHERE vendor_id IS NULL AND category_id IS NULL AND is_active = true");
-            DB::statement("CREATE UNIQUE INDEX uq_commission_vendor_global ON vendor_commission_rules (tenant_id, vendor_id, currency) WHERE vendor_id IS NOT NULL AND category_id IS NULL AND is_active = true");
-            DB::statement("CREATE UNIQUE INDEX uq_commission_vendor_category ON vendor_commission_rules (tenant_id, vendor_id, category_id, currency) WHERE vendor_id IS NOT NULL AND category_id IS NOT NULL AND is_active = true");
+            DB::statement('CREATE UNIQUE INDEX uq_commission_tenant_default ON vendor_commission_rules (tenant_id, currency) WHERE vendor_id IS NULL AND category_id IS NULL AND is_active = true');
+            DB::statement('CREATE UNIQUE INDEX uq_commission_vendor_global ON vendor_commission_rules (tenant_id, vendor_id, currency) WHERE vendor_id IS NOT NULL AND category_id IS NULL AND is_active = true');
+            DB::statement('CREATE UNIQUE INDEX uq_commission_vendor_category ON vendor_commission_rules (tenant_id, vendor_id, category_id, currency) WHERE vendor_id IS NOT NULL AND category_id IS NOT NULL AND is_active = true');
         }
 
         // 14. vendor_payable_entries (Directional, append-only operational subledger)
@@ -385,7 +444,7 @@ return new class extends Migration
             $table->bigInteger('amount_minor');
             $table->bigInteger('commission_amount_minor')->default(0);
             $table->bigInteger('net_amount_minor');
-            $table->string('availability_status', 32)->default('available');
+            $table->string('availability_status', 32)->default('pending');
             $table->timestampTz('available_at')->nullable();
             $table->string('held_reason', 255)->nullable();
             $table->timestampTz('created_at')->useCurrent();
@@ -401,7 +460,44 @@ return new class extends Migration
         if ($isPgsql) {
             DB::statement("ALTER TABLE vendor_payable_entries ADD CONSTRAINT chk_payable_entry_type CHECK (entry_type IN ('earning', 'refund_adjustment', 'manual_adjustment_credit', 'manual_adjustment_debit', 'payout_disbursement'))");
             DB::statement("ALTER TABLE vendor_payable_entries ADD CONSTRAINT chk_payable_avail_status CHECK (availability_status IN ('pending', 'available', 'held'))");
-            DB::statement('ALTER TABLE vendor_payable_entries ADD CONSTRAINT chk_payable_amounts CHECK (amount_minor >= 0 AND commission_amount_minor >= 0 AND net_amount_minor >= 0)');
+            // Positive financial movements & disbursement invariants:
+            DB::statement('ALTER TABLE vendor_payable_entries ADD CONSTRAINT chk_payable_amounts_positive CHECK (amount_minor > 0 AND commission_amount_minor >= 0 AND net_amount_minor >= 0)');
+            DB::statement("ALTER TABLE vendor_payable_entries ADD CONSTRAINT chk_payable_disbursement_invariants CHECK ((entry_type != 'payout_disbursement') OR (commission_amount_minor = 0 AND net_amount_minor = amount_minor))");
+
+            // PostgreSQL trigger enforcing immutable economic fields and strictly preventing DELETE:
+            DB::statement("
+                CREATE OR REPLACE FUNCTION trg_protect_vendor_payable_entries()
+                RETURNS TRIGGER AS $$
+                BEGIN
+                    IF TG_OP = 'DELETE' THEN
+                        RAISE EXCEPTION 'Deleting rows from vendor_payable_entries is strictly prohibited';
+                    END IF;
+
+                    IF TG_OP = 'UPDATE' THEN
+                        IF NEW.tenant_id != OLD.tenant_id OR
+                           NEW.vendor_id != OLD.vendor_id OR
+                           NEW.order_item_id IS DISTINCT FROM OLD.order_item_id OR
+                           NEW.entry_type != OLD.entry_type OR
+                           NEW.source_type != OLD.source_type OR
+                           NEW.source_uuid != OLD.source_uuid OR
+                           NEW.currency != OLD.currency OR
+                           NEW.amount_minor != OLD.amount_minor OR
+                           NEW.commission_amount_minor != OLD.commission_amount_minor OR
+                           NEW.net_amount_minor != OLD.net_amount_minor
+                        THEN
+                            RAISE EXCEPTION 'Economic fields of vendor_payable_entries are immutable and cannot be updated';
+                        END IF;
+                    END IF;
+
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+            ");
+            DB::statement('
+                CREATE TRIGGER check_vendor_payable_entries_protection
+                BEFORE UPDATE OR DELETE ON vendor_payable_entries
+                FOR EACH ROW EXECUTE FUNCTION trg_protect_vendor_payable_entries();
+            ');
         }
 
         // 15. payout_batches
@@ -484,9 +580,15 @@ return new class extends Migration
         $isPgsql = DB::getDriverName() === 'pgsql';
 
         if ($isPgsql) {
+            DB::statement('DROP TRIGGER IF EXISTS check_vendor_payable_entries_protection ON vendor_payable_entries');
+            DB::statement('DROP FUNCTION IF EXISTS trg_protect_vendor_payable_entries()');
             DB::statement('DROP TRIGGER IF EXISTS check_vendor_listing_store_availabilities_tenant ON vendor_listing_store_availabilities');
             DB::statement('DROP TRIGGER IF EXISTS check_vendor_store_participations_tenant ON vendor_store_participations');
             DB::statement('DROP FUNCTION IF EXISTS trg_verify_store_tenant()');
+            DB::statement('DROP TRIGGER IF EXISTS check_vendor_listings_catalog ON vendor_listings');
+            DB::statement('DROP FUNCTION IF EXISTS trg_verify_vendor_listing_catalog()');
+            DB::statement('DROP TRIGGER IF EXISTS check_vendors_default_store ON vendors');
+            DB::statement('DROP FUNCTION IF EXISTS trg_verify_vendor_default_store()');
         }
 
         Schema::dropIfExists('payout_request_allocations');

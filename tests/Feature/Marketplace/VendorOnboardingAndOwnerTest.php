@@ -196,4 +196,49 @@ class VendorOnboardingAndOwnerTest extends TestCase
 
         $this->assertSame(1, $activeOwnerCount);
     }
+
+    public function test_generic_demotion_rejected_after_transfer_and_two_sequential_transfers(): void
+    {
+        $registrationService = app(VendorRegistrationService::class);
+        $transferService = app(VendorOwnershipService::class);
+
+        $dto = new VendorRegistrationDTO(
+            tenantId: $this->tenant->id,
+            name: 'Sequential Transfer Vendor',
+            platformSlug: 'seq-trans-vendor',
+            legalName: 'Sequential Transfer LLC',
+            email: 'seq@vendor.com',
+            vendorPlanId: $this->plan->id,
+            ownerUserId: $this->user1->id,
+        );
+        $vendor = $registrationService->registerVendor($dto);
+
+        // First transfer: user1 -> user2
+        $newOwner1 = $transferService->transferOwnership($this->tenant->id, $vendor->id, $this->user2->id);
+        $this->assertSame($this->user2->id, $newOwner1->user_id);
+        $this->assertSame(VendorRole::Owner, $newOwner1->role);
+
+        // AFTER transfer completes, try generic demotion of current owner
+        try {
+            $newOwner1->role = VendorRole::Staff;
+            $newOwner1->save();
+            $this->fail('Expected generic demotion after transfer to fail.');
+        } catch (VendorOwnerInvariantViolationException $e) {
+            $this->assertStringContainsString('cannot be demoted', $e->getMessage());
+        }
+
+        // Second transfer sequentially in the same process: user2 -> user3
+        $user3 = User::factory()->create();
+        $newOwner2 = $transferService->transferOwnership($this->tenant->id, $vendor->id, $user3->id);
+        $this->assertSame($user3->id, $newOwner2->user_id);
+        $this->assertSame(VendorRole::Owner, $newOwner2->role);
+
+        // Assert exactly one active owner
+        $activeOwnerCount = VendorUser::where('tenant_id', $this->tenant->id)
+            ->where('vendor_id', $vendor->id)
+            ->where('role', VendorRole::Owner->value)
+            ->where('is_active', true)
+            ->count();
+        $this->assertSame(1, $activeOwnerCount);
+    }
 }

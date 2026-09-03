@@ -20,8 +20,6 @@ use Modules\Catalog\Models\Category;
  * @property int $rate_basis_points
  * @property int $fixed_fee_minor
  * @property string $currency
- * @property CarbonImmutable|null $effective_from
- * @property CarbonImmutable|null $effective_to
  * @property bool $is_active
  * @property CarbonImmutable $created_at
  * @property CarbonImmutable $updated_at
@@ -42,8 +40,6 @@ class VendorCommissionRule extends Model
         'rate_basis_points',
         'fixed_fee_minor',
         'currency',
-        'effective_from',
-        'effective_to',
         'is_active',
     ];
 
@@ -51,8 +47,6 @@ class VendorCommissionRule extends Model
         'rate_basis_points' => 'integer',
         'fixed_fee_minor' => 'integer',
         'is_active' => 'boolean',
-        'effective_from' => 'immutable_datetime',
-        'effective_to' => 'immutable_datetime',
         'created_at' => 'immutable_datetime',
         'updated_at' => 'immutable_datetime',
     ];

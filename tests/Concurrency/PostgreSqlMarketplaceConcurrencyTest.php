@@ -11,6 +11,7 @@ use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Support\Facades\DB;
 use Modules\Catalog\Models\Product;
 use Modules\Marketplace\Contracts\PayoutServiceInterface;
+use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
 use Modules\Marketplace\Enums\PayoutAllocationStatus;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
 use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
@@ -389,9 +390,10 @@ try {
         $payoutService = app(PayoutServiceInterface::class);
         $request = $payoutService->requestPayout($this->tenantA->id, $this->vendor->id, 5000, 'EUR');
         $approved = $payoutService->approvePayout($request->id, $this->ownerUser->id);
+        $processing = $payoutService->markProcessing($approved->id);
 
         $bootstrap = $this->getBootstrapScript();
-        $payoutId = $approved->id;
+        $payoutId = $processing->id;
 
         // Two concurrent workers attempt to finalize the same payout request
         $workerCode = function () use ($bootstrap, $payoutId): string {
@@ -399,7 +401,7 @@ try {
 // __BARRIER_WAIT__
 try {
     \$service = app(\\Modules\\Marketplace\\Contracts\\PayoutServiceInterface::class);
-    \$finalized = \$service->finalizePayout({$payoutId});
+    \$finalized = \$service->finalizePayout({$payoutId}, 'TX-SETTLE-CONCURRENT');
     echo 'SUCCESS:' . \$finalized->status->value;
     exit(0);
 } catch (\\Throwable \$e) {
@@ -621,5 +623,174 @@ try {
 
         $this->assertSame(1, $successCount);
         $this->assertSame(1, $failCount);
+    }
+
+    public function test_race_payout_reservation_7k_vs_7k_concurrency(): void
+    {
+        // Available balance: 10,000 EUR
+        VendorPayableEntry::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendor->id,
+            'entry_type' => VendorPayableEntryType::Earning,
+            'source_type' => 'order_item',
+            'source_uuid' => 'race-7k-'.uniqid(),
+            'currency' => 'EUR',
+            'amount_minor' => 10000,
+            'commission_amount_minor' => 0,
+            'net_amount_minor' => 10000,
+            'availability_status' => VendorPayableAvailabilityStatus::Available,
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenantA->id;
+        $vendorId = $this->vendor->id;
+
+        // Two concurrent workers both attempt to reserve 7,000 EUR from a 10,000 EUR pool
+        $workerCode = function () use ($bootstrap, $tenantId, $vendorId): string {
+            return "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$service = app(\\Modules\\Marketplace\\Contracts\\PayoutServiceInterface::class);
+    \$req = \$service->requestPayout({$tenantId}, {$vendorId}, 7000, 'EUR');
+    echo 'SUCCESS:' . \$req->id;
+    exit(0);
+} catch (\\Modules\\Marketplace\\Exceptions\\InsufficientPayableBalanceException \$e) {
+    echo 'FAILED_INSUFFICIENT:' . \$e->getMessage();
+    exit(1);
+} catch (\\Throwable \$e) {
+    echo 'FAILED_OTHER:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+        };
+
+        $scripts = [$workerCode(), $workerCode()];
+        $results = $this->executeConcurrently($scripts);
+
+        $successCount = 0;
+        $insufficientCount = 0;
+
+        foreach ($results as $res) {
+            if ($res['exit_code'] === 0 && str_starts_with($res['stdout'], 'SUCCESS:')) {
+                $successCount++;
+            } elseif (str_contains($res['stdout'], 'FAILED_INSUFFICIENT:')) {
+                $insufficientCount++;
+            }
+        }
+
+        $this->assertSame(1, $successCount, 'Exactly one 7k reservation must succeed from 10k pool.');
+        $this->assertSame(1, $insufficientCount, 'The competing 7k reservation must fail with InsufficientPayableBalanceException.');
+
+        // Subledger asserts: 7k reserved, exactly 3k withdrawable balance remains
+        $subledger = app(VendorPayableSubledgerServiceInterface::class);
+        $bal = $subledger->getBalances($tenantId, $vendorId, 'EUR');
+        $this->assertSame(7000, $bal->reservedForPayoutMinor);
+        $this->assertSame(3000, $bal->withdrawableBalanceMinor);
+    }
+
+    public function test_sequential_partial_payout_4k_settle_then_6k_leaves_exact_zero_residual(): void
+    {
+        // 1. Accrue 10,000 EUR
+        $earning = VendorPayableEntry::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendor->id,
+            'entry_type' => VendorPayableEntryType::Earning,
+            'source_type' => 'order_item',
+            'source_uuid' => 'race-partial-'.uniqid(),
+            'currency' => 'EUR',
+            'amount_minor' => 10000,
+            'commission_amount_minor' => 0,
+            'net_amount_minor' => 10000,
+            'availability_status' => VendorPayableAvailabilityStatus::Available,
+        ]);
+
+        $payoutService = app(PayoutServiceInterface::class);
+        $subledger = app(VendorPayableSubledgerServiceInterface::class);
+
+        // 2. Reserve 4k
+        $req1 = $payoutService->requestPayout($this->tenantA->id, $this->vendor->id, 4000, 'EUR');
+        $bal1 = $subledger->getBalances($this->tenantA->id, $this->vendor->id, 'EUR');
+        $this->assertSame(4000, $bal1->reservedForPayoutMinor);
+        $this->assertSame(6000, $bal1->withdrawableBalanceMinor);
+
+        // 3. Settle 4k
+        $app1 = $payoutService->approvePayout($req1->id, $this->ownerUser->id);
+        $proc1 = $payoutService->markProcessing($app1->id);
+        $payoutService->finalizePayout($proc1->id, 'TX-4K-SETTLE');
+
+        $balAfterSettle1 = $subledger->getBalances($this->tenantA->id, $this->vendor->id, 'EUR');
+        $this->assertSame(6000, $balAfterSettle1->availableEconomicBalanceMinor);
+        $this->assertSame(0, $balAfterSettle1->reservedForPayoutMinor);
+        $this->assertSame(6000, $balAfterSettle1->withdrawableBalanceMinor);
+
+        // 4. Reserve remaining 6k
+        $req2 = $payoutService->requestPayout($this->tenantA->id, $this->vendor->id, 6000, 'EUR');
+        $bal2 = $subledger->getBalances($this->tenantA->id, $this->vendor->id, 'EUR');
+        $this->assertSame(6000, $bal2->reservedForPayoutMinor);
+        $this->assertSame(0, $bal2->withdrawableBalanceMinor);
+
+        // 5. Settle 6k
+        $app2 = $payoutService->approvePayout($req2->id, $this->ownerUser->id);
+        $proc2 = $payoutService->markProcessing($app2->id);
+        $payoutService->finalizePayout($proc2->id, 'TX-6K-SETTLE');
+
+        // Exact zero residual, no double subtraction
+        $balFinal = $subledger->getBalances($this->tenantA->id, $this->vendor->id, 'EUR');
+        $this->assertSame(0, $balFinal->availableEconomicBalanceMinor);
+        $this->assertSame(0, $balFinal->reservedForPayoutMinor);
+        $this->assertSame(0, $balFinal->withdrawableBalanceMinor);
+    }
+
+    public function test_race_duplicate_payable_source_accrual_fails_closed(): void
+    {
+        $sourceUuid = 'ord-item-race-'.uniqid();
+        $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenantA->id;
+        $vendorId = $this->vendor->id;
+
+        $workerCode = function () use ($bootstrap, $tenantId, $vendorId, $sourceUuid): string {
+            return "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$entry = \\Modules\\Marketplace\\Models\\VendorPayableEntry::create([
+        'tenant_id' => {$tenantId},
+        'vendor_id' => {$vendorId},
+        'entry_type' => \\Modules\\Marketplace\\Enums\\VendorPayableEntryType::Earning,
+        'source_type' => 'order_item',
+        'source_uuid' => '{$sourceUuid}',
+        'currency' => 'EUR',
+        'amount_minor' => 5000,
+        'commission_amount_minor' => 500,
+        'net_amount_minor' => 4500,
+        'availability_status' => \\Modules\\Marketplace\\Enums\\VendorPayableAvailabilityStatus::Available,
+    ]);
+    echo 'SUCCESS:' . \$entry->id;
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e);
+    exit(1);
+}
+";
+        };
+
+        $scripts = [$workerCode(), $workerCode()];
+        $results = $this->executeConcurrently($scripts);
+
+        $successCount = 0;
+        $failCount = 0;
+        foreach ($results as $r) {
+            if ($r['exit_code'] === 0) {
+                $successCount++;
+            } else {
+                $failCount++;
+                $this->assertTrue(str_contains($r['stdout'], 'UniqueConstraintViolationException') || str_contains($r['stdout'], 'QueryException'));
+            }
+        }
+
+        $this->assertSame(1, $successCount, 'Exactly one earning entry can be created for unique source movement.');
+        $this->assertSame(1, $failCount, 'Duplicate earning attempt must be rejected by PostgreSQL unique constraint.');
+
+        $count = VendorPayableEntry::where('tenant_id', $tenantId)->where('source_uuid', $sourceUuid)->count();
+        $this->assertSame(1, $count);
     }
 }

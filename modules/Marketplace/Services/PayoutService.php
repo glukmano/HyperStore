@@ -31,9 +31,6 @@ final class PayoutService implements PayoutServiceInterface
         private readonly MarketplaceConcurrencyBarrierInterface $barrier,
     ) {}
 
-    /**
-     * @param  array<string, mixed>  $destinationDetails
-     */
     public function requestPayout(
         int $tenantId,
         int $vendorId,
@@ -42,15 +39,15 @@ final class PayoutService implements PayoutServiceInterface
         array $destinationDetails = []
     ): PayoutRequest {
         if ($amountMinor <= 0) {
-            throw new PayoutAllocationException("Payout amount must be greater than zero (got: {$amountMinor}).");
+            throw new \InvalidArgumentException("Payout request amount must be strictly positive (got: {$amountMinor}).");
         }
 
         return DB::transaction(function () use ($tenantId, $vendorId, $amountMinor, $currency, $destinationDetails): PayoutRequest {
-            // 1. Lock Vendor row
+            // 1. Lock Vendor aggregate row to ensure operational eligibility
             /** @var Vendor|null $vendor */
             $vendor = Vendor::where('tenant_id', $tenantId)->lockForUpdate()->find($vendorId);
             if ($vendor === null) {
-                throw VendorNotFoundException::forUuid((string) $vendorId);
+                throw new VendorNotFoundException("Vendor {$vendorId} not found for tenant {$tenantId}.");
             }
 
             if ($vendor->operational_status !== VendorOperationalStatus::Active) {
@@ -59,13 +56,7 @@ final class PayoutService implements PayoutServiceInterface
 
             $this->barrier->wait('payout_request_vendor_locked');
 
-            // 2. Compute current withdrawable balance
-            $balances = $this->subledgerService->getBalances($tenantId, $vendorId, $currency);
-            if ($balances->withdrawableBalanceMinor < $amountMinor) {
-                throw InsufficientPayableBalanceException::forAmount($amountMinor, $balances->withdrawableBalanceMinor, $currency);
-            }
-
-            // 3. Lock candidate eligible entries in deterministic ID order
+            // 2. Lock candidate eligible entries in deterministic ID order
             $candidateEntries = VendorPayableEntry::where('tenant_id', $tenantId)
                 ->where('vendor_id', $vendorId)
                 ->where('currency', $currency)
@@ -75,7 +66,13 @@ final class PayoutService implements PayoutServiceInterface
                 ->lockForUpdate()
                 ->get();
 
-            // 4. Create PayoutRequest in requested state
+            // Check current withdrawable balance under lock
+            $balances = $this->subledgerService->getBalances($tenantId, $vendorId, $currency);
+            if ($balances->withdrawableBalanceMinor < $amountMinor) {
+                throw InsufficientPayableBalanceException::forAmount($amountMinor, $balances->withdrawableBalanceMinor, $currency);
+            }
+
+            // 3. Create PayoutRequest in requested state
             /** @var PayoutRequest $payoutRequest */
             $payoutRequest = PayoutRequest::create([
                 'tenant_id' => $tenantId,
@@ -86,7 +83,7 @@ final class PayoutService implements PayoutServiceInterface
                 'destination_details' => $destinationDetails,
             ]);
 
-            // 5. Allocate reservation against entries
+            // 4. Allocate reservation against entries
             $remainingToReserve = $amountMinor;
             $totalReserved = 0;
 
@@ -114,7 +111,7 @@ final class PayoutService implements PayoutServiceInterface
                 $totalReserved += $allocationMinor;
             }
 
-            // 6. Assert total reserved equals requested amount; otherwise rollback
+            // 5. Assert total reserved equals requested amount; otherwise rollback
             if ($totalReserved !== $amountMinor) {
                 throw PayoutAllocationException::allocationMismatch($amountMinor, $totalReserved);
             }
@@ -141,9 +138,30 @@ final class PayoutService implements PayoutServiceInterface
         });
     }
 
-    public function finalizePayout(int $payoutRequestId): PayoutRequest
+    public function markProcessing(int $payoutRequestId): PayoutRequest
     {
         return DB::transaction(function () use ($payoutRequestId): PayoutRequest {
+            /** @var PayoutRequest $request */
+            $request = PayoutRequest::lockForUpdate()->findOrFail($payoutRequestId);
+
+            if ($request->status !== PayoutRequestStatus::Approved) {
+                throw new PayoutFinalizationException("Cannot mark payout processing from status '{$request->status->value}' (expected approved).");
+            }
+
+            $request->status = PayoutRequestStatus::Processing;
+            $request->save();
+
+            return $request;
+        });
+    }
+
+    public function finalizePayout(int $payoutRequestId, string $settlementReference, array $settlementMetadata = []): PayoutRequest
+    {
+        if (trim($settlementReference) === '') {
+            throw new \InvalidArgumentException('A valid non-empty settlement reference is required to finalize payout.');
+        }
+
+        return DB::transaction(function () use ($payoutRequestId, $settlementReference, $settlementMetadata): PayoutRequest {
             /** @var PayoutRequest $request */
             $request = PayoutRequest::lockForUpdate()->findOrFail($payoutRequestId);
 
@@ -154,8 +172,8 @@ final class PayoutService implements PayoutServiceInterface
 
             $this->barrier->wait('payout_finalization_request_locked');
 
-            // Must be in approved or processing status
-            if (! in_array($request->status, [PayoutRequestStatus::Approved, PayoutRequestStatus::Processing], true)) {
+            // Frozen lifecycle accepts ONLY processing
+            if ($request->status !== PayoutRequestStatus::Processing) {
                 throw PayoutFinalizationException::notProcessing($request->status->value);
             }
 
@@ -166,6 +184,15 @@ final class PayoutService implements PayoutServiceInterface
                     throw PayoutFinalizationException::allocationsNotReserved();
                 }
             }
+
+            // Persist settlement evidence
+            $details = (array) ($request->destination_details ?? []);
+            $details['settlement'] = [
+                'reference' => $settlementReference,
+                'metadata' => $settlementMetadata,
+                'settled_at' => CarbonImmutable::now()->toIso8601String(),
+            ];
+            $request->destination_details = $details;
 
             // Append ONE payout_disbursement entry to vendor_payable_entries
             VendorPayableEntry::create([

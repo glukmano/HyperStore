@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Services;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
 use Modules\Marketplace\Enums\VendorRole;
@@ -14,8 +15,6 @@ use Modules\Marketplace\Models\VendorUser;
 
 final class VendorOwnershipService
 {
-    public static bool $transferInProgress = false;
-
     public function __construct(
         private readonly MarketplaceConcurrencyBarrierInterface $barrier,
     ) {}
@@ -45,52 +44,56 @@ final class VendorOwnershipService
                 throw VendorOwnerInvariantViolationException::targetUserAlreadyOwner();
             }
 
-            self::$transferInProgress = true;
-            try {
-                // 3. Demote current owner to manager
-                if ($currentOwner !== null) {
-                    $currentOwner->role = VendorRole::Manager;
-                    $currentOwner->save();
-                }
-
-                // 4. Promote or create new owner
-                /** @var VendorUser|null $targetMember */
-                $targetMember = VendorUser::where('tenant_id', $tenantId)
-                    ->where('vendor_id', $vendorId)
-                    ->where('user_id', $newOwnerUserId)
-                    ->lockForUpdate()
-                    ->first();
-
-                if ($targetMember !== null) {
-                    $targetMember->role = VendorRole::Owner;
-                    $targetMember->is_active = true;
-                    $targetMember->save();
-                    $newOwnerRecord = $targetMember;
-                } else {
-                    $newOwnerRecord = VendorUser::create([
-                        'tenant_id' => $tenantId,
-                        'vendor_id' => $vendorId,
-                        'user_id' => $newOwnerUserId,
-                        'role' => VendorRole::Owner,
-                        'is_active' => true,
+            // 3. Demote current owner to manager via direct SQL query under vendor lock
+            if ($currentOwner !== null) {
+                DB::table('vendor_users')
+                    ->where('id', $currentOwner->id)
+                    ->update([
+                        'role' => VendorRole::Manager->value,
+                        'updated_at' => CarbonImmutable::now(),
                     ]);
-                }
-
-                // 5. Verify exactly one active owner exists
-                $activeOwnerCount = VendorUser::where('tenant_id', $tenantId)
-                    ->where('vendor_id', $vendorId)
-                    ->where('role', VendorRole::Owner->value)
-                    ->where('is_active', true)
-                    ->count();
-
-                if ($activeOwnerCount !== 1) {
-                    throw VendorOwnerInvariantViolationException::secondOwnerForbidden();
-                }
-
-                return $newOwnerRecord;
-            } finally {
-                self::$transferInProgress = false;
             }
+
+            // 4. Promote or create new owner
+            /** @var VendorUser|null $targetMember */
+            $targetMember = VendorUser::where('tenant_id', $tenantId)
+                ->where('vendor_id', $vendorId)
+                ->where('user_id', $newOwnerUserId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($targetMember !== null) {
+                DB::table('vendor_users')
+                    ->where('id', $targetMember->id)
+                    ->update([
+                        'role' => VendorRole::Owner->value,
+                        'is_active' => true,
+                        'updated_at' => CarbonImmutable::now(),
+                    ]);
+                /** @var VendorUser $newOwnerRecord */
+                $newOwnerRecord = $targetMember->fresh();
+            } else {
+                $newOwnerRecord = VendorUser::create([
+                    'tenant_id' => $tenantId,
+                    'vendor_id' => $vendorId,
+                    'user_id' => $newOwnerUserId,
+                    'role' => VendorRole::Owner,
+                    'is_active' => true,
+                ]);
+            }
+
+            // 5. Verify exactly one active owner exists
+            $activeOwnerCount = VendorUser::where('tenant_id', $tenantId)
+                ->where('vendor_id', $vendorId)
+                ->where('role', VendorRole::Owner->value)
+                ->where('is_active', true)
+                ->count();
+
+            if ($activeOwnerCount !== 1) {
+                throw VendorOwnerInvariantViolationException::secondOwnerForbidden();
+            }
+
+            return $newOwnerRecord;
         });
     }
 }

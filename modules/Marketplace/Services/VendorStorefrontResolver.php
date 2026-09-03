@@ -13,6 +13,7 @@ use Modules\Marketplace\Exceptions\VendorNotFoundException;
 use Modules\Marketplace\Exceptions\VendorOperationalStatusException;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorDomain;
+use Modules\Marketplace\Models\VendorStoreParticipation;
 use Modules\Marketplace\ValueObjects\DomainName;
 use Modules\Marketplace\ValueObjects\VendorSlug;
 
@@ -113,13 +114,33 @@ final class VendorStorefrontResolver implements VendorStorefrontResolverInterfac
 
     private function resolveStore(Vendor $vendor, ?int $storeId): ?Store
     {
-        if ($storeId !== null) {
-            /** @var Store|null $store */
-            $store = Store::find($storeId);
-
-            return $store;
+        $targetStoreId = $storeId ?? $vendor->default_store_id;
+        if ($targetStoreId === null) {
+            return null;
         }
 
-        return $vendor->defaultStore;
+        /** @var Store|null $store */
+        $store = Store::find($targetStoreId);
+        if ($store === null) {
+            throw new VendorNotFoundException("Store {$targetStoreId} does not exist.");
+        }
+
+        // Must belong to the exact same tenant
+        if ($store->tenant_id !== $vendor->tenant_id) {
+            throw new VendorNotFoundException("Store {$targetStoreId} belongs to a foreign tenant.");
+        }
+
+        // Must actively participate in the store
+        $participating = VendorStoreParticipation::where('tenant_id', $vendor->tenant_id)
+            ->where('vendor_id', $vendor->id)
+            ->where('store_id', $targetStoreId)
+            ->where('is_enabled', true)
+            ->exists();
+
+        if (! $participating) {
+            throw new VendorNotFoundException("Vendor {$vendor->id} does not participate in store {$targetStoreId}.");
+        }
+
+        return $store;
     }
 }

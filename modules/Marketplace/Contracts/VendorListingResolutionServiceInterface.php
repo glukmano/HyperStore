@@ -8,7 +8,13 @@ use Modules\Marketplace\Models\VendorListing;
 
 interface VendorListingResolutionServiceInterface
 {
-    public function resolveListing(int $tenantId, int $storeId, int $productId, ?int $variantId = null): ?VendorListing;
+    public function resolveListingByUuid(
+        int $tenantId,
+        int $storeId,
+        string $vendorListingUuid,
+        ?int $productId = null,
+        ?int $variantId = null
+    ): ?VendorListing;
 
     public function assertListingAvailable(int $tenantId, int $storeId, int $listingId): void;
 }

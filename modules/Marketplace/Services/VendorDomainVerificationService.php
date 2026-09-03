@@ -5,14 +5,21 @@ declare(strict_types=1);
 namespace Modules\Marketplace\Services;
 
 use Carbon\CarbonImmutable;
+use Modules\Marketplace\Contracts\DomainVerificationResolverInterface;
 use Modules\Marketplace\Enums\VendorDomainStatus;
+use Modules\Marketplace\Enums\VendorOperationalStatus;
 use Modules\Marketplace\Exceptions\DomainAlreadyTakenException;
+use Modules\Marketplace\Exceptions\VendorOperationalStatusException;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorDomain;
 use Modules\Marketplace\ValueObjects\DomainName;
 
 final class VendorDomainVerificationService
 {
+    public function __construct(
+        private readonly DomainVerificationResolverInterface $resolver,
+    ) {}
+
     public function registerDomain(Vendor $vendor, string $rawDomain): VendorDomain
     {
         $normalizedDomain = DomainName::from($rawDomain)->value();
@@ -35,31 +42,22 @@ final class VendorDomainVerificationService
         return $domain;
     }
 
-    public function verifyDomain(VendorDomain $domain, ?string $simulatedTxtRecord = null): bool
+    public function verifyDomain(VendorDomain $domain): bool
     {
         $expectedChallenge = 'hyperstore-verification='.$domain->verification_token;
 
+        $records = $this->resolver->resolveTxtRecords($domain->domain);
         $matched = false;
 
-        if ($simulatedTxtRecord !== null) {
-            $matched = ($simulatedTxtRecord === $expectedChallenge);
-        } else {
-            // DNS lookup
-            if (function_exists('dns_get_record')) {
-                $records = @dns_get_record($domain->domain, DNS_TXT);
-                if (is_array($records)) {
-                    foreach ($records as $record) {
-                        if (isset($record['txt']) && $record['txt'] === $expectedChallenge) {
-                            $matched = true;
-                            break;
-                        }
-                    }
-                }
+        foreach ($records as $record) {
+            if ($record === $expectedChallenge) {
+                $matched = true;
+                break;
             }
         }
 
         if ($matched) {
-            $domain->status = VendorDomainStatus::Active;
+            $domain->status = VendorDomainStatus::Verified;
             $domain->verified_at = CarbonImmutable::now();
             $domain->save();
 
@@ -67,5 +65,22 @@ final class VendorDomainVerificationService
         }
 
         return false;
+    }
+
+    public function activateDomain(VendorDomain $domain): VendorDomain
+    {
+        if ($domain->status !== VendorDomainStatus::Verified) {
+            throw new \DomainException("Cannot activate domain '{$domain->domain}' because it is not verified (status: {$domain->status->value}).");
+        }
+
+        $vendor = $domain->vendor;
+        if ($vendor->operational_status !== VendorOperationalStatus::Active) {
+            throw VendorOperationalStatusException::vendorNotActive($vendor->uuid, $vendor->operational_status->value);
+        }
+
+        $domain->status = VendorDomainStatus::Active;
+        $domain->save();
+
+        return $domain;
     }
 }

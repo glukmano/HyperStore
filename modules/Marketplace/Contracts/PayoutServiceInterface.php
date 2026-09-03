@@ -15,7 +15,12 @@ interface PayoutServiceInterface
 
     public function approvePayout(int $payoutRequestId, int $approvedByUserId): PayoutRequest;
 
-    public function finalizePayout(int $payoutRequestId): PayoutRequest;
+    public function markProcessing(int $payoutRequestId): PayoutRequest;
+
+    /**
+     * @param  array<string, mixed>  $settlementMetadata
+     */
+    public function finalizePayout(int $payoutRequestId, string $settlementReference, array $settlementMetadata = []): PayoutRequest;
 
     public function cancelPayout(int $payoutRequestId): PayoutRequest;
 
