@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tests\Feature\Ledger;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Modules\Ledger\Contracts\LedgerAccountRegistryInterface;
 use Modules\Ledger\Contracts\LedgerPostingServiceInterface;
 use Modules\Ledger\DTOs\JournalDraftDTO;
@@ -225,5 +227,138 @@ class LedgerAccountClassificationSafetyTest extends TestCase
         $fresh = $clearing->fresh();
         $this->assertSame('Updated Display Name', $fresh->name);
         $this->assertSame('Updated Description Notes', $fresh->description);
+    }
+
+    // --- Tests A through G for Final System-Account Lifecycle Invariants ---
+
+    public function test_a_newly_provisioned_payment_clearing_with_zero_lines_cannot_be_deleted(): void
+    {
+        /** @var LedgerAccountRegistryInterface $registry */
+        $registry = app(LedgerAccountRegistryInterface::class);
+        $registry->ensureRequiredSystemAccounts($this->tenant->id);
+
+        $clearing = $registry->getAccountByRole($this->tenant->id, SystemAccountRole::PAYMENT_CLEARING);
+        $this->assertSame(0, $clearing->lines()->count(), 'Precondition: 0 journal lines must exist.');
+
+        $this->expectException(LedgerAccountInvariantException::class);
+        $this->expectExceptionMessage('Cannot delete system account with role [payment_clearing]');
+
+        $clearing->delete();
+    }
+
+    public function test_b_newly_provisioned_customer_funds_liability_with_zero_lines_cannot_be_deleted(): void
+    {
+        /** @var LedgerAccountRegistryInterface $registry */
+        $registry = app(LedgerAccountRegistryInterface::class);
+        $registry->ensureRequiredSystemAccounts($this->tenant->id);
+
+        $liability = $registry->getAccountByRole($this->tenant->id, SystemAccountRole::CUSTOMER_FUNDS_LIABILITY);
+        $this->assertSame(0, $liability->lines()->count(), 'Precondition: 0 journal lines must exist.');
+
+        $this->expectException(LedgerAccountInvariantException::class);
+        $this->expectExceptionMessage('Cannot delete system account with role [customer_funds_liability]');
+
+        $liability->delete();
+    }
+
+    public function test_c_unused_ordinary_non_system_account_can_be_deleted(): void
+    {
+        $ordinaryAccount = LedgerAccount::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'temporary_test_account',
+            'name' => 'Temporary Test Account',
+            'type' => AccountType::EXPENSE->value,
+            'normal_balance' => NormalBalance::DEBIT->value,
+            'currency' => 'EUR',
+            'is_system' => false,
+            'status' => AccountStatus::ACTIVE->value,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $this->assertSame(0, $ordinaryAccount->lines()->count());
+        $accountId = $ordinaryAccount->id;
+
+        $ordinaryAccount->delete();
+
+        $this->assertNull(LedgerAccount::find($accountId), 'Unused non-system account must be deletable.');
+    }
+
+    public function test_d_attempt_creation_of_payment_clearing_with_is_system_false_is_rejected(): void
+    {
+        $this->expectException(LedgerAccountInvariantException::class);
+        $this->expectExceptionMessage('Required system account with role [payment_clearing] must have is_system set to true');
+
+        LedgerAccount::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'fake_clearing',
+            'name' => 'Fake Clearing',
+            'type' => AccountType::ASSET->value,
+            'normal_balance' => NormalBalance::DEBIT->value,
+            'role' => SystemAccountRole::PAYMENT_CLEARING->value,
+            'is_system' => false, // Violates invariant!
+            'status' => AccountStatus::ACTIVE->value,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    public function test_e_attempt_creation_of_customer_funds_liability_with_is_system_false_is_rejected(): void
+    {
+        $this->expectException(LedgerAccountInvariantException::class);
+        $this->expectExceptionMessage('Required system account with role [customer_funds_liability] must have is_system set to true');
+
+        LedgerAccount::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'fake_liability',
+            'name' => 'Fake Liability',
+            'type' => AccountType::LIABILITY->value,
+            'normal_balance' => NormalBalance::CREDIT->value,
+            'role' => SystemAccountRole::CUSTOMER_FUNDS_LIABILITY->value,
+            'is_system' => false, // Violates invariant!
+            'status' => AccountStatus::ACTIVE->value,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    public function test_f_provisioning_encounters_existing_incompatible_required_role_fails_closed(): void
+    {
+        // Manually create an existing account with invalid/corrupted classification bypassing model hook via DB::table
+        DB::table('ledger_accounts')->insert([
+            'uuid' => (string) Str::uuid(),
+            'tenant_id' => $this->tenant->id,
+            'code' => 'corrupted_clearing',
+            'name' => 'Corrupted Clearing',
+            'type' => AccountType::EXPENSE->value, // Incompatible type for payment_clearing!
+            'normal_balance' => NormalBalance::DEBIT->value,
+            'role' => SystemAccountRole::PAYMENT_CLEARING->value,
+            'is_system' => true,
+            'status' => AccountStatus::ACTIVE->value,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        /** @var LedgerAccountRegistryInterface $registry */
+        $registry = app(LedgerAccountRegistryInterface::class);
+
+        $this->expectException(LedgerAccountInvariantException::class);
+        $this->expectExceptionMessage('Existing required system account [payment_clearing] is incompatible');
+
+        // Must FAIL CLOSED without silently rewriting or accepting
+        $registry->ensureRequiredSystemAccounts($this->tenant->id);
+    }
+
+    public function test_g_valid_existing_required_role_provisioning_remains_idempotent(): void
+    {
+        /** @var LedgerAccountRegistryInterface $registry */
+        $registry = app(LedgerAccountRegistryInterface::class);
+
+        $registry->ensureRequiredSystemAccounts($this->tenant->id);
+        $this->assertSame(2, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
+
+        // Repeated provisioning must succeed idempotently without modifying accounts
+        $registry->ensureRequiredSystemAccounts($this->tenant->id);
+        $this->assertSame(2, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
     }
 }

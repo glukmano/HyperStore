@@ -220,13 +220,25 @@ class LedgerAccountProvisioningTest extends TestCase
         $this->assertSame(1, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
     }
 
-    public function test_account_with_journal_lines_cannot_be_deleted(): void
+    public function test_non_system_account_with_journal_lines_cannot_be_deleted(): void
     {
         /** @var LedgerAccountRegistryInterface $registry */
         $registry = app(LedgerAccountRegistryInterface::class);
         $registry->ensureRequiredSystemAccounts($this->tenant->id);
 
-        $clearing = $registry->getAccountByRole($this->tenant->id, SystemAccountRole::PAYMENT_CLEARING);
+        $ordinaryAccount = LedgerAccount::create([
+            'tenant_id' => $this->tenant->id,
+            'code' => 'custom_operations',
+            'name' => 'Custom Operations',
+            'type' => AccountType::EXPENSE->value,
+            'normal_balance' => NormalBalance::DEBIT->value,
+            'role' => null,
+            'is_system' => false,
+            'status' => AccountStatus::ACTIVE->value,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
         $liability = $registry->getAccountByRole($this->tenant->id, SystemAccountRole::CUSTOMER_FUNDS_LIABILITY);
 
         /** @var LedgerPostingServiceInterface $postingService */
@@ -244,7 +256,7 @@ class LedgerAccountProvisioningTest extends TestCase
             effectiveAt: $now,
             postedAt: $now,
             lines: [
-                new JournalLineDTO((int) $clearing->id, JournalDirection::DEBIT, 1000, 'EUR'),
+                new JournalLineDTO((int) $ordinaryAccount->id, JournalDirection::DEBIT, 1000, 'EUR'),
                 new JournalLineDTO((int) $liability->id, JournalDirection::CREDIT, 1000, 'EUR'),
             ]
         );
@@ -252,6 +264,6 @@ class LedgerAccountProvisioningTest extends TestCase
         $postingService->post($draft);
 
         $this->expectException(AccountInUseException::class);
-        $clearing->delete();
+        $ordinaryAccount->delete();
     }
 }

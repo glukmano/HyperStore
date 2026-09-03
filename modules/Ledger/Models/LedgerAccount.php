@@ -73,6 +73,9 @@ class LedgerAccount extends Model
             }
 
             if ($model->role === SystemAccountRole::PAYMENT_CLEARING->value) {
+                if (! $model->is_system) {
+                    throw LedgerAccountInvariantException::requiredSystemAccountMustBeSystem($model->role);
+                }
                 if ($model->type !== AccountType::ASSET->value) {
                     throw LedgerAccountInvariantException::invalidClassification($model->role, AccountType::ASSET->value, $model->type);
                 }
@@ -82,6 +85,9 @@ class LedgerAccount extends Model
             }
 
             if ($model->role === SystemAccountRole::CUSTOMER_FUNDS_LIABILITY->value) {
+                if (! $model->is_system) {
+                    throw LedgerAccountInvariantException::requiredSystemAccountMustBeSystem($model->role);
+                }
                 if ($model->type !== AccountType::LIABILITY->value) {
                     throw LedgerAccountInvariantException::invalidClassification($model->role, AccountType::LIABILITY->value, $model->type);
                 }
@@ -142,6 +148,13 @@ class LedgerAccount extends Model
         });
 
         static::deleting(function (self $model): void {
+            // Required system accounts must never be ordinary-deletable even with 0 lines
+            if (in_array($model->role, [SystemAccountRole::PAYMENT_CLEARING->value, SystemAccountRole::CUSTOMER_FUNDS_LIABILITY->value], true)
+                || ($model->is_system && $model->role !== null)
+            ) {
+                throw LedgerAccountInvariantException::cannotDeleteSystemAccount((string) $model->role);
+            }
+
             if ($model->lines()->exists()) {
                 throw AccountInUseException::cannotDelete((int) $model->id);
             }

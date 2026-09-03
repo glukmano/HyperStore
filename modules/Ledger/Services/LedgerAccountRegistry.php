@@ -13,6 +13,7 @@ use Modules\Ledger\Enums\AccountStatus;
 use Modules\Ledger\Enums\AccountType;
 use Modules\Ledger\Enums\NormalBalance;
 use Modules\Ledger\Enums\SystemAccountRole;
+use Modules\Ledger\Exceptions\LedgerAccountInvariantException;
 use Modules\Ledger\Exceptions\MissingSystemAccountException;
 use Modules\Ledger\Models\LedgerAccount;
 
@@ -68,12 +69,27 @@ class LedgerAccountRegistry implements LedgerAccountRegistryInterface
         string $normalBalance,
         string $description
     ): void {
+        /** @var LedgerAccount|null $existing */
         $existing = LedgerAccount::withoutGlobalScopes()
             ->where('tenant_id', $tenantId)
             ->where('role', $role)
             ->first();
 
         if ($existing !== null) {
+            // Validate that existing required role has compatible invariants
+            if (! $existing->is_system) {
+                throw LedgerAccountInvariantException::incompatibleExistingSystemAccount($role, 'is_system is false');
+            }
+            if ($existing->type !== $type) {
+                throw LedgerAccountInvariantException::incompatibleExistingSystemAccount($role, "expected type [{$type}], found [{$existing->type}]");
+            }
+            if ($existing->normal_balance !== $normalBalance) {
+                throw LedgerAccountInvariantException::incompatibleExistingSystemAccount($role, "expected normal balance [{$normalBalance}], found [{$existing->normal_balance}]");
+            }
+            if ($existing->status !== AccountStatus::ACTIVE->value) {
+                throw LedgerAccountInvariantException::incompatibleExistingSystemAccount($role, "account is not active (status: {$existing->status})");
+            }
+
             return;
         }
 
@@ -98,14 +114,19 @@ class LedgerAccountRegistry implements LedgerAccountRegistryInterface
                 ]);
             });
         } catch (QueryException $e) {
-            // Concurrent race condition: if another worker created the account concurrently, check existence
-            $exists = LedgerAccount::withoutGlobalScopes()
+            // Concurrent race condition: if another worker created the account concurrently, check existence and invariants
+            /** @var LedgerAccount|null $raced */
+            $raced = LedgerAccount::withoutGlobalScopes()
                 ->where('tenant_id', $tenantId)
                 ->where('role', $role)
-                ->exists();
+                ->first();
 
-            if (! $exists) {
+            if ($raced === null) {
                 throw $e;
+            }
+
+            if (! $raced->is_system || $raced->type !== $type || $raced->normal_balance !== $normalBalance || $raced->status !== AccountStatus::ACTIVE->value) {
+                throw LedgerAccountInvariantException::incompatibleExistingSystemAccount($role, 'concurrently created account violates invariants');
             }
         }
     }
