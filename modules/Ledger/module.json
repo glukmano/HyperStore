@@ -1,0 +1,10 @@
+{
+    "name": "Ledger",
+    "slug": "ledger",
+    "description": "HyperStore Ledger Bounded Context, Double-Entry General Ledger Foundation, and Financial Money Movement",
+    "version": "1.0.0",
+    "provider": "Modules\\Ledger\\LedgerServiceProvider",
+    "requires": ["payment"],
+    "order": 100,
+    "enabled": true
+}

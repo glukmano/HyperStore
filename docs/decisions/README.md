@@ -83,3 +83,11 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 - [ADR-0098: Zero-Total Order Internal Settlement Policy](ADR-0098-zero-total-order-internal-settlement-policy.md)
 - ADR-0099: *(Deferred: Payment Webhook Verification & Asynchronous Ingestion)*
 - [ADR-0100: PCI Boundary & Sensitive Payment Data Isolation](ADR-0100-pci-boundary-and-sensitive-payment-data-isolation.md)
+
+### Phase 10: Ledger / Financial Accounting Foundation
+- [ADR-0101: Ledger Bounded Context Ownership, Money-Movement Boundary & Deferred Revenue Recognition](ADR-0101-ledger-bounded-context-ownership-money-movement-and-deferred-revenue-recognition.md)
+- [ADR-0102: Double-Entry General Ledger, Append-Only Journals & PostgreSQL Immutability](ADR-0102-double-entry-general-ledger-append-only-journals-and-postgresql-immutability.md)
+- [ADR-0103: Transaction-Scoped Source Idempotency, Tenant Integrity & Reversal References](ADR-0103-transaction-scoped-source-idempotency-tenant-integrity-and-reversal-references.md)
+- [ADR-0104: Administrative Journal Reversal vs Commercial Refund Money Movement](ADR-0104-administrative-journal-reversal-vs-commercial-refund-money-movement.md)
+- [ADR-0105: Single-Currency Journal Balancing & Query-Time Balance Derivation](ADR-0105-single-currency-journal-balancing-and-query-time-balance-derivation.md)
+- [ADR-0106: Payment Event Snapshot Adapter, Eventual Consistency & Missing-Posting Recovery](ADR-0106-payment-event-snapshot-adapter-eventual-consistency-and-missing-posting-recovery.md)
