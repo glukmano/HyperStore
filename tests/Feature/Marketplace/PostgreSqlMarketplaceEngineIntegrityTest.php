@@ -233,8 +233,8 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
 
     public function test_postgres_partial_unique_index_rejects_second_active_owner(): void
     {
-        $user1 = User::factory()->create();
-        $user2 = User::factory()->create();
+        $user1 = User::factory()->create(['email' => 'owner_uniq1_'.uniqid().'@example.com']);
+        $user2 = User::factory()->create(['email' => 'owner_uniq2_'.uniqid().'@example.com']);
 
         VendorUser::create([
             'tenant_id' => $this->tenantA->id,

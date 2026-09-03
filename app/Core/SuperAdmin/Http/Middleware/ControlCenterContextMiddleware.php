@@ -31,22 +31,22 @@ final readonly class ControlCenterContextMiddleware
 
     public function handle(Request $request, Closure $next): Response
     {
-        /** @var ?User $user */
-        $user = $request->user();
-        if ($user === null) {
+        /** @var ?User $actor */
+        $actor = $request->user();
+        if ($actor === null) {
             throw UnauthorizedContextException::unauthenticated();
         }
 
         // 1. Check for Impersonation Token
         $impersonationToken = $request->header('X-Impersonation-Token');
         $impersonationSession = null;
-        $isAuthorizedImpersonator = false;
+        $isImpersonating = false;
 
         if ($impersonationToken !== null && is_string($impersonationToken) && trim($impersonationToken) !== '') {
             $impersonationSession = $this->impersonationService->authenticateToken($impersonationToken);
 
             // Verify authenticated actor matches impersonator
-            if ($user->id !== $impersonationSession->impersonator_user_id) {
+            if ($actor->id !== $impersonationSession->impersonator_user_id) {
                 throw UnauthorizedContextException::invalidContext('Authenticated user is not the authorized impersonator for this token.');
             }
 
@@ -57,17 +57,21 @@ final readonly class ControlCenterContextMiddleware
                 throw UnauthorizedContextException::invalidContext('Impersonation target user is not valid or active.');
             }
 
-            // Set effective user context to the target user
+            $effectiveUser = $targetUser;
+            $isImpersonating = true;
+
+            // Set effective user context to target user
             $this->contextManager->setUser(UserContext::from($targetUser->id, $targetUser->email));
-            $request->attributes->set('impersonator_user_id', $user->id);
+            $request->attributes->set('impersonator_user_id', $actor->id);
             $request->attributes->set('impersonation_session', $impersonationSession);
-            $isAuthorizedImpersonator = true;
         } else {
-            // Normal non-impersonated request: effective user is the authenticated actor
-            $this->contextManager->setUser(UserContext::from($user->id, $user->email));
+            $effectiveUser = $actor;
+            $this->contextManager->setUser(UserContext::from($actor->id, $actor->email));
         }
 
-        $isSuperAdmin = $user->isSuperAdmin();
+        // Effective Super Admin status: ONLY when NOT impersonating AND actor is Super Admin!
+        // An impersonated user NEVER inherits the impersonator's Super Admin privileges.
+        $effectiveIsSuperAdmin = ! $isImpersonating && $effectiveUser->isSuperAdmin();
 
         // 2. Resolve requested Tenant with strict containment under impersonation
         $rawTenant = $request->route('tenant') ?? $request->header('X-Tenant-Id');
@@ -78,8 +82,9 @@ final readonly class ControlCenterContextMiddleware
             $requestedTenantId = (int) $rawTenant;
         }
 
-        $tenantId = null;
-        if ($impersonationSession !== null && $impersonationSession->tenant_id !== null) {
+        // Upper-bound containment:
+        // If session specifies tenant_id, request cannot escape that tenant
+        if ($isImpersonating && $impersonationSession->tenant_id !== null) {
             if ($requestedTenantId !== null && $requestedTenantId !== $impersonationSession->tenant_id) {
                 throw UnauthorizedContextException::invalidContext("Requested Tenant [{$requestedTenantId}] does not match impersonation session Tenant [{$impersonationSession->tenant_id}].");
             }
@@ -95,14 +100,14 @@ final readonly class ControlCenterContextMiddleware
                 throw UnauthorizedContextException::invalidContext("Tenant [{$tenantId}] does not exist.");
             }
 
-            // Verify active tenant status (Super Admins are exempt to permit management and reactivation)
-            if (! $isSuperAdmin && ! $tenant->isActive()) {
+            // Verify active tenant status (Only non-impersonated Super Admins are exempt to manage/reactivate)
+            if (! $effectiveIsSuperAdmin && ! $tenant->isActive()) {
                 $statusVal = is_string($tenant->status) ? $tenant->status : $tenant->status->value;
                 throw TenantSuspendedException::forTenant($tenant->id, $statusVal);
             }
 
-            // Verify active tenant license (Super Admins are exempt to permit license management and overrides)
-            if (! $isSuperAdmin) {
+            // Verify active tenant license (Only non-impersonated Super Admins are exempt to manage/override)
+            if (! $effectiveIsSuperAdmin) {
                 /** @var ?TenantLicense $license */
                 $license = TenantLicense::where('tenant_id', $tenant->id)->first();
                 if ($license === null || ! $license->isActive()) {
@@ -111,11 +116,9 @@ final readonly class ControlCenterContextMiddleware
                 }
             }
 
-            // Verify membership in tenant (using target user if impersonating, otherwise actor)
-            $effectiveUserId = $impersonationSession !== null ? $impersonationSession->target_user_id : $user->id;
-            /** @var ?User $effectiveUser */
-            $effectiveUser = User::find($effectiveUserId);
-            if (! $isSuperAdmin && ! $isAuthorizedImpersonator && ($effectiveUser === null || ! $effectiveUser->isMemberOfTenant($tenant->id))) {
+            // Verify membership in tenant: EFFECTIVE USER must hold membership in tenant!
+            // (Only non-impersonated Super Admins are exempt)
+            if (! $effectiveIsSuperAdmin && ! $effectiveUser->isMemberOfTenant($tenant->id)) {
                 throw UnauthorizedContextException::invalidContext("User does not hold membership in Tenant [{$tenant->id}].");
             }
 
@@ -130,8 +133,7 @@ final readonly class ControlCenterContextMiddleware
                 $requestedStoreId = (int) $rawStore;
             }
 
-            $storeId = null;
-            if ($impersonationSession !== null && $impersonationSession->store_id !== null) {
+            if ($isImpersonating && $impersonationSession->store_id !== null) {
                 if ($requestedStoreId !== null && $requestedStoreId !== $impersonationSession->store_id) {
                     throw UnauthorizedContextException::invalidContext("Requested Store [{$requestedStoreId}] does not match impersonation session Store [{$impersonationSession->store_id}].");
                 }
@@ -158,8 +160,7 @@ final readonly class ControlCenterContextMiddleware
                 $requestedVendorId = (int) $rawVendor;
             }
 
-            $vendorId = null;
-            if ($impersonationSession !== null && $impersonationSession->vendor_id !== null) {
+            if ($isImpersonating && $impersonationSession->vendor_id !== null) {
                 if ($requestedVendorId !== null && $requestedVendorId !== $impersonationSession->vendor_id) {
                     throw UnauthorizedContextException::invalidContext("Requested Vendor [{$requestedVendorId}] does not match impersonation session Vendor [{$impersonationSession->vendor_id}].");
                 }
