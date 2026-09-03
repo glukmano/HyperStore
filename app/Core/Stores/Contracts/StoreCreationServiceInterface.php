@@ -11,5 +11,5 @@ interface StoreCreationServiceInterface
     /**
      * @param  array<string, mixed>  $attributes
      */
-    public function createStore(int $tenantId, array $attributes): Store;
+    public function createStore(int $tenantId, array $attributes, ?int $actorUserId = null): Store;
 }
