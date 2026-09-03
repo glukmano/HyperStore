@@ -6,6 +6,7 @@ namespace App\Core\SuperAdmin\Services;
 
 use App\Core\SuperAdmin\Contracts\TenantEntitlementServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
+use App\Core\SuperAdmin\Exceptions\TenantLicenseInactiveException;
 use App\Core\SuperAdmin\Exceptions\TenantLicenseOverrideException;
 use App\Core\SuperAdmin\Exceptions\TenantLicensePlanReassignmentException;
 use App\Core\SuperAdmin\Models\PlatformSaasPlan;
@@ -19,6 +20,26 @@ final readonly class TenantLicenseService implements TenantLicenseServiceInterfa
     public function __construct(
         private TenantEntitlementServiceInterface $entitlementService
     ) {}
+
+    public function assertActiveForTenant(int $tenantId): TenantLicense
+    {
+        /** @var ?TenantLicense $license */
+        $license = TenantLicense::with('plan')->where('tenant_id', $tenantId)->first();
+
+        if ($license === null) {
+            throw TenantLicenseInactiveException::forTenant($tenantId, 'missing');
+        }
+
+        if ($license->status !== 'active') {
+            throw TenantLicenseInactiveException::forTenant($tenantId, $license->status);
+        }
+
+        if ($license->valid_until !== null && $license->valid_until->isPast()) {
+            throw TenantLicenseInactiveException::forTenant($tenantId, 'expired');
+        }
+
+        return $license;
+    }
 
     public function assignLicense(
         int $tenantId,

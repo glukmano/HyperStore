@@ -5,15 +5,19 @@ declare(strict_types=1);
 namespace App\Core\SuperAdmin\Services;
 
 use App\Core\SuperAdmin\Contracts\TenantEntitlementServiceInterface;
+use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantResourceEntitlementGuardInterface;
 use App\Core\SuperAdmin\Exceptions\TenantResourceQuotaExceededException;
+use App\Core\SuperAdmin\Exceptions\TenantSuspendedException;
+use App\Core\Tenancy\Enums\TenantOperationalStatus;
 use App\Core\Tenancy\Models\Tenant;
 use Illuminate\Support\Facades\DB;
 
 final readonly class TenantResourceEntitlementGuard implements TenantResourceEntitlementGuardInterface
 {
     public function __construct(
-        private TenantEntitlementServiceInterface $entitlementService
+        private TenantEntitlementServiceInterface $entitlementService,
+        private TenantLicenseServiceInterface $licenseService
     ) {}
 
     public function admit(int $tenantId, string $resourceKey, callable $mutation): mixed
@@ -21,6 +25,13 @@ final readonly class TenantResourceEntitlementGuard implements TenantResourceEnt
         return DB::transaction(function () use ($tenantId, $resourceKey, $mutation) {
             /** @var Tenant $tenant */
             $tenant = Tenant::where('id', $tenantId)->lockForUpdate()->findOrFail($tenantId);
+
+            if (! $tenant->isActive()) {
+                $statusVal = $tenant->status instanceof TenantOperationalStatus ? $tenant->status->value : (string) $tenant->status;
+                throw TenantSuspendedException::forTenant($tenantId, $statusVal);
+            }
+
+            $this->licenseService->assertActiveForTenant($tenantId);
 
             $effectiveLimit = $this->entitlementService->getEffectiveLimit($tenantId, $resourceKey);
             $currentUsage = $this->entitlementService->getCurrentUsage($tenantId, $resourceKey);

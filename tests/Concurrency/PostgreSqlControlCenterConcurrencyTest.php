@@ -159,7 +159,7 @@ try {
         $tenantId = $this->tenant->id;
         $bootstrap = $this->getBootstrapScript();
 
-        // Worker 1: Super Admin suspends tenant
+        // Worker 1: Super Admin suspends tenant via production service
         $worker1 = "{$bootstrap}
 try {
     // __BARRIER_WAIT__
@@ -173,21 +173,13 @@ try {
 }
 ";
 
-        // Worker 2: Tenant Admin creates store under Tenant aggregate lock
+        // Worker 2: Tenant Admin creates store calling ONLY the production StoreCreationService
         $worker2 = "{$bootstrap}
 try {
     // __BARRIER_WAIT__
-    \$tenantId = {$tenantId};
-    DB::transaction(function () use (\$tenantId) {
-        \$tenant = \\App\\Core\\Tenancy\\Models\\Tenant::where('id', \$tenantId)->lockForUpdate()->firstOrFail();
-        if (! \$tenant->isActive()) {
-            \$st = \$tenant->status instanceof \\App\\Core\\Tenancy\\Enums\\TenantOperationalStatus ? \$tenant->status->value : (string) \$tenant->status;
-            throw \\App\\Core\\SuperAdmin\\Exceptions\\TenantSuspendedException::forTenant(\$tenantId, \$st);
-        }
-        \$svc = app(\\App\\Core\\Stores\\Contracts\\StoreCreationServiceInterface::class);
-        \$store = \$svc->createStore(\$tenantId, ['name' => 'Store Conc', 'slug' => 'st-conc-' . uniqid()]);
-        echo 'STORE_CREATED:' . \$store->id;
-    });
+    \$svc = app(\\App\\Core\\Stores\\Contracts\\StoreCreationServiceInterface::class);
+    \$store = \$svc->createStore({$tenantId}, ['name' => 'Store Conc', 'slug' => 'st-conc-' . uniqid()]);
+    echo 'STORE_CREATED:' . \$store->id;
     exit(0);
 } catch (\\App\\Core\\SuperAdmin\\Exceptions\\TenantSuspendedException \$e) {
     echo 'STORE_REJECTED_SUSPENDED:' . \$e->getMessage();
@@ -219,21 +211,13 @@ try {
         $userId = $this->targetUser->id;
         $bootstrap = $this->getBootstrapScript();
 
-        // Worker 1: Owner revokes staff role
+        // Worker 1: Owner revokes staff membership via production TenantMembershipService
         $worker1 = "{$bootstrap}
 try {
     // __BARRIER_WAIT__
-    \$tenantId = {$tenantId};
-    \$userId = {$userId};
-    DB::transaction(function () use (\$tenantId, \$userId) {
-        \$membership = \\App\\Core\\Tenancy\\Models\\TenantUser::where('tenant_id', \$tenantId)
-            ->where('user_id', \$userId)
-            ->lockForUpdate()
-            ->firstOrFail();
-        \$membership->is_active = false;
-        \$membership->save();
-        echo 'ROLE_REVOKED';
-    });
+    \$svc = app(\\App\\Core\\SuperAdmin\\Contracts\\TenantMembershipServiceInterface::class);
+    \$svc->revokeMembership({$tenantId}, {$userId});
+    echo 'ROLE_REVOKED';
     exit(0);
 } catch (\\Throwable \$e) {
     echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
@@ -241,26 +225,18 @@ try {
 }
 ";
 
-        // Worker 2: Admin creates store verifying membership under lock
+        // Worker 2: Admin creates store via production ContextualMutationAuthorizer
         $worker2 = "{$bootstrap}
 try {
     // __BARRIER_WAIT__
     \$tenantId = {$tenantId};
     \$userId = {$userId};
-    DB::transaction(function () use (\$tenantId, \$userId) {
-        \$membership = \\App\\Core\\Tenancy\\Models\\TenantUser::where('tenant_id', \$tenantId)
-            ->where('user_id', \$userId)
-            ->lockForUpdate()
-            ->firstOrFail();
-
-        if (! \$membership->is_active) {
-            throw \\App\\Core\\SuperAdmin\\Exceptions\\UnauthorizedContextException::invalidContext('Membership revoked');
-        }
-
-        \$svc = app(\\App\\Core\\Stores\\Contracts\\StoreCreationServiceInterface::class);
-        \$store = \$svc->createStore(\$tenantId, ['name' => 'Store Staff Conc', 'slug' => 'st-staff-' . uniqid()]);
-        echo 'OPERATION_COMMITTED:' . \$store->id;
+    \$authorizer = app(\\App\\Core\\SuperAdmin\\Contracts\\ContextualMutationAuthorizerInterface::class);
+    \$storeService = app(\\App\\Core\\Stores\\Contracts\\StoreCreationServiceInterface::class);
+    \$store = \$authorizer->executeTenantAuthorized({$tenantId}, {$userId}, 'admin', function () use (\$storeService, \$tenantId) {
+        return \$storeService->createStore({$tenantId}, ['name' => 'Store Staff Conc', 'slug' => 'st-staff-' . uniqid()]);
     });
+    echo 'OPERATION_COMMITTED:' . \$store->id;
     exit(0);
 } catch (\\App\\Core\\SuperAdmin\\Exceptions\\UnauthorizedContextException \$e) {
     echo 'OPERATION_BLOCKED:' . \$e->getMessage();

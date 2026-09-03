@@ -6,6 +6,7 @@ namespace App\Core\SuperAdmin;
 
 use App\Core\Stores\Contracts\StoreCreationServiceInterface;
 use App\Core\Stores\Services\StoreCreationService;
+use App\Core\SuperAdmin\Contracts\ContextualMutationAuthorizerInterface;
 use App\Core\SuperAdmin\Contracts\ImpersonationServiceInterface;
 use App\Core\SuperAdmin\Contracts\OfficialExtensionGovernanceServiceInterface;
 use App\Core\SuperAdmin\Contracts\PlatformHealthServiceInterface;
@@ -15,7 +16,9 @@ use App\Core\SuperAdmin\Contracts\PlatformSettingsServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantEntitlementServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantLifecycleServiceInterface;
+use App\Core\SuperAdmin\Contracts\TenantMembershipServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantResourceEntitlementGuardInterface;
+use App\Core\SuperAdmin\Services\ContextualMutationAuthorizer;
 use App\Core\SuperAdmin\Services\ImpersonationService;
 use App\Core\SuperAdmin\Services\OfficialExtensionGovernanceService;
 use App\Core\SuperAdmin\Services\PlatformHealthService;
@@ -25,6 +28,7 @@ use App\Core\SuperAdmin\Services\PlatformSettingsService;
 use App\Core\SuperAdmin\Services\TenantEntitlementService;
 use App\Core\SuperAdmin\Services\TenantLicenseService;
 use App\Core\SuperAdmin\Services\TenantLifecycleService;
+use App\Core\SuperAdmin\Services\TenantMembershipService;
 use App\Core\SuperAdmin\Services\TenantResourceEntitlementGuard;
 use Illuminate\Support\ServiceProvider;
 
@@ -43,5 +47,7 @@ class SuperAdminServiceProvider extends ServiceProvider
         $this->app->singleton(PlatformSettingsServiceInterface::class, PlatformSettingsService::class);
         $this->app->singleton(PlatformHealthServiceInterface::class, PlatformHealthService::class);
         $this->app->singleton(StoreCreationServiceInterface::class, StoreCreationService::class);
+        $this->app->singleton(ContextualMutationAuthorizerInterface::class, ContextualMutationAuthorizer::class);
+        $this->app->singleton(TenantMembershipServiceInterface::class, TenantMembershipService::class);
     }
 }

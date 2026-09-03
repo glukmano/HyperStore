@@ -132,19 +132,93 @@ class PostgreSqlDatabaseIntegrityTest extends TestCase
         $this->assertTrue($deleteBlocked, 'PostgreSQL trigger must reject DELETE on impersonation_events.');
     }
 
-    public function test_inactive_tenant_license_blocks_checkout_session_creation(): void
+    public function test_missing_tenant_license_blocks_checkout_session_creation(): void
     {
         $tenant = Tenant::create([
-            'name' => 'Inactive License Tenant',
-            'slug' => 'inact-lic-'.uniqid(),
+            'name' => 'No License Tenant',
+            'slug' => 'no-lic-'.uniqid(),
             'status' => 'active',
         ]);
 
-        // Suspend the auto-provisioned license
+        // Explicitly delete auto-provisioned license to simulate missing license
+        TenantLicense::where('tenant_id', $tenant->id)->delete();
+
+        $cart = $this->createTestCartForTenant($tenant);
+        $orchestrator = app(CheckoutOrchestratorInterface::class);
+
+        try {
+            $orchestrator->createFromCart($cart, 'idem-'.uniqid());
+            $this->fail('Expected TenantLicenseInactiveException was not thrown for missing license.');
+        } catch (TenantLicenseInactiveException $e) {
+            $this->assertStringContainsString('missing', $e->getMessage());
+        }
+    }
+
+    public function test_suspended_tenant_license_blocks_checkout_session_creation(): void
+    {
+        $tenant = Tenant::create([
+            'name' => 'Suspended License Tenant',
+            'slug' => 'susp-lic-'.uniqid(),
+            'status' => 'active',
+        ]);
+
         $license = TenantLicense::where('tenant_id', $tenant->id)->firstOrFail();
         $license->status = 'suspended';
         $license->save();
 
+        $cart = $this->createTestCartForTenant($tenant);
+        $orchestrator = app(CheckoutOrchestratorInterface::class);
+
+        try {
+            $orchestrator->createFromCart($cart, 'idem-'.uniqid());
+            $this->fail('Expected TenantLicenseInactiveException was not thrown for suspended license.');
+        } catch (TenantLicenseInactiveException $e) {
+            $this->assertStringContainsString('suspended', $e->getMessage());
+        }
+    }
+
+    public function test_expired_tenant_license_blocks_checkout_session_creation(): void
+    {
+        $tenant = Tenant::create([
+            'name' => 'Expired License Tenant',
+            'slug' => 'exp-lic-'.uniqid(),
+            'status' => 'active',
+        ]);
+
+        $license = TenantLicense::where('tenant_id', $tenant->id)->firstOrFail();
+        $license->valid_until = CarbonImmutable::now()->subMinute();
+        $license->save();
+
+        $cart = $this->createTestCartForTenant($tenant);
+        $orchestrator = app(CheckoutOrchestratorInterface::class);
+
+        try {
+            $orchestrator->createFromCart($cart, 'idem-'.uniqid());
+            $this->fail('Expected TenantLicenseInactiveException was not thrown for expired license.');
+        } catch (TenantLicenseInactiveException $e) {
+            $this->assertStringContainsString('expired', $e->getMessage());
+        }
+    }
+
+    public function test_active_tenant_license_permits_checkout_session_creation(): void
+    {
+        $tenant = Tenant::create([
+            'name' => 'Active License Tenant',
+            'slug' => 'act-lic-'.uniqid(),
+            'status' => 'active',
+        ]);
+
+        $cart = $this->createTestCartForTenant($tenant);
+        $orchestrator = app(CheckoutOrchestratorInterface::class);
+
+        $session = $orchestrator->createFromCart($cart, 'idem-'.uniqid());
+
+        $this->assertNotNull($session);
+        $this->assertSame($tenant->id, $session->tenant_id);
+    }
+
+    private function createTestCartForTenant(Tenant $tenant): Cart
+    {
         $store = Store::create([
             'tenant_id' => $tenant->id,
             'code' => 'ST_'.uniqid(),
@@ -190,14 +264,10 @@ class PostgreSqlDatabaseIntegrityTest extends TestCase
             'cart_id' => $cart->id,
             'product_id' => $product->id,
             'quantity' => 1,
-            'signature' => hash('sha256', 'test-line'),
+            'signature' => hash('sha256', 'test-line-'.uniqid()),
             'unit_price_minor' => 500,
         ]);
 
-        $orchestrator = app(CheckoutOrchestratorInterface::class);
-
-        $this->expectException(TenantLicenseInactiveException::class);
-
-        $orchestrator->createFromCart($cart, 'idem-'.uniqid());
+        return $cart;
     }
 }

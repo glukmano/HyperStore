@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace Modules\Checkout\Services;
 
 use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
-use App\Core\SuperAdmin\Exceptions\TenantLicenseInactiveException;
-use App\Core\SuperAdmin\Models\TenantLicense;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Modules\Cart\Contracts\CartServiceInterface;
@@ -35,7 +33,8 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
         private readonly CheckoutIdempotencyService $idempotencyService,
         private readonly CheckoutStateMachineService $stateMachine,
         private readonly CartServiceInterface $cartService,
-        private readonly CheckoutExpirationService $expirationService
+        private readonly CheckoutExpirationService $expirationService,
+        private readonly TenantLicenseServiceInterface $licenseService
     ) {}
 
     public function createFromCart(Cart $cart, ?string $idempotencyKey = null): CheckoutSession
@@ -59,13 +58,8 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 throw new RuntimeException('Cannot create CheckoutSession from empty Cart.');
             }
 
-            if (app()->bound(TenantLicenseServiceInterface::class)) {
-                /** @var ?TenantLicense $license */
-                $license = TenantLicense::where('tenant_id', $cart->tenant_id)->first();
-                if ($license !== null && ! $license->isActive()) {
-                    throw TenantLicenseInactiveException::forTenant($cart->tenant_id, $license->status);
-                }
-            }
+            // Authoritative license check: missing, suspended, or expired fails closed
+            $this->licenseService->assertActiveForTenant($cart->tenant_id);
 
             // In PostgreSQL, use advisory xact lock per (tenant, cart) to cleanly serialize concurrent creation
             if (DB::connection()->getDriverName() === 'pgsql') {
@@ -491,6 +485,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
     public function markReadyForOrder(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutReadyResult
     {
+        $this->licenseService->assertActiveForTenant($session->tenant_id);
         $this->expirationService->expireIfNeeded($session);
         $this->assertFreshCart($session);
 

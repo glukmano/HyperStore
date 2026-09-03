@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Order\Services;
 
+use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -51,6 +52,7 @@ class OrderCreationService implements OrderCreationServiceInterface
 
     public function createFromCheckout(OrderCreationDTO $dto): OrderCreationResultDTO
     {
+        app(TenantLicenseServiceInterface::class)->assertActiveForTenant($dto->tenantId);
         // 1. If idempotency key is provided, route through durable idempotency service for fingerprint enforcement
         if ($dto->idempotencyKey !== null && trim($dto->idempotencyKey) !== '') {
             $payload = [
