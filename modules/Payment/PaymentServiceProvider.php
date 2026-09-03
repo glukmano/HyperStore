@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Payment;
 
 use App\Core\Modular\ModuleServiceProvider;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Event;
 use Modules\Order\Events\OrderCancelled;
 use Modules\Payment\Contracts\PaymentConcurrencyBarrierInterface;
@@ -19,6 +20,7 @@ use Modules\Payment\Services\PaymentCaptureService;
 use Modules\Payment\Services\PaymentIdempotencyService;
 use Modules\Payment\Services\PaymentInitiationService;
 use Modules\Payment\Services\PaymentRefundService;
+use Modules\Payment\Services\PaymentTransactionReconciliationService;
 
 class PaymentServiceProvider extends ModuleServiceProvider
 {
@@ -32,15 +34,20 @@ class PaymentServiceProvider extends ModuleServiceProvider
         $this->app->singleton(PaymentConcurrencyBarrierInterface::class, NoOpPaymentConcurrencyBarrier::class);
         $this->app->singleton(PaymentIdempotencyServiceInterface::class, PaymentIdempotencyService::class);
 
-        $this->app->singleton(PaymentGatewayRegistryInterface::class, function (): PaymentGatewayRegistryInterface {
+        $this->app->singleton(PaymentGatewayRegistryInterface::class, function (Application $app): PaymentGatewayRegistryInterface {
             $registry = new PaymentGatewayRegistry;
-            $fakeGateway = new FakePaymentGateway;
-            $registry->register($fakeGateway);
-            $registry->setDefaultProvider('fake');
+
+            // FakePaymentGateway is strictly restricted to local and testing environments
+            if ($app->environment('local', 'testing')) {
+                $fakeGateway = new FakePaymentGateway;
+                $registry->register($fakeGateway);
+                $registry->setDefaultProvider('fake');
+            }
 
             return $registry;
         });
 
+        $this->app->singleton(PaymentTransactionReconciliationService::class);
         $this->app->singleton(PaymentInitiationService::class);
         $this->app->singleton(PaymentCaptureService::class);
         $this->app->singleton(PaymentRefundService::class);

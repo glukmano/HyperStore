@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Payment\Contracts\PaymentIdempotencyServiceInterface;
 use Modules\Payment\Exceptions\PaymentIdempotencyConflictException;
+use Modules\Payment\Exceptions\PaymentOperationInProgressException;
 use Modules\Payment\Exceptions\PaymentReconciliationPendingException;
 use Modules\Payment\Models\PaymentOperationKey;
 use Throwable;
@@ -74,7 +75,7 @@ class PaymentIdempotencyService implements PaymentIdempotencyServiceInterface
         string $idempotencyKey,
         string $requestHash
     ): PaymentOperationKey {
-        $findClaim = function () use ($tenantId, $orderId, $paymentId, $operationType, $idempotencyKey): ?PaymentOperationKey {
+        return DB::transaction(function () use ($tenantId, $orderId, $paymentId, $operationType, $idempotencyKey, $requestHash): PaymentOperationKey {
             $query = PaymentOperationKey::query()
                 ->where('tenant_id', $tenantId)
                 ->where('idempotency_key', $idempotencyKey)
@@ -86,73 +87,77 @@ class PaymentIdempotencyService implements PaymentIdempotencyServiceInterface
                 $query->where('payment_id', $paymentId);
             }
 
-            return $query->first();
-        };
+            /** @var PaymentOperationKey|null $claim */
+            $claim = $query->lockForUpdate()->first();
 
-        $wasExisting = false;
-        /** @var PaymentOperationKey|null $claim */
-        $claim = $findClaim();
+            if ($claim === null) {
+                try {
+                    $claim = DB::transaction(function () use ($tenantId, $orderId, $paymentId, $operationType, $idempotencyKey, $requestHash): PaymentOperationKey {
+                        return PaymentOperationKey::create([
+                            'tenant_id' => $tenantId,
+                            'idempotency_key' => $idempotencyKey,
+                            'operation_type' => $operationType,
+                            'order_id' => $orderId,
+                            'payment_id' => $paymentId,
+                            'request_hash' => $requestHash,
+                            'status' => 'started',
+                            'lease_expires_at' => now()->addMinutes(2),
+                        ]);
+                    });
 
-        if ($claim === null) {
-            try {
-                $claim = DB::transaction(function () use ($tenantId, $orderId, $paymentId, $operationType, $idempotencyKey, $requestHash, $findClaim): PaymentOperationKey {
-                    $existing = $findClaim();
-                    if ($existing !== null) {
-                        return $existing;
-                    }
-
-                    return PaymentOperationKey::create([
-                        'tenant_id' => $tenantId,
-                        'idempotency_key' => $idempotencyKey,
-                        'operation_type' => $operationType,
-                        'order_id' => $orderId,
-                        'payment_id' => $paymentId,
-                        'request_hash' => $requestHash,
-                        'status' => 'started',
-                        'lease_expires_at' => now()->addMinutes(2),
-                    ]);
-                });
-            } catch (Throwable) {
-                $wasExisting = true;
-                $claim = $findClaim();
-            }
-        } else {
-            $wasExisting = true;
-        }
-
-        if ($claim === null) {
-            throw PaymentIdempotencyConflictException::forConflict($idempotencyKey);
-        }
-
-        if ($claim->request_hash !== $requestHash) {
-            throw PaymentIdempotencyConflictException::forConflict($idempotencyKey);
-        }
-
-        if ($claim->status === 'completed') {
-            return $claim;
-        }
-
-        if ($claim->status === 'unknown') {
-            // Re-entry allowed for reconciliation
-            $claim->status = 'started';
-            $claim->lease_expires_at = now()->addMinutes(2);
-            $claim->save();
-
-            return $claim;
-        }
-
-        if ($wasExisting && $claim->status === 'started') {
-            for ($i = 0; $i < 60; $i++) {
-                usleep(50000); // 50ms
-                $polled = PaymentOperationKey::find($claim->id);
-                if ($polled !== null && in_array($polled->status, ['completed', 'unknown'], true)) {
-                    return $polled;
+                    return $claim;
+                } catch (Throwable) {
+                    $claim = $query->lockForUpdate()->first();
                 }
             }
 
-            throw new PaymentIdempotencyConflictException("Operation with idempotency key [{$idempotencyKey}] is already in progress.");
-        }
+            if ($claim === null) {
+                throw PaymentIdempotencyConflictException::forConflict($idempotencyKey);
+            }
 
-        return $claim;
+            if ($claim->request_hash !== $requestHash) {
+                throw PaymentIdempotencyConflictException::forConflict($idempotencyKey);
+            }
+
+            if ($claim->status === 'completed') {
+                return $claim;
+            }
+
+            if ($claim->status === 'unknown') {
+                // Re-entry allowed for reconciliation
+                $claim->status = 'started';
+                $claim->lease_expires_at = now()->addMinutes(2);
+                $claim->save();
+
+                return $claim;
+            }
+
+            if ($claim->status === 'failed') {
+                // Re-entry allowed for retry
+                $claim->status = 'started';
+                $claim->lease_expires_at = now()->addMinutes(2);
+                $claim->save();
+
+                return $claim;
+            }
+
+            if ($claim->status === 'started') {
+                $isExpired = $claim->lease_expires_at !== null && $claim->lease_expires_at->isPast();
+
+                if ($isExpired) {
+                    // Lease expired: safely reclaim under row lock
+                    $claim->status = 'started';
+                    $claim->lease_expires_at = now()->addMinutes(2);
+                    $claim->save();
+
+                    return $claim;
+                }
+
+                // Active lease owned by another request: throw deterministic in-progress exception without polling
+                throw PaymentOperationInProgressException::forKey($idempotencyKey);
+            }
+
+            return $claim;
+        });
     }
 }

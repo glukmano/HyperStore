@@ -55,7 +55,10 @@ class PaymentTransactionReconciliationService
         }
 
         // Only UNKNOWN (or ACTION_REQUIRED awaiting verification) may enter provider reconciliation.
-        $providerCode = $transaction->provider_code ?? 'fake';
+        $providerCode = $transaction->provider_code;
+        if ($providerCode === null) {
+            throw GatewayUnavailableException::forProvider('unknown');
+        }
         $gateway = $this->gatewayRegistry->get($providerCode);
 
         if (! $gateway instanceof PaymentGatewayReconciliationInterface || ! $gateway->supportsReconciliation()) {

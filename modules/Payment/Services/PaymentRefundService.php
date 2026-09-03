@@ -17,6 +17,7 @@ use Modules\Payment\Enums\PaymentTransactionStatus;
 use Modules\Payment\Events\PaymentPartiallyRefunded;
 use Modules\Payment\Events\PaymentRefunded;
 use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
+use Modules\Payment\Exceptions\GatewayUnavailableException;
 use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
 use Modules\Payment\Exceptions\OverRefundException;
 use Modules\Payment\Exceptions\PaymentNotFoundException;
@@ -113,7 +114,13 @@ class PaymentRefundService
                 ->latest('id')
                 ->first();
 
-            $providerCode = $captureTx instanceof PaymentTransaction && $captureTx->provider_code !== null ? $captureTx->provider_code : 'fake';
+            $providerCode = $captureTx?->provider_code;
+            if ($providerCode === null) {
+                if (! $this->gatewayRegistry->hasDefault()) {
+                    throw GatewayUnavailableException::forProvider('default');
+                }
+                $providerCode = $this->gatewayRegistry->default()->getProviderCode();
+            }
             $providerIdempotencyKey = "hyp_tx_{$locked->tenant_id}_{$locked->order_id}_{$opKey->id}";
 
             $transaction = PaymentTransaction::create([
@@ -145,7 +152,10 @@ class PaymentRefundService
         $this->concurrencyBarrier->wait('after_refund_pre_call_commit');
 
         // Remote gateway refund outside DB transaction
-        $providerCode = $transaction->provider_code ?? 'fake';
+        $providerCode = $transaction->provider_code;
+        if ($providerCode === null) {
+            throw GatewayUnavailableException::forProvider('unknown');
+        }
         $gateway = $this->gatewayRegistry->get($providerCode);
 
         $request = new GatewayRefundRequest(

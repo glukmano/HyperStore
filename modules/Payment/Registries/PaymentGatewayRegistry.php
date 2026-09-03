@@ -50,8 +50,17 @@ class PaymentGatewayRegistry implements PaymentGatewayRegistryInterface
         return $this->gateways[$this->defaultProvider];
     }
 
+    public function hasDefault(): bool
+    {
+        return $this->defaultProvider !== null && isset($this->gateways[$this->defaultProvider]);
+    }
+
     public function setDefaultProvider(string $providerCode): void
     {
+        if (! isset($this->gateways[$providerCode])) {
+            throw GatewayUnavailableException::forProvider($providerCode);
+        }
+
         $this->defaultProvider = $providerCode;
     }
 }

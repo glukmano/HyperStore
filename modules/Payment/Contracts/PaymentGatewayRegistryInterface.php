@@ -13,4 +13,8 @@ interface PaymentGatewayRegistryInterface
     public function has(string $providerCode): bool;
 
     public function default(): PaymentGatewayInterface;
+
+    public function hasDefault(): bool;
+
+    public function setDefaultProvider(string $providerCode): void;
 }

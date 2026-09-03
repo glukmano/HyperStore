@@ -22,6 +22,7 @@ use Modules\Payment\Events\PaymentAuthorized;
 use Modules\Payment\Events\PaymentCaptured;
 use Modules\Payment\Events\PaymentCreated;
 use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
+use Modules\Payment\Exceptions\GatewayUnavailableException;
 use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
 use Modules\Payment\Exceptions\OrderAlreadyCancelledException;
 use Modules\Payment\Exceptions\PaymentAmountMismatchException;
@@ -159,7 +160,13 @@ class PaymentInitiationService
      */
     private function handleGatewayPayment(InitiatePaymentDTO $dto, Order $order, PaymentOperationKey $opKey): array
     {
-        $providerCode = $dto->providerCode ?? 'fake';
+        $providerCode = $dto->providerCode;
+        if ($providerCode === null) {
+            if (! $this->gatewayRegistry->hasDefault()) {
+                throw GatewayUnavailableException::forProvider('default');
+            }
+            $providerCode = $this->gatewayRegistry->default()->getProviderCode();
+        }
         $gateway = $this->gatewayRegistry->get($providerCode);
 
         // 1. Pre-Call Phase under DB transaction

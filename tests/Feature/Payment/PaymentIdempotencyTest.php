@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace Tests\Feature\Payment;
 
 use Illuminate\Database\QueryException;
+use Modules\Payment\Contracts\PaymentGatewayRegistryInterface;
 use Modules\Payment\DTOs\InitiatePaymentDTO;
 use Modules\Payment\Enums\PaymentOperationType;
 use Modules\Payment\Enums\PaymentTransactionStatus;
 use Modules\Payment\Exceptions\PaymentIdempotencyConflictException;
+use Modules\Payment\Exceptions\PaymentOperationInProgressException;
 use Modules\Payment\Models\Payment;
 use Modules\Payment\Models\PaymentOperationKey;
 use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Providers\FakePaymentGateway;
 use Modules\Payment\Services\PaymentInitiationService;
 use Tests\TestCase;
 
@@ -26,6 +29,12 @@ class PaymentIdempotencyTest extends TestCase
         parent::setUp();
         $this->setUpPaymentTest();
         $this->service = app(PaymentInitiationService::class);
+
+        /** @var PaymentGatewayRegistryInterface $registry */
+        $registry = app(PaymentGatewayRegistryInterface::class);
+        /** @var FakePaymentGateway $fake */
+        $fake = $registry->get('fake');
+        $fake->reset();
     }
 
     public function test_same_idempotency_key_with_identical_payload_replays_cached_response(): void
@@ -81,6 +90,108 @@ class PaymentIdempotencyTest extends TestCase
 
         $this->expectException(PaymentIdempotencyConflictException::class);
         $this->service->initiatePayment($dto2);
+    }
+
+    public function test_active_lease_throws_payment_operation_in_progress_exception_without_polling(): void
+    {
+        $order = $this->createOrder(grandTotalMinor: 5000, currency: 'EUR');
+
+        $dto = new InitiatePaymentDTO(
+            tenantId: $this->tenant->id,
+            orderId: $order->id,
+            amountMinor: 5000,
+            currency: 'EUR',
+            providerCode: 'fake',
+            idempotencyKey: 'idem_in_progress_test'
+        );
+
+        // Pre-create an active lease currently held by another worker
+        $requestHash = hash('sha256', (string) json_encode([
+            'tenant_id' => $dto->tenantId,
+            'order_id' => $dto->orderId,
+            'amount_minor' => $dto->amountMinor,
+            'currency' => strtoupper($dto->currency),
+            'provider_code' => $dto->providerCode,
+            'payment_method_type' => $dto->paymentMethodType,
+            'payment_method_reference' => $dto->paymentMethodReference,
+            'capture_immediately' => $dto->captureImmediately,
+            'metadata' => $dto->metadata,
+        ]));
+
+        PaymentOperationKey::create([
+            'tenant_id' => $this->tenant->id,
+            'idempotency_key' => 'idem_in_progress_test',
+            'operation_type' => 'initiate_payment',
+            'order_id' => $order->id,
+            'payment_id' => null,
+            'request_hash' => $requestHash,
+            'status' => 'started',
+            'lease_expires_at' => now()->addMinute(),
+        ]);
+
+        // Second call with same active lease MUST throw PaymentOperationInProgressException immediately without polling
+        $this->expectException(PaymentOperationInProgressException::class);
+        $this->expectExceptionMessage('is currently in progress');
+
+        $this->service->initiatePayment($dto);
+    }
+
+    public function test_expired_lease_is_safely_reclaimed_by_subsequent_request(): void
+    {
+        $order = $this->createOrder(grandTotalMinor: 5000, currency: 'EUR');
+
+        $dto = new InitiatePaymentDTO(
+            tenantId: $this->tenant->id,
+            orderId: $order->id,
+            amountMinor: 5000,
+            currency: 'EUR',
+            providerCode: 'fake',
+            idempotencyKey: 'idem_expired_lease_test'
+        );
+
+        $requestHash = hash('sha256', (string) json_encode([
+            'tenant_id' => $dto->tenantId,
+            'order_id' => $dto->orderId,
+            'amount_minor' => $dto->amountMinor,
+            'currency' => strtoupper($dto->currency),
+            'provider_code' => $dto->providerCode,
+            'payment_method_type' => $dto->paymentMethodType,
+            'payment_method_reference' => $dto->paymentMethodReference,
+            'capture_immediately' => $dto->captureImmediately,
+            'metadata' => $dto->metadata,
+        ]));
+
+        // Pre-create an EXPIRED lease
+        PaymentOperationKey::create([
+            'tenant_id' => $this->tenant->id,
+            'idempotency_key' => 'idem_expired_lease_test',
+            'operation_type' => 'initiate_payment',
+            'order_id' => $order->id,
+            'payment_id' => null,
+            'request_hash' => $requestHash,
+            'status' => 'started',
+            'lease_expires_at' => now()->subMinutes(5), // expired
+        ]);
+
+        // Subsequent call safely reclaims the lease and completes
+        $result = $this->service->initiatePayment($dto);
+
+        $this->assertSame('captured', $result['status']);
+        $this->assertSame('success', $result['transaction_status']);
+
+        $opKey = PaymentOperationKey::where('idempotency_key', 'idem_expired_lease_test')->firstOrFail();
+        $this->assertSame('completed', $opKey->status);
+    }
+
+    public function test_grep_proves_zero_usleep_or_sleep_in_modules_payment(): void
+    {
+        $modulesPath = base_path('modules/Payment');
+
+        $output1 = shell_exec("grep -rn 'usleep' {$modulesPath}");
+        $output2 = shell_exec("grep -rn 'sleep(' {$modulesPath}");
+
+        $this->assertEmpty(trim((string) $output1), 'Found forbidden usleep in modules/Payment');
+        $this->assertEmpty(trim((string) $output2), 'Found forbidden sleep() in modules/Payment');
     }
 
     public function test_database_uniqueness_prevents_duplicate_transactions_for_same_operation_key(): void

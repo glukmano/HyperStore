@@ -17,6 +17,7 @@ use Modules\Payment\Enums\PaymentTransactionStatus;
 use Modules\Payment\Events\PaymentCancelled;
 use Modules\Payment\Events\PaymentReconciliationRequired;
 use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
+use Modules\Payment\Exceptions\GatewayUnavailableException;
 use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
 use Modules\Payment\Exceptions\PaymentNotFoundException;
 use Modules\Payment\Exceptions\PaymentReconciliationPendingException;
@@ -204,7 +205,13 @@ class PaymentCancellationService
                 ->latest('id')
                 ->first();
 
-            $providerCode = ($auth instanceof PaymentTransaction && $auth->provider_code !== null ? $auth->provider_code : 'fake');
+            $providerCode = $auth?->provider_code;
+            if ($providerCode === null) {
+                if (! $this->gatewayRegistry->hasDefault()) {
+                    throw GatewayUnavailableException::forProvider('default');
+                }
+                $providerCode = $this->gatewayRegistry->default()->getProviderCode();
+            }
             $providerIdempotencyKey = "hyp_tx_{$locked->tenant_id}_{$locked->order_id}_{$opKey->id}";
 
             $transaction = PaymentTransaction::create([
@@ -236,7 +243,10 @@ class PaymentCancellationService
         $this->concurrencyBarrier->wait('after_void_pre_call_commit');
 
         // Step 2: Remote gateway void outside DB transaction
-        $providerCode = $transaction->provider_code ?? 'fake';
+        $providerCode = $transaction->provider_code;
+        if ($providerCode === null) {
+            throw GatewayUnavailableException::forProvider('unknown');
+        }
         $gateway = $this->gatewayRegistry->get($providerCode);
 
         $request = new GatewayVoidRequest(

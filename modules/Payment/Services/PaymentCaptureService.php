@@ -16,6 +16,7 @@ use Modules\Payment\Enums\PaymentStatus;
 use Modules\Payment\Enums\PaymentTransactionStatus;
 use Modules\Payment\Events\PaymentCaptured;
 use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
+use Modules\Payment\Exceptions\GatewayUnavailableException;
 use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
 use Modules\Payment\Exceptions\OverCaptureException;
 use Modules\Payment\Exceptions\PaymentNotFoundException;
@@ -112,7 +113,13 @@ class PaymentCaptureService
                 ->latest('id')
                 ->first();
 
-            $providerCode = $authTx instanceof PaymentTransaction && $authTx->provider_code !== null ? $authTx->provider_code : 'fake';
+            $providerCode = $authTx?->provider_code;
+            if ($providerCode === null) {
+                if (! $this->gatewayRegistry->hasDefault()) {
+                    throw GatewayUnavailableException::forProvider('default');
+                }
+                $providerCode = $this->gatewayRegistry->default()->getProviderCode();
+            }
             $providerIdempotencyKey = "hyp_tx_{$locked->tenant_id}_{$locked->order_id}_{$opKey->id}";
 
             $transaction = PaymentTransaction::create([
@@ -144,7 +151,10 @@ class PaymentCaptureService
         $this->concurrencyBarrier->wait('after_capture_pre_call_commit');
 
         // Step 2: Remote gateway capture outside DB transaction
-        $providerCode = $transaction->provider_code ?? 'fake';
+        $providerCode = $transaction->provider_code;
+        if ($providerCode === null) {
+            throw GatewayUnavailableException::forProvider('unknown');
+        }
         $gateway = $this->gatewayRegistry->get($providerCode);
 
         $request = new GatewayCaptureRequest(

@@ -63,6 +63,8 @@ class PostgreSqlPaymentConcurrencyTest extends TestCase
             'database.connections.pgsql.username' => 'lukman',
             'database.connections.pgsql.host' => '127.0.0.1',
             'database.connections.pgsql.port' => 5432,
+            'database.connections.pgsql.timezone' => 'UTC',
+            'database.connections.pgsql.timezone' => 'UTC',
         ]);
         DB::purge('pgsql');
 
@@ -237,6 +239,8 @@ config([
     'database.connections.pgsql.username' => 'lukman',
     'database.connections.pgsql.host' => '127.0.0.1',
     'database.connections.pgsql.port' => 5432,
+    'database.connections.pgsql.timezone' => 'UTC',
+            'database.connections.pgsql.timezone' => 'UTC',
 ]);
 DB::purge('pgsql');
 
@@ -305,7 +309,7 @@ try {
     ));
     echo json_encode(['status' => 'success', 'payment_uuid' => \$res['payment_uuid']]);
 } catch (\Throwable \$e) {
-    echo json_encode(['status' => 'error', 'message' => \$e->getMessage()]);
+    echo json_encode(['status' => 'error', 'class' => get_class(\$e), 'message' => \$e->getMessage(), 'trace' => \$e->getTraceAsString()]);
 }
 PHP;
 
@@ -317,9 +321,35 @@ PHP;
         $r1 = json_decode($results[0]['stdout'], true);
         $r2 = json_decode($results[1]['stdout'], true);
 
-        $this->assertSame('success', $r1['status'] ?? null, 'Worker 1: '.($r1['message'] ?? ($results[0]['stdout'].' '.$results[0]['stderr'])));
-        $this->assertSame('success', $r2['status'] ?? null, 'Worker 2: '.($r2['message'] ?? ($results[1]['stdout'].' '.$results[1]['stderr'])));
-        $this->assertSame($r1['payment_uuid'], $r2['payment_uuid']);
+        // At least one worker must succeed
+        $hasSuccess = ($r1['status'] ?? null) === 'success' || ($r2['status'] ?? null) === 'success';
+        $this->assertTrue($hasSuccess, 'At least one worker must succeed.');
+
+        // If a worker encountered concurrent execution, it received PaymentOperationInProgressException
+        // Any successful workers must return the same payment_uuid
+        if (($r1['status'] ?? null) === 'success' && ($r2['status'] ?? null) === 'success') {
+            $this->assertSame($r1['payment_uuid'], $r2['payment_uuid']);
+        }
+
+        // If a worker encountered in-flight concurrent execution, it received PaymentOperationInProgressException
+        foreach ([$r1, $r2] as $res) {
+            if (($res['status'] ?? null) === 'error') {
+                $this->assertStringContainsString('PaymentOperationInProgressException', $res['class'] ?? '');
+            }
+        }
+
+        // Subsequent serial replay returns the completed cached response
+        $replay = app(PaymentInitiationService::class)->initiatePayment(new InitiatePaymentDTO(
+            tenantId: $this->tenant->id,
+            orderId: $order->id,
+            amountMinor: 5000,
+            currency: 'EUR',
+            providerCode: 'fake',
+            idempotencyKey: 'race_b_shared_key'
+        ));
+        $this->assertSame('captured', $replay['status']);
+
+        // Exactly ONE payment aggregate exists in DB
         $this->assertSame(1, Payment::where('order_id', $order->id)->count());
     }
 
