@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Ledger\Services;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Ledger\Contracts\LedgerAccountRegistryInterface;
@@ -19,27 +20,25 @@ class LedgerAccountRegistry implements LedgerAccountRegistryInterface
 {
     public function ensureRequiredSystemAccounts(int $tenantId): void
     {
-        DB::transaction(function () use ($tenantId): void {
-            $this->ensureAccount(
-                tenantId: $tenantId,
-                role: SystemAccountRole::PAYMENT_CLEARING->value,
-                code: 'payment_clearing',
-                name: 'Payment Gateway Clearing',
-                type: AccountType::ASSET->value,
-                normalBalance: NormalBalance::DEBIT->value,
-                description: 'Clearing account for customer funds captured via payment gateways'
-            );
+        $this->ensureAccount(
+            tenantId: $tenantId,
+            role: SystemAccountRole::PAYMENT_CLEARING->value,
+            code: 'payment_clearing',
+            name: 'Payment Gateway Clearing',
+            type: AccountType::ASSET->value,
+            normalBalance: NormalBalance::DEBIT->value,
+            description: 'Clearing account for customer funds captured via payment gateways'
+        );
 
-            $this->ensureAccount(
-                tenantId: $tenantId,
-                role: SystemAccountRole::CUSTOMER_FUNDS_LIABILITY->value,
-                code: 'customer_funds_liability',
-                name: 'Customer Funds Liability',
-                type: AccountType::LIABILITY->value,
-                normalBalance: NormalBalance::CREDIT->value,
-                description: 'Unallocated customer funds liability prior to commercial revenue recognition'
-            );
-        });
+        $this->ensureAccount(
+            tenantId: $tenantId,
+            role: SystemAccountRole::CUSTOMER_FUNDS_LIABILITY->value,
+            code: 'customer_funds_liability',
+            name: 'Customer Funds Liability',
+            type: AccountType::LIABILITY->value,
+            normalBalance: NormalBalance::CREDIT->value,
+            description: 'Unallocated customer funds liability prior to commercial revenue recognition'
+        );
     }
 
     public function getAccountByRole(int $tenantId, SystemAccountRole|string $role): LedgerAccount
@@ -80,24 +79,34 @@ class LedgerAccountRegistry implements LedgerAccountRegistryInterface
 
         $now = CarbonImmutable::now('UTC');
 
-        LedgerAccount::withoutGlobalScopes()->firstOrCreate(
-            [
-                'tenant_id' => $tenantId,
-                'role' => $role,
-            ],
-            [
-                'uuid' => (string) Str::uuid(),
-                'code' => $code,
-                'name' => $name,
-                'type' => $type,
-                'normal_balance' => $normalBalance,
-                'currency' => null,
-                'is_system' => true,
-                'status' => AccountStatus::ACTIVE->value,
-                'description' => $description,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]
-        );
+        try {
+            DB::transaction(function () use ($tenantId, $role, $code, $name, $type, $normalBalance, $description, $now): void {
+                LedgerAccount::withoutGlobalScopes()->create([
+                    'uuid' => (string) Str::uuid(),
+                    'tenant_id' => $tenantId,
+                    'code' => $code,
+                    'name' => $name,
+                    'type' => $type,
+                    'normal_balance' => $normalBalance,
+                    'role' => $role,
+                    'currency' => null,
+                    'is_system' => true,
+                    'status' => AccountStatus::ACTIVE->value,
+                    'description' => $description,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ]);
+            });
+        } catch (QueryException $e) {
+            // Concurrent race condition: if another worker created the account concurrently, check existence
+            $exists = LedgerAccount::withoutGlobalScopes()
+                ->where('tenant_id', $tenantId)
+                ->where('role', $role)
+                ->exists();
+
+            if (! $exists) {
+                throw $e;
+            }
+        }
     }
 }

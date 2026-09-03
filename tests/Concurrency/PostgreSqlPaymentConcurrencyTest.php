@@ -13,6 +13,7 @@ use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\ReferenceDataSeeder;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Cart\Models\Cart;
@@ -71,6 +72,7 @@ class PostgreSqlPaymentConcurrencyTest extends TestCase
         $this->seed(ReferenceDataSeeder::class);
 
         $this->tenant = Tenant::create(['name' => 'Concurrent Tenant', 'slug' => 'concurrent-'.uniqid(), 'status' => 'active']);
+        Artisan::call('ledger:provision-system-accounts', ['--tenant' => $this->tenant->id]);
         $this->market = Market::create([
             'tenant_id' => $this->tenant->id,
             'name' => 'Concurrent Market',

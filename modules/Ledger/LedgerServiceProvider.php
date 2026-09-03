@@ -7,6 +7,7 @@ namespace Modules\Ledger;
 use App\Core\Modular\ModuleServiceProvider;
 use Illuminate\Support\Facades\Event;
 use Modules\Ledger\Commands\AuditUnpostedPaymentTransactionsCommand;
+use Modules\Ledger\Commands\ProvisionSystemAccountsCommand;
 use Modules\Ledger\Commands\ReplayUnpostedPaymentTransactionsCommand;
 use Modules\Ledger\Contracts\AccountBalanceQueryInterface;
 use Modules\Ledger\Contracts\JournalReversalServiceInterface;
@@ -44,6 +45,7 @@ class LedgerServiceProvider extends ModuleServiceProvider
             $this->commands([
                 AuditUnpostedPaymentTransactionsCommand::class,
                 ReplayUnpostedPaymentTransactionsCommand::class,
+                ProvisionSystemAccountsCommand::class,
             ]);
         }
     }

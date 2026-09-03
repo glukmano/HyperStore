@@ -28,6 +28,7 @@ class LedgerImmutabilityAndSecurityTest extends TestCase
     {
         parent::setUp();
         $this->setUpLedgerTest();
+        $this->provisionSystemAccounts();
     }
 
     public function test_eloquent_model_hooks_reject_mutation_before_sql(): void

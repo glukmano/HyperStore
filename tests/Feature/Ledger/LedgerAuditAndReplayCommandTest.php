@@ -15,6 +15,7 @@ class LedgerAuditAndReplayCommandTest extends TestCase
     {
         parent::setUp();
         $this->setUpLedgerTest();
+        $this->provisionSystemAccounts();
     }
 
     public function test_audit_detects_unposted_eligible_transaction_without_mutating_data(): void

@@ -90,14 +90,15 @@ return new class extends Migration
             $table->index(['tenant_id', 'ledger_account_id', 'currency'], 'idx_journal_lines_tenant_account');
         });
 
-        // 4. PostgreSQL Specific Constraints, Partial Indexes and Immutability Triggers
+        // Partial unique indexes (supported on PostgreSQL and SQLite)
+        DB::statement('CREATE UNIQUE INDEX uq_ledger_accounts_tenant_role ON ledger_accounts (tenant_id, role) WHERE role IS NOT NULL');
+        DB::statement('CREATE UNIQUE INDEX uq_journal_reversals ON journal_entries (tenant_id, reverses_journal_entry_id) WHERE reverses_journal_entry_id IS NOT NULL');
+
+        // 4. PostgreSQL Specific Constraints and Immutability Triggers
         if (DB::getDriverName() === 'pgsql') {
             DB::statement("ALTER TABLE ledger_accounts ADD CONSTRAINT chk_ledger_accounts_type CHECK (type IN ('asset', 'liability', 'equity', 'revenue', 'expense'))");
             DB::statement("ALTER TABLE ledger_accounts ADD CONSTRAINT chk_ledger_accounts_normal_balance CHECK (normal_balance IN ('debit', 'credit'))");
             DB::statement("ALTER TABLE ledger_accounts ADD CONSTRAINT chk_ledger_accounts_status CHECK (status IN ('active', 'archived'))");
-            DB::statement('CREATE UNIQUE INDEX uq_ledger_accounts_tenant_role ON ledger_accounts (tenant_id, role) WHERE role IS NOT NULL');
-
-            DB::statement('CREATE UNIQUE INDEX uq_journal_reversals ON journal_entries (tenant_id, reverses_journal_entry_id) WHERE reverses_journal_entry_id IS NOT NULL');
 
             DB::statement("ALTER TABLE journal_lines ADD CONSTRAINT chk_journal_lines_direction CHECK (direction IN ('debit', 'credit'))");
             DB::statement('ALTER TABLE journal_lines ADD CONSTRAINT chk_journal_lines_amount_positive CHECK (amount_minor > 0)');

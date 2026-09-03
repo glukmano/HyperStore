@@ -14,6 +14,7 @@ use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Str;
 use Modules\Cart\Models\Cart;
 use Modules\Checkout\Models\CheckoutSession;
@@ -40,6 +41,7 @@ trait PaymentTestCaseTrait
         $this->seed(ReferenceDataSeeder::class);
 
         $this->tenant = Tenant::create(['name' => 'Payment Tenant', 'slug' => 'payment-tenant-'.uniqid(), 'status' => 'active']);
+        Artisan::call('ledger:provision-system-accounts', ['--tenant' => $this->tenant->id]);
         $this->market = Market::create([
             'tenant_id' => $this->tenant->id,
             'name' => 'Payment Market',

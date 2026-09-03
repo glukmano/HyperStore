@@ -28,6 +28,7 @@ class PaymentMovementPostingTest extends TestCase
     {
         parent::setUp();
         $this->setUpLedgerTest();
+        $this->provisionSystemAccounts();
     }
 
     public function test_payment_captured_synchronous_adapter_dispatches_queued_job_with_scalar_dto(): void

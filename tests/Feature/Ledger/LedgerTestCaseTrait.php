@@ -17,6 +17,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Modules\Cart\Models\Cart;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Ledger\Contracts\LedgerAccountRegistryInterface;
 use Modules\Order\Models\Order;
 use Modules\Payment\Models\Payment;
 use Modules\Payment\Models\PaymentTransaction;
@@ -72,6 +73,12 @@ trait LedgerTestCaseTrait
 
         $this->contextManager = app(ContextManager::class);
         $this->contextManager->setTenant(TenantContext::from($this->tenant->id));
+    }
+
+    protected function provisionSystemAccounts(?int $tenantId = null): void
+    {
+        $targetTenantId = $tenantId ?? (int) $this->tenant->id;
+        app(LedgerAccountRegistryInterface::class)->ensureRequiredSystemAccounts($targetTenantId);
     }
 
     protected function createOrder(int $grandTotalMinor = 5000, string $currency = 'EUR'): Order

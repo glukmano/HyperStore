@@ -24,6 +24,7 @@ class JournalReversalTest extends TestCase
     {
         parent::setUp();
         $this->setUpLedgerTest();
+        $this->provisionSystemAccounts();
     }
 
     public function test_reversal_creates_inverse_lines_and_links_to_original_without_mutating_original(): void

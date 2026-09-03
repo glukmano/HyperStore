@@ -45,8 +45,7 @@ class PostPaymentFinancialMovementJob implements ShouldQueue
 
         $postingType = $eligibilityPolicy->resolvePostingType($this->movement->operationType);
 
-        $accountRegistry->ensureRequiredSystemAccounts($this->movement->tenantId);
-
+        // Fail-closed resolution of required system accounts (no implicit provisioning during posting)
         $paymentClearing = $accountRegistry->getAccountByRole(
             $this->movement->tenantId,
             SystemAccountRole::PAYMENT_CLEARING
