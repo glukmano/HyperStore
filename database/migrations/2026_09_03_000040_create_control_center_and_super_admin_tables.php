@@ -114,6 +114,13 @@ return new class extends Migration
             $table->index(['target_user_id', 'status']);
         });
 
+        // Partial unique index: strictly prevent more than one active session per impersonator
+        DB::statement("
+            CREATE UNIQUE INDEX unique_active_impersonation_per_impersonator 
+            ON impersonation_sessions (impersonator_user_id) 
+            WHERE status = 'active'
+        ");
+
         // 8. impersonation_events
         Schema::create('impersonation_events', function (Blueprint $table): void {
             $table->id();
@@ -155,6 +162,8 @@ return new class extends Migration
             DB::statement('DROP TRIGGER IF EXISTS trg_prevent_impersonation_events_mutation ON impersonation_events;');
             DB::statement('DROP FUNCTION IF EXISTS prevent_impersonation_events_mutation();');
         }
+
+        DB::statement('DROP INDEX IF EXISTS unique_active_impersonation_per_impersonator;');
 
         Schema::dropIfExists('impersonation_events');
         Schema::dropIfExists('impersonation_sessions');

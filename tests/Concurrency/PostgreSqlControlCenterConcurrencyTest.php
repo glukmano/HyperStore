@@ -8,6 +8,7 @@ use App\Core\Stores\Contracts\StoreCreationServiceInterface;
 use App\Core\Stores\Models\Store;
 use App\Core\SuperAdmin\Contracts\ImpersonationServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
+use App\Core\SuperAdmin\Models\ImpersonationSession;
 use App\Core\SuperAdmin\Models\PlatformSaasPlan;
 use App\Core\Tenancy\Enums\TenantOperationalStatus;
 use App\Core\Tenancy\Models\Tenant;
@@ -103,18 +104,17 @@ class PostgreSqlControlCenterConcurrencyTest extends TestCase
         $bootstrap = $this->getBootstrapScript();
         $sessionUuid = $session->uuid;
 
-        // Worker 1: Authenticates token inside transaction and locks session
+        // Worker 1: Atomic executeAuthorized inside production service boundary
         $worker1 = "{$bootstrap}
 try {
     // __BARRIER_WAIT__
     \$token = '{$token}';
-    DB::transaction(function () use (\$token) {
-        \$svc = app(\\App\\Core\\SuperAdmin\\Contracts\\ImpersonationServiceInterface::class);
-        \$authSession = \$svc->authenticateToken(\$token);
-        // Simulate critical section work
+    \$svc = app(\\App\\Core\\SuperAdmin\\Contracts\\ImpersonationServiceInterface::class);
+    \$output = \$svc->executeAuthorized(\$token, 'update_store_settings', function (\$authSession) {
         usleep(50000);
-        echo 'ACTION_SUCCESS:' . \$authSession->id;
+        return 'ACTION_SUCCESS:' . \$authSession->id;
     });
+    echo \$output;
     exit(0);
 } catch (\\App\\Core\\SuperAdmin\\Exceptions\\ImpersonationRevokedException \$e) {
     echo 'ACTION_REVOKED:' . \$e->getMessage();
@@ -125,7 +125,7 @@ try {
 }
 ";
 
-        // Worker 2: Revokes impersonation session
+        // Worker 2: Revokes impersonation session under row lock
         $worker2 = "{$bootstrap}
 try {
     // __BARRIER_WAIT__
@@ -351,6 +351,79 @@ try {
             $finalLimit === 4 && $finalStoreCount === 5,
             'FORBIDDEN INVARIANT: SaaS plan limit was committed to 4 while committed usage is 5 stores.'
         );
+    }
+
+    public function test_race_e_concurrent_start_session_by_same_impersonator(): void
+    {
+        $impersonatorId = $this->adminUser->id;
+        $targetId1 = $this->targetUser->id;
+
+        $targetUser2 = User::create([
+            'name' => 'Target User 2',
+            'email' => 'tgt2_'.uniqid().'@test.com',
+            'password' => bcrypt('secret123'),
+            'status' => 'active',
+            'is_super_admin' => false,
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+
+        // Worker 1: Attempts to start session targeting target 1
+        $worker1 = "{$bootstrap}
+try {
+    // __BARRIER_WAIT__
+    \$svc = app(\\App\\Core\\SuperAdmin\\Contracts\\ImpersonationServiceInterface::class);
+    \$res = \$svc->startSession({$impersonatorId}, {$targetId1}, null, null, null, 'Worker 1 inspection', '127.0.0.1', 'Worker 1');
+    echo 'START_SUCCESS:' . \$res['session']->id;
+    exit(0);
+} catch (\\App\\Core\\SuperAdmin\\Exceptions\\NestedImpersonationForbiddenException \$e) {
+    echo 'START_REJECTED_NESTED:' . \$e->getMessage();
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        // Worker 2: Concurrent start session by same impersonator targeting target 2
+        $targetId2 = $targetUser2->id;
+        $worker2 = "{$bootstrap}
+try {
+    // __BARRIER_WAIT__
+    \$svc = app(\\App\\Core\\SuperAdmin\\Contracts\\ImpersonationServiceInterface::class);
+    \$res = \$svc->startSession({$impersonatorId}, {$targetId2}, null, null, null, 'Worker 2 inspection', '127.0.0.1', 'Worker 2');
+    echo 'START_SUCCESS:' . \$res['session']->id;
+    exit(0);
+} catch (\\App\\Core\\SuperAdmin\\Exceptions\\NestedImpersonationForbiddenException \$e) {
+    echo 'START_REJECTED_NESTED:' . \$e->getMessage();
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        $results = $this->executeConcurrently([$worker1, $worker2]);
+
+        $this->assertSame(0, $results[0]['exit_code'], 'Worker 1 error: '.($results[0]['stdout'] ?: $results[0]['stderr']));
+        $this->assertSame(0, $results[1]['exit_code'], 'Worker 2 error: '.($results[1]['stdout'] ?: $results[1]['stderr']));
+
+        $outcome1 = str_starts_with($results[0]['stdout'], 'START_SUCCESS:');
+        $outcome2 = str_starts_with($results[1]['stdout'], 'START_SUCCESS:');
+
+        // Exactly one must succeed and exactly one must fail with NestedImpersonationForbiddenException
+        $this->assertTrue(
+            ($outcome1 && ! $outcome2 && str_starts_with($results[1]['stdout'], 'START_REJECTED_NESTED:')) ||
+            ($outcome2 && ! $outcome1 && str_starts_with($results[0]['stdout'], 'START_REJECTED_NESTED:')),
+            'Must serialize: exactly one startSession succeeds and the concurrent competitor is rejected.'
+        );
+
+        // Database partial unique index verification: exactly one active session exists
+        $activeSessionsCount = ImpersonationSession::where('impersonator_user_id', $impersonatorId)
+            ->where('status', 'active')
+            ->count();
+
+        $this->assertSame(1, $activeSessionsCount, 'PostgreSQL partial unique constraint holds: exactly one active session exists.');
     }
 
     /**

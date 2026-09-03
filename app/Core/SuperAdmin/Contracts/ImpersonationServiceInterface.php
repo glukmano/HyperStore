@@ -24,6 +24,18 @@ interface ImpersonationServiceInterface
 
     public function authenticateToken(string $token): ImpersonationSession;
 
+    /**
+     * Executes an authorized mutating operation within an atomic critical section.
+     * Locks the ImpersonationSession row FOR UPDATE, asserts active/unexpired state,
+     * checks action safety boundaries, and commits atomically.
+     *
+     * @template T
+     *
+     * @param  callable(ImpersonationSession): T  $callback
+     * @return T
+     */
+    public function executeAuthorized(string $token, string $action, callable $callback): mixed;
+
     public function revokeSession(string $sessionUuid, string $reason, ?int $actorId = null): ImpersonationSession;
 
     public function terminateSession(string $sessionUuid, string $reason, ?int $actorId = null): ImpersonationSession;

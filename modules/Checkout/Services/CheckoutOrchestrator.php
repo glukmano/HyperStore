@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Modules\Checkout\Services;
 
+use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
+use App\Core\SuperAdmin\Exceptions\TenantLicenseInactiveException;
+use App\Core\SuperAdmin\Models\TenantLicense;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Modules\Cart\Contracts\CartServiceInterface;
@@ -54,6 +57,14 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
         $createSession = function () use ($cart, $findExisting): array {
             if ($cart->lines()->count() === 0) {
                 throw new RuntimeException('Cannot create CheckoutSession from empty Cart.');
+            }
+
+            if (app()->bound(TenantLicenseServiceInterface::class)) {
+                /** @var ?TenantLicense $license */
+                $license = TenantLicense::where('tenant_id', $cart->tenant_id)->first();
+                if ($license !== null && ! $license->isActive()) {
+                    throw TenantLicenseInactiveException::forTenant($cart->tenant_id, $license->status);
+                }
             }
 
             // In PostgreSQL, use advisory xact lock per (tenant, cart) to cleanly serialize concurrent creation
