@@ -21,10 +21,6 @@ class PaymentGatewayRegistry implements PaymentGatewayRegistryInterface
     {
         $code = $gateway->getProviderCode();
         $this->gateways[$code] = $gateway;
-
-        if ($this->defaultProvider === null) {
-            $this->defaultProvider = $code;
-        }
     }
 
     public function get(string $providerCode): PaymentGatewayInterface

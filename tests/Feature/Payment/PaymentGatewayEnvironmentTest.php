@@ -10,6 +10,7 @@ use Modules\Payment\Exceptions\GatewayUnavailableException;
 use Modules\Payment\Models\Payment;
 use Modules\Payment\Models\PaymentTransaction;
 use Modules\Payment\PaymentServiceProvider;
+use Modules\Payment\Providers\FakePaymentGateway;
 use Modules\Payment\Registries\PaymentGatewayRegistry;
 use Modules\Payment\Services\PaymentCancellationService;
 use Modules\Payment\Services\PaymentCaptureService;
@@ -26,6 +27,90 @@ class PaymentGatewayEnvironmentTest extends TestCase
     {
         parent::setUp();
         $this->setUpPaymentTest();
+    }
+
+    public function test_registration_does_not_implicitly_create_default_provider(): void
+    {
+        $registry = new PaymentGatewayRegistry;
+        $gateway = new FakePaymentGateway;
+
+        $registry->register($gateway);
+
+        $this->assertTrue($registry->has('fake'));
+        $this->assertFalse($registry->hasDefault(), 'register() must NOT implicitly configure a default provider.');
+
+        $this->expectException(GatewayUnavailableException::class);
+        $registry->default();
+    }
+
+    public function test_explicit_set_default_provider_configures_default(): void
+    {
+        $registry = new PaymentGatewayRegistry;
+        $gateway = new FakePaymentGateway;
+
+        $registry->register($gateway);
+        $registry->setDefaultProvider('fake');
+
+        $this->assertTrue($registry->hasDefault());
+        $this->assertSame($gateway, $registry->default());
+    }
+
+    public function test_multiple_gateway_registrations_without_set_default_provider_leaves_default_empty(): void
+    {
+        $registry = new PaymentGatewayRegistry;
+        $gatewayA = new FakePaymentGateway;
+        $registry->register($gatewayA);
+
+        $this->assertFalse($registry->hasDefault());
+    }
+
+    public function test_production_registry_with_providers_but_no_default_fails_closed_when_provider_is_null(): void
+    {
+        // Registry contains a registered provider, but NO default has explicitly been configured
+        $registry = new PaymentGatewayRegistry;
+        $registry->register(new FakePaymentGateway);
+        $this->app->instance(PaymentGatewayRegistryInterface::class, $registry);
+
+        $order = $this->createOrder(grandTotalMinor: 5000, currency: 'EUR');
+
+        $dto = new InitiatePaymentDTO(
+            tenantId: $this->tenant->id,
+            orderId: $order->id,
+            amountMinor: 5000,
+            currency: 'EUR',
+            providerCode: null // no provider selected
+        );
+
+        $service = app(PaymentInitiationService::class);
+
+        $this->expectException(GatewayUnavailableException::class);
+        $this->expectExceptionMessage('default');
+
+        $service->initiatePayment($dto);
+    }
+
+    public function test_explicit_provider_code_succeeds_even_without_default_provider(): void
+    {
+        // Registry has a provider registered, but hasDefault() is false
+        $registry = new PaymentGatewayRegistry;
+        $registry->register(new FakePaymentGateway);
+        $this->app->instance(PaymentGatewayRegistryInterface::class, $registry);
+
+        $order = $this->createOrder(grandTotalMinor: 5000, currency: 'EUR');
+
+        $dto = new InitiatePaymentDTO(
+            tenantId: $this->tenant->id,
+            orderId: $order->id,
+            amountMinor: 5000,
+            currency: 'EUR',
+            providerCode: 'fake' // explicit provider
+        );
+
+        $service = app(PaymentInitiationService::class);
+
+        $result = $service->initiatePayment($dto);
+        $this->assertSame('captured', $result['status']);
+        $this->assertSame('success', $result['transaction_status']);
     }
 
     public function test_fake_payment_gateway_is_not_registered_in_production(): void
