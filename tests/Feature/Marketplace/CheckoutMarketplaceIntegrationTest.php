@@ -65,6 +65,7 @@ class CheckoutMarketplaceIntegrationTest extends TestCase
             'settings' => [
                 'marketplace' => [
                     'commercial_model' => 'platform_as_merchant_of_record',
+                    'payable_hold_days' => 14,
                 ],
             ],
         ]);

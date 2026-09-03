@@ -793,4 +793,157 @@ try {
         $count = VendorPayableEntry::where('tenant_id', $tenantId)->where('source_uuid', $sourceUuid)->count();
         $this->assertSame(1, $count);
     }
+
+    public function test_race_payout_request_vs_vendor_suspension(): void
+    {
+        $vendorForSuspension = Vendor::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_plan_id' => $this->plan->id,
+            'name' => 'Suspension Race Vendor',
+            'platform_slug' => 'susp-race-'.uniqid(),
+            'legal_name' => 'Suspension LLC',
+            'email' => 'susp_race@test.com',
+            'operational_status' => VendorOperationalStatus::Active,
+        ]);
+
+        // Accrue 5,000 EUR
+        VendorPayableEntry::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $vendorForSuspension->id,
+            'entry_type' => VendorPayableEntryType::Earning,
+            'source_type' => 'order_item',
+            'source_uuid' => 'race-susp-'.uniqid(),
+            'currency' => 'EUR',
+            'amount_minor' => 5000,
+            'commission_amount_minor' => 0,
+            'net_amount_minor' => 5000,
+            'availability_status' => VendorPayableAvailabilityStatus::Available,
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenantA->id;
+        $vendorId = $vendorForSuspension->id;
+
+        // Worker 1: Attempts payout request
+        $worker1 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$service = app(\\Modules\\Marketplace\\Contracts\\PayoutServiceInterface::class);
+    \$req = \$service->requestPayout({$tenantId}, {$vendorId}, 5000, 'EUR');
+    echo 'PAYOUT_SUCCESS:' . \$req->id;
+    exit(0);
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorOperationalStatusException \$e) {
+    echo 'PAYOUT_REJECTED_SUSPENDED:' . \$e->getMessage();
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        // Worker 2: Concurrently suspends the vendor
+        $worker2 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
+        \$v = \\Modules\\Marketplace\\Models\\Vendor::lockForUpdate()->find({$vendorId});
+        if (\$v !== null) {
+            \$v->operational_status = \\Modules\\Marketplace\\Enums\\VendorOperationalStatus::Suspended;
+            \$v->save();
+        }
+    });
+    echo 'SUSPENSION_SUCCESS';
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        $results = $this->executeConcurrently([$worker1, $worker2]);
+
+        $this->assertSame(0, $results[0]['exit_code'], $results[0]['stdout'].$results[0]['stderr']);
+        $this->assertSame(0, $results[1]['exit_code'], $results[1]['stdout'].$results[1]['stderr']);
+        $this->assertSame('SUSPENSION_SUCCESS', $results[1]['stdout']);
+        $this->assertTrue(
+            str_starts_with($results[0]['stdout'], 'PAYOUT_SUCCESS:') ||
+            str_starts_with($results[0]['stdout'], 'PAYOUT_REJECTED_SUSPENDED:'),
+            'Payout must either succeed before lock or be safely rejected once suspended.'
+        );
+
+        // Final operational state must be suspended
+        $vendorForSuspension->refresh();
+        $this->assertSame(VendorOperationalStatus::Suspended, $vendorForSuspension->operational_status);
+    }
+
+    public function test_race_subscription_activation_vs_auto_approval(): void
+    {
+        $autoPlan = VendorPlan::create([
+            'tenant_id' => $this->tenantA->id,
+            'name' => 'Auto Approval Plan',
+            'code' => 'plan-auto-'.uniqid(),
+            'auto_approval' => true,
+        ]);
+        // Add a paid price to plan
+        $autoPlan->prices()->create([
+            'tenant_id' => $this->tenantA->id,
+            'currency' => 'EUR',
+            'monthly_fee_minor' => 2900,
+        ]);
+
+        $candidateVendor = Vendor::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_plan_id' => $autoPlan->id,
+            'name' => 'Auto App Vendor',
+            'platform_slug' => 'auto-app-'.uniqid(),
+            'legal_name' => 'Auto LLC',
+            'email' => 'auto_app@test.com',
+            'operational_status' => VendorOperationalStatus::PendingApproval,
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $vendorId = $candidateVendor->id;
+        $planId = $autoPlan->id;
+
+        // Worker 1: Activates subscription
+        $worker1 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$entitlement = app(\\Modules\\Marketplace\\Contracts\\VendorPlanSubscriptionEntitlementServiceInterface::class);
+    \$vendor = \\Modules\\Marketplace\\Models\\Vendor::findOrFail({$vendorId});
+    \$plan = \\Modules\\Marketplace\\Models\\VendorPlan::findOrFail({$planId});
+    \$sub = \$entitlement->activateSubscription(\$vendor, \$plan, 'test_fake');
+    echo 'SUB_ACTIVATED:' . \$sub->id;
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        // Worker 2: Evaluates approval policy
+        $worker2 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$policy = app(\\Modules\\Marketplace\\Contracts\\VendorApprovalPolicyInterface::class);
+    \$vendor = \\Modules\\Marketplace\\Models\\Vendor::findOrFail({$vendorId});
+    \$approved = \$policy->canAutoApprove(\$vendor);
+    echo 'APPROVAL_RESULT:' . (\$approved ? 'true' : 'false');
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        $results = $this->executeConcurrently([$worker1, $worker2]);
+
+        $this->assertSame(0, $results[0]['exit_code']);
+        $this->assertSame(0, $results[1]['exit_code']);
+        $this->assertStringStartsWith('SUB_ACTIVATED:', $results[0]['stdout']);
+        $this->assertTrue(
+            $results[1]['stdout'] === 'APPROVAL_RESULT:true' || $results[1]['stdout'] === 'APPROVAL_RESULT:false',
+            'Approval must evaluate authoritatively to true or false without error.'
+        );
+    }
 }
