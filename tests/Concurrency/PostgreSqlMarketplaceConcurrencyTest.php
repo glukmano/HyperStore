@@ -4,13 +4,23 @@ declare(strict_types=1);
 
 namespace Tests\Concurrency;
 
+use App\Core\Channels\Models\Channel;
+use App\Core\Channels\Models\StoreChannel;
+use App\Core\Markets\Models\Market;
 use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Database\Seeders\ReferenceDataSeeder;
 use Illuminate\Support\Facades\DB;
+use Modules\Cart\Contracts\CartServiceInterface;
+use Modules\Cart\ValueObjects\CartContext;
+use Modules\Cart\ValueObjects\CartLineItemData;
+use Modules\Cart\ValueObjects\CartQuantity;
 use Modules\Catalog\Models\Product;
+use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
+use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Marketplace\Contracts\PayoutServiceInterface;
+use Modules\Marketplace\Contracts\VendorListingCreationServiceInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
 use Modules\Marketplace\Enums\PayoutAllocationStatus;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
@@ -23,8 +33,12 @@ use Modules\Marketplace\Models\VendorInvitation;
 use Modules\Marketplace\Models\VendorListing;
 use Modules\Marketplace\Models\VendorPayableEntry;
 use Modules\Marketplace\Models\VendorPlan;
+use Modules\Marketplace\Models\VendorStoreParticipation;
 use Modules\Marketplace\Models\VendorUser;
 use Modules\Marketplace\Services\VendorInvitationService;
+use Modules\Pricing\Models\Price;
+use Modules\Pricing\Models\PriceBook;
+use Modules\Pricing\Models\TaxClass;
 use Tests\TestCase;
 
 class PostgreSqlMarketplaceConcurrencyTest extends TestCase
@@ -963,52 +977,48 @@ try {
         ]);
 
         $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenantA->id;
         $vendorId = $vendorToTest->id;
 
-        // Worker 1: Attempts approval transition (PendingApproval -> Active)
+        // Worker 1: Production approval transition via VendorOperationalLifecycleServiceInterface
         $worker1 = "{$bootstrap}
 // __BARRIER_WAIT__
 try {
-    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
-        \$v = \\Modules\\Marketplace\\Models\\Vendor::lockForUpdate()->find({$vendorId});
-        if (\$v->operational_status !== \\Modules\\Marketplace\\Enums\\VendorOperationalStatus::PendingApproval) {
-            throw new \\DomainException('CANNOT_APPROVE: Stale or invalid operational status: ' . \$v->operational_status->value);
-        }
-        \$v->operational_status = \\Modules\\Marketplace\\Enums\\VendorOperationalStatus::Active;
-        \$v->save();
-    });
+    \$svc = app(\\Modules\\Marketplace\\Contracts\\VendorOperationalLifecycleServiceInterface::class);
+    \$svc->approveVendor({$tenantId}, {$vendorId});
     echo 'APPROVAL_SUCCESS';
     exit(0);
-} catch (\\Throwable \$e) {
-    echo 'APPROVAL_FAILED:' . \$e->getMessage();
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorOperationalStatusException \$e) {
+    echo 'APPROVAL_REJECTED:' . \$e->getMessage();
     exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
 }
 ";
 
-        // Worker 2: Attempts suspension transition (-> Suspended)
+        // Worker 2: Production suspension transition via VendorOperationalLifecycleServiceInterface
         $worker2 = "{$bootstrap}
 // __BARRIER_WAIT__
 try {
-    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
-        \$v = \\Modules\\Marketplace\\Models\\Vendor::lockForUpdate()->find({$vendorId});
-        if (!\$v->operational_status->canTransitionTo(\\Modules\\Marketplace\\Enums\\VendorOperationalStatus::Suspended)) {
-            throw new \\DomainException('CANNOT_SUSPEND: Status cannot transition to suspended: ' . \$v->operational_status->value);
-        }
-        \$v->operational_status = \\Modules\\Marketplace\\Enums\\VendorOperationalStatus::Suspended;
-        \$v->save();
-    });
+    \$svc = app(\\Modules\\Marketplace\\Contracts\\VendorOperationalLifecycleServiceInterface::class);
+    \$svc->suspendVendor({$tenantId}, {$vendorId});
     echo 'SUSPENSION_SUCCESS';
     exit(0);
-} catch (\\Throwable \$e) {
-    echo 'SUSPENSION_FAILED:' . \$e->getMessage();
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorOperationalStatusException \$e) {
+    echo 'SUSPENSION_REJECTED:' . \$e->getMessage();
     exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
 }
 ";
 
         $results = $this->executeConcurrently([$worker1, $worker2]);
 
-        $this->assertSame(0, $results[0]['exit_code']);
-        $this->assertSame(0, $results[1]['exit_code']);
+        $this->assertSame(0, $results[0]['exit_code'], 'Worker 0 failed: '.json_encode($results[0]));
+        $this->assertSame(0, $results[1]['exit_code'], 'Worker 1 failed: '.json_encode($results[1]));
+        $this->assertSame(0, $results[1]['exit_code'], $results[1]['stderr'] ?? '');
 
         $vendorToTest->refresh();
 
@@ -1049,7 +1059,7 @@ try {
         $tenantId = $this->tenantA->id;
         $vendorId = $vendor->id;
 
-        // Two concurrent workers attempt to invite staff (limit = 2, current = 1, exactly 1 slot remains)
+        // Two concurrent workers attempt to invite staff via production VendorInvitationService
         $workerCode = function (string $email) use ($bootstrap, $tenantId, $vendorId): string {
             return "{$bootstrap}
 // __BARRIER_WAIT__
@@ -1114,20 +1124,22 @@ try {
             'operational_status' => VendorOperationalStatus::Active,
         ]);
 
-        // Product 1 (existing listing)
+        // Product 1 (existing listing created via production service)
         $p1 = Product::create([
             'tenant_id' => $this->tenantA->id,
             'product_type' => 'simple',
             'sku' => 'PROD-LQ-1-'.uniqid(),
             'status' => 'active',
         ]);
-        VendorListing::create([
-            'tenant_id' => $this->tenantA->id,
-            'vendor_id' => $vendor->id,
-            'product_id' => $p1->id,
-            'product_variant_id' => null,
-            'vendor_sku' => 'VSKU-LQ-1',
-        ]);
+        app(VendorListingCreationServiceInterface::class)->createListing(
+            $this->tenantA->id,
+            $vendor->id,
+            [
+                'product_id' => $p1->id,
+                'product_variant_id' => null,
+                'vendor_sku' => 'VSKU-LQ-1',
+            ]
+        );
 
         // Products 2 and 3 for concurrent workers
         $p2 = Product::create([
@@ -1149,19 +1161,17 @@ try {
         $p2Id = $p2->id;
         $p3Id = $p3->id;
 
+        // Workers execute production VendorListingCreationServiceInterface
         $workerCode = function (int $productId, string $sku) use ($bootstrap, $tenantId, $vendorId): string {
             return "{$bootstrap}
 // __BARRIER_WAIT__
 try {
-    \$listing = \\Illuminate\\Support\\Facades\\DB::transaction(function () {
-        return \\Modules\\Marketplace\\Models\\VendorListing::create([
-        'tenant_id' => {$tenantId},
-        'vendor_id' => {$vendorId},
+    \$svc = app(\\Modules\\Marketplace\\Contracts\\VendorListingCreationServiceInterface::class);
+    \$listing = \$svc->createListing({$tenantId}, {$vendorId}, [
         'product_id' => {$productId},
         'product_variant_id' => null,
         'vendor_sku' => '{$sku}',
-        ]);
-    });
+    ]);
     echo 'SUCCESS:' . \$listing->id;
     exit(0);
 } catch (\\Modules\\Marketplace\\Exceptions\\VendorListingQuotaException \$e) {
@@ -1224,20 +1234,22 @@ try {
             'operational_status' => VendorOperationalStatus::Active,
         ]);
 
-        // Already has 1 listing
+        // Already has 1 listing created via production service
         $p1 = Product::create([
             'tenant_id' => $this->tenantA->id,
             'product_type' => 'simple',
             'sku' => 'PROD-DOWN-1-'.uniqid(),
             'status' => 'active',
         ]);
-        VendorListing::create([
-            'tenant_id' => $this->tenantA->id,
-            'vendor_id' => $vendor->id,
-            'product_id' => $p1->id,
-            'product_variant_id' => null,
-            'vendor_sku' => 'VSKU-DOWN-1',
-        ]);
+        app(VendorListingCreationServiceInterface::class)->createListing(
+            $this->tenantA->id,
+            $vendor->id,
+            [
+                'product_id' => $p1->id,
+                'product_variant_id' => null,
+                'vendor_sku' => 'VSKU-DOWN-1',
+            ]
+        );
 
         $p2 = Product::create([
             'tenant_id' => $this->tenantA->id,
@@ -1252,30 +1264,29 @@ try {
         $lowPlanId = $lowPlan->id;
         $p2Id = $p2->id;
 
-        // Worker 1: Downgrades vendor to low plan (product_limit = 1) under lock
+        // Worker 1: Downgrades vendor to low plan (product_limit = 1) via production VendorPlanChangeServiceInterface
         $worker1 = "{$bootstrap}
 // __BARRIER_WAIT__
 try {
-    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
-        \$v = \\Modules\\Marketplace\\Models\\Vendor::lockForUpdate()->find({$vendorId});
-        \$v->vendor_plan_id = {$lowPlanId};
-        \$v->save();
-    });
+    \$svc = app(\\Modules\\Marketplace\\Contracts\\VendorPlanChangeServiceInterface::class);
+    \$svc->changePlan({$tenantId}, {$vendorId}, {$lowPlanId});
     echo 'DOWNGRADE_SUCCESS';
     exit(0);
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorPlanDowngradeQuotaException \$e) {
+    echo 'DOWNGRADE_QUOTA_REJECTED:' . \$e->getMessage();
+    exit(0);
 } catch (\\Throwable \$e) {
-    echo 'DOWNGRADE_FAILED:' . \$e->getMessage();
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
     exit(1);
 }
 ";
 
-        // Worker 2: Attempts to add second listing
+        // Worker 2: Attempts to add second listing via production VendorListingCreationServiceInterface
         $worker2 = "{$bootstrap}
 // __BARRIER_WAIT__
 try {
-    \$l = \\Modules\\Marketplace\\Models\\VendorListing::create([
-        'tenant_id' => {$tenantId},
-        'vendor_id' => {$vendorId},
+    \$svc = app(\\Modules\\Marketplace\\Contracts\\VendorListingCreationServiceInterface::class);
+    \$l = \$svc->createListing({$tenantId}, {$vendorId}, [
         'product_id' => {$p2Id},
         'product_variant_id' => null,
         'vendor_sku' => 'VSKU-DOWN-2',
@@ -1283,7 +1294,7 @@ try {
     echo 'LISTING_SUCCESS:' . \$l->id;
     exit(0);
 } catch (\\Modules\\Marketplace\\Exceptions\\VendorListingQuotaException \$e) {
-    echo 'LISTING_QUOTA_EXCEEDED:' . \$e->getMessage();
+    echo 'LISTING_QUOTA_REJECTED:' . \$e->getMessage();
     exit(0);
 } catch (\\Throwable \$e) {
     echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
@@ -1293,20 +1304,42 @@ try {
 
         $results = $this->executeConcurrently([$worker1, $worker2]);
 
-        $this->assertSame(0, $results[0]['exit_code']);
-        $this->assertSame(0, $results[1]['exit_code']);
-        $this->assertSame('DOWNGRADE_SUCCESS', $results[0]['stdout']);
+        $this->assertSame(0, $results[0]['exit_code'], 'Worker 0 failed: '.json_encode($results[0]));
+        $this->assertSame(0, $results[1]['exit_code'], 'Worker 1 failed: '.json_encode($results[1]));
+        $this->assertSame(0, $results[1]['exit_code'], $results[1]['stderr'] ?? '');
 
         $vendor->refresh();
-        $this->assertSame($lowPlan->id, $vendor->vendor_plan_id);
+        $finalListingCount = VendorListing::where('tenant_id', $tenantId)->where('vendor_id', $vendorId)->count();
 
-        $finalCount = VendorListing::where('tenant_id', $tenantId)->where('vendor_id', $vendorId)->count();
-        $this->assertTrue($finalCount === 1 || $finalCount === 2);
+        // INVARIANT: Exactly two valid serializable outcomes:
+        // OUTCOME A: Downgrade commits first -> Vendor plan is lowPlan (limit 1), listing creation fails closed -> count = 1.
+        // OUTCOME B: Listing creation commits first -> Listing #2 is created, downgrade fails closed -> plan is highPlan (limit 5), count = 2.
+        // FORBIDDEN: Low plan + count = 2 can NEVER exist!
+        $this->assertFalse(
+            $vendor->vendor_plan_id === $lowPlan->id && $finalListingCount === 2,
+            'FORBIDDEN: Vendor cannot have low plan with listings exceeding limit.'
+        );
+
+        $isOutcomeA = ($vendor->vendor_plan_id === $lowPlan->id && $finalListingCount === 1);
+        $isOutcomeB = ($vendor->vendor_plan_id === $highPlan->id && $finalListingCount === 2);
+
+        $this->assertTrue(
+            $isOutcomeA || $isOutcomeB,
+            'Final state must strictly be Outcome A (downgraded, 1 listing) or Outcome B (high plan, 2 listings).'
+        );
     }
 
     public function test_race_commission_rule_mutation_vs_checkout_ready_snapshot(): void
     {
-        // Initial rule: 1000 bps (10%) + 100 fixed fee
+        // Vendor store participation
+        VendorStoreParticipation::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendor->id,
+            'store_id' => $this->storeA->id,
+            'is_enabled' => true,
+        ]);
+
+        // 1. Initial rule: 1000 bps (10%) + 100 fixed fee in EUR
         $rule = VendorCommissionRule::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendor->id,
@@ -1317,24 +1350,116 @@ try {
             'is_active' => true,
         ]);
 
-        $bootstrap = $this->getBootstrapScript();
-        $ruleId = $rule->id;
-        $tenantId = $this->tenantA->id;
-        $vendorId = $this->vendor->id;
+        // 2. Setup digital product, tax class, price book, price (10000 minor = 100.00 EUR)
+        TaxClass::create([
+            'tenant_id' => $this->tenantA->id,
+            'code' => 'STD_TAX_'.uniqid(),
+            'name' => 'Standard Tax',
+            'is_default' => true,
+        ]);
 
-        // Worker 1: Atomic resolution & calculation
+        $market = Market::create([
+            'tenant_id' => $this->tenantA->id,
+            'code' => 'EU-'.uniqid(),
+            'name' => 'Europe',
+            'default_currency_code' => 'EUR',
+            'default_locale_code' => 'en',
+            'is_active' => true,
+        ]);
+
+        $channel = Channel::create([
+            'name' => 'Web-'.uniqid(),
+            'handle' => 'web-'.uniqid(),
+            'is_active' => true,
+        ]);
+
+        StoreChannel::create([
+            'store_id' => $this->storeA->id,
+            'channel_id' => $channel->id,
+            'is_active' => true,
+        ]);
+
+        $product = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'sku' => 'COMM-PROD-'.uniqid(),
+            'name' => 'Digital Service Product',
+            'slug' => 'comm-prod-'.uniqid(),
+            'product_type' => 'digital',
+            'status' => 'active',
+        ]);
+
+        $priceBook = PriceBook::create([
+            'tenant_id' => $this->tenantA->id,
+            'code' => 'PB-'.uniqid(),
+            'name' => 'Euro Standard',
+            'currency' => 'EUR',
+            'status' => 'active',
+            'priority' => 1,
+        ]);
+
+        Price::create([
+            'tenant_id' => $this->tenantA->id,
+            'price_book_id' => $priceBook->id,
+            'product_id' => $product->id,
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'status' => 'active',
+        ]);
+
+        // 3. Create VendorListing with store availability
+        $listing = app(VendorListingCreationServiceInterface::class)->createListing(
+            $this->tenantA->id,
+            $this->vendor->id,
+            [
+                'product_id' => $product->id,
+                'product_variant_id' => null,
+                'vendor_sku' => 'COMM-LISTING-'.uniqid(),
+                'store_ids' => [$this->storeA->id],
+            ]
+        );
+
+        // 4. Create Cart and CheckoutSession with vendor_listing_uuid
+        $cartService = app(CartServiceInterface::class);
+        $cartContext = new CartContext(
+            tenantId: $this->tenantA->id,
+            storeId: $this->storeA->id,
+            marketId: $market->id,
+            channelId: $channel->id,
+            currency: 'EUR',
+            userId: $this->ownerUser->id
+        );
+
+        $cart = $cartService->getOrCreateActiveCart($cartContext);
+        $cartService->addLine(
+            $cart,
+            new CartLineItemData(
+                productId: $product->id,
+                variantId: null,
+                quantity: CartQuantity::fromInt(1),
+                options: ['vendor_listing_uuid' => $listing->uuid]
+            )
+        );
+
+        $checkoutOrch = app(CheckoutOrchestratorInterface::class);
+        $session = $checkoutOrch->createFromCart($cart);
+        $checkoutOrch->setCustomerData($session, new CheckoutCustomerData(
+            email: 'buyer@test.com',
+            firstName: 'John',
+            lastName: 'Doe'
+        ));
+
+        $bootstrap = $this->getBootstrapScript();
+        $sessionId = $session->id;
+        $ruleId = $rule->id;
+
+        // Worker 1: Real Checkout READY pipeline
         $worker1 = "{$bootstrap}
 // __BARRIER_WAIT__
 try {
-    \$calc = app(\\Modules\\Marketplace\\Contracts\\VendorCommissionQuoteServiceInterface::class);
-    \$quote = \$calc->quoteCommission(
-        categoryId: null,
-        tenantId: {$tenantId},
-        vendorId: {$vendorId},
-        basisMinor: 10000,
-        currency: 'EUR'
-    );
-    echo 'SNAPSHOT:' . \$quote->rateBps . ':' . \$quote->fixedFeeMinor . ':' . \$quote->commissionAmountMinor;
+    \$orch = app(\\Modules\\Checkout\\Contracts\\CheckoutOrchestratorInterface::class);
+    \$s = \\Modules\\Checkout\\Models\\CheckoutSession::findOrFail({$sessionId});
+    \$ready = \$orch->markReadyForOrder(\$s);
+    echo 'READY_SUCCESS:' . \$ready->state;
     exit(0);
 } catch (\\Throwable \$e) {
     echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
@@ -1362,18 +1487,46 @@ try {
 
         $results = $this->executeConcurrently([$worker1, $worker2]);
 
-        $this->assertSame(0, $results[0]['exit_code'], $results[0]['stdout'].$results[0]['stderr']);
-        $this->assertSame(0, $results[1]['exit_code'], $results[1]['stdout'].$results[1]['stderr']);
+        $this->assertSame(0, $results[0]['exit_code'], $results[0]['stdout'].($results[0]['stderr'] ?? ''));
+        $this->assertSame(0, $results[1]['exit_code'], $results[1]['stdout'].($results[1]['stderr'] ?? ''));
+        $this->assertSame('READY_SUCCESS:ready_for_order', $results[0]['stdout']);
         $this->assertSame('RULE_MUTATED', $results[1]['stdout']);
+
+        $session->refresh();
+        $this->assertSame('ready_for_order', $session->state);
+        $snapshot = $session->ready_snapshot;
+        $this->assertIsArray($snapshot);
+
+        $lineSnapshot = $snapshot['lines'][0];
+        $this->assertSame($listing->uuid, $lineSnapshot['vendor_listing_uuid_snapshot']);
 
         // Snapshot must be EITHER coherent Old Rule (1000 bps + 100 fixed = 1100) OR coherent New Rule (2500 bps + 300 fixed = 2800)
         // FORBIDDEN: Any mixed snapshot (e.g. 1000 bps + 300 fixed or 2500 bps + 100 fixed)
-        $expectedOld = 'SNAPSHOT:1000:100:1100';
-        $expectedNew = 'SNAPSHOT:2500:300:2800';
+        $rate = $lineSnapshot['commission_rate_bps'];
+        $fixed = $lineSnapshot['commission_fixed_fee_minor'];
+        $amount = $lineSnapshot['commission_amount_minor'];
+
+        $isOldRuleCoherent = ($rate === 1000 && $fixed === 100 && $amount === 1100);
+        $isNewRuleCoherent = ($rate === 2500 && $fixed === 300 && $amount === 2800);
 
         $this->assertTrue(
-            $results[0]['stdout'] === $expectedOld || $results[0]['stdout'] === $expectedNew,
-            'Snapshot must freeze exactly one coherent rule state, never a mixed or partially applied rule: '.$results[0]['stdout']
+            $isOldRuleCoherent || $isNewRuleCoherent,
+            "Snapshot must freeze exactly one coherent rule state, never mixed fields: rate={$rate}, fixed={$fixed}, amount={$amount}"
+        );
+
+        // HISTORICAL FREEZE: Mutate rule again post-commit. Snapshot must remain byte/semantically frozen!
+        $committedSnapshotJson = json_encode($session->ready_snapshot);
+        $rule->rate_basis_points = 5000;
+        $rule->fixed_fee_minor = 999;
+        $rule->save();
+
+        $session->refresh();
+        $postMutationSnapshotJson = json_encode($session->ready_snapshot);
+
+        $this->assertSame(
+            $committedSnapshotJson,
+            $postMutationSnapshotJson,
+            'HISTORICAL FREEZE: Subsequent commission rule mutations must never alter the committed checkout ready_snapshot.'
         );
     }
 }

@@ -18,6 +18,7 @@ use Modules\Checkout\DTOs\SelectedShippingQuote;
 use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Exceptions\ShippingQuoteExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
 use Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
 use RuntimeException;
@@ -601,6 +602,12 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                                     $commissionAmountMinor = $commQuote->commissionAmountMinor;
                                     $commissionCurrency = $commQuote->currency;
                                     $commissionRuleRef = $commQuote->ruleReference;
+
+                                    if (app()->bound(MarketplaceConcurrencyBarrierInterface::class)) {
+                                        /** @var MarketplaceConcurrencyBarrierInterface $barrier */
+                                        $barrier = app(MarketplaceConcurrencyBarrierInterface::class);
+                                        $barrier->wait('commission_rule_resolved_before_checkout_snapshot_persist');
+                                    }
                                 }
                             }
                         }
