@@ -86,6 +86,7 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
 
             // Record Marketplace refund adjustment if vendor order
             if ($sellerReturn->seller_type === 'vendor' && $sellerReturn->vendor_id !== null) {
+                $vendorGrossReversalMinor = $sellerReturn->refund_subtotal_minor - $sellerReturn->refund_discount_reversal_minor;
                 $this->vendorPayableSubledger->accrueRefundAdjustment(
                     tenantId: $tenantId,
                     vendorId: $sellerReturn->vendor_id,
@@ -93,7 +94,7 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
                     sourceType: 'seller_return',
                     sourceUuid: $sellerReturn->uuid,
                     currency: $order->currency,
-                    amountMinor: $sellerReturn->net_customer_refund_minor,
+                    amountMinor: $vendorGrossReversalMinor,
                     commissionMinor: $sellerReturn->vendor_commission_reversal_minor,
                     storeId: $order->store_id
                 );

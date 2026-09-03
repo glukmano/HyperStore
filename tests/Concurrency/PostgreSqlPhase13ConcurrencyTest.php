@@ -228,6 +228,7 @@ class PostgreSqlPhase13ConcurrencyTest extends TestCase
             'scope_type' => 'tenant',
             'name' => 'Tenant DS',
             'code' => 'T_DS_'.Str::random(4),
+            'contact_email' => 'tenant-ds@example.com',
             'status' => 'active',
             'currency' => 'EUR',
         ]);
@@ -277,6 +278,7 @@ class PostgreSqlPhase13ConcurrencyTest extends TestCase
             'scope_type' => 'platform',
             'name' => 'Global DS',
             'code' => 'GL_DS_'.Str::random(4),
+            'contact_email' => 'global-ds@example.com',
             'status' => 'active',
             'currency' => 'EUR',
         ]);

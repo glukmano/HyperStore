@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Dropshipping\Services;
 
 use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use DomainException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -21,13 +22,15 @@ class SupplierInvoiceReconciliationService implements SupplierInvoiceReconciliat
     public function recordAndReconcileInvoice(
         PurchaseOrder $po,
         string $invoiceNumber,
-        array $lines
+        array $lines,
+        ?int $shippingMinor = null,
+        ?int $taxMinor = null
     ): SupplierInvoice {
         if (empty($lines)) {
             throw new InvalidArgumentException('Invoice must contain at least one line.');
         }
 
-        return DB::transaction(function () use ($po, $invoiceNumber, $lines): SupplierInvoice {
+        return DB::transaction(function () use ($po, $invoiceNumber, $lines, $shippingMinor, $taxMinor): SupplierInvoice {
             $po->loadMissing('lines');
             $poLinesMap = $po->lines->keyBy('id');
 
@@ -51,7 +54,8 @@ class SupplierInvoiceReconciliationService implements SupplierInvoiceReconciliat
                 ],
             ]);
 
-            $totalInvoiceMinor = 0;
+            $sumLineSubtotal = 0;
+            $sumLineTax = 0;
             $hasDiscrepancy = false;
 
             foreach ($lines as $lineData) {
@@ -63,15 +67,16 @@ class SupplierInvoiceReconciliationService implements SupplierInvoiceReconciliat
                     throw new DomainException("PurchaseOrderLine [{$poLineId}] does not belong to PO [{$po->id}].");
                 }
 
-                $qty = (string) $lineData['quantity'];
-                $unitCost = (int) $lineData['unit_cost_minor'];
-                $lineTotal = (int) (string) BigDecimal::of($qty)->multipliedBy(BigDecimal::of($unitCost));
+                $qtyDec = BigDecimal::of((string) $lineData['quantity']);
+                $unitCostMinor = (int) $lineData['unit_cost_minor'];
+                $lineTaxMinor = (int) ($lineData['tax_minor'] ?? 0);
+                $lineTotalMinor = $qtyDec->multipliedBy(BigDecimal::of($unitCostMinor))->toScale(0, RoundingMode::HalfUp)->toInt();
 
                 // Check discrepancies against PO line
-                if (BigDecimal::of($qty)->compareTo(BigDecimal::of((string) $poLine->quantity)) !== 0) {
+                if ($qtyDec->compareTo(BigDecimal::of((string) $poLine->quantity)) !== 0) {
                     $hasDiscrepancy = true;
                 }
-                if ($unitCost !== $poLine->unit_cost_minor) {
+                if ($unitCostMinor !== $poLine->unit_cost_minor) {
                     $hasDiscrepancy = true;
                 }
 
@@ -81,15 +86,26 @@ class SupplierInvoiceReconciliationService implements SupplierInvoiceReconciliat
                     'purchase_order_line_id' => $poLine->id,
                     'supplier_sku_snapshot' => $poLine->supplier_sku,
                     'description' => 'Invoice line for PO Line '.$poLine->id,
-                    'quantity' => $qty,
-                    'unit_cost_minor' => $unitCost,
-                    'line_total_minor' => $lineTotal,
+                    'quantity' => (string) $qtyDec,
+                    'unit_cost_minor' => $unitCostMinor,
+                    'line_total_minor' => $lineTotalMinor,
+                    'tax_minor' => $lineTaxMinor,
                 ]);
 
-                $totalInvoiceMinor += $lineTotal;
+                $sumLineSubtotal += $lineTotalMinor;
+                $sumLineTax += $lineTaxMinor;
             }
 
-            if ($totalInvoiceMinor !== $po->total_minor) {
+            $effectiveTaxMinor = $taxMinor ?? $sumLineTax;
+            if ($taxMinor !== null && $taxMinor !== $sumLineTax && $sumLineTax > 0) {
+                throw new DomainException("Supplier invoice tax [{$taxMinor}] does not match sum of line taxes [{$sumLineTax}].");
+            }
+
+            $effectiveShippingMinor = $shippingMinor ?? 0;
+            $effectiveTotalMinor = $sumLineSubtotal + $effectiveTaxMinor + $effectiveShippingMinor;
+
+            // Discrepancy against PO
+            if ($effectiveTotalMinor !== $po->total_minor || $sumLineSubtotal !== $po->subtotal_minor) {
                 $hasDiscrepancy = true;
             }
 
@@ -98,8 +114,10 @@ class SupplierInvoiceReconciliationService implements SupplierInvoiceReconciliat
                 : SupplierInvoiceReconciliationStatus::MATCHED->value;
 
             $invoice->update([
-                'subtotal_minor' => $totalInvoiceMinor,
-                'total_minor' => $totalInvoiceMinor,
+                'subtotal_minor' => $sumLineSubtotal,
+                'tax_minor' => $effectiveTaxMinor,
+                'shipping_minor' => $effectiveShippingMinor,
+                'total_minor' => $effectiveTotalMinor,
                 'metadata' => [
                     'reconciliation_status' => $status,
                     'reconciled_at' => $hasDiscrepancy ? null : now()->toIso8601String(),

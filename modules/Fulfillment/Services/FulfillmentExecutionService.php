@@ -4,13 +4,12 @@ declare(strict_types=1);
 
 namespace Modules\Fulfillment\Services;
 
+use Brick\Math\BigDecimal;
 use DomainException;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
-use Modules\Dropshipping\Models\Supplier;
-use Modules\Dropshipping\Models\TenantSupplierAccess;
 use Modules\Fulfillment\Contracts\FulfillmentExecutionServiceInterface;
 use Modules\Fulfillment\Enums\FulfillmentMode;
 use Modules\Fulfillment\Enums\FulfillmentStatus;
@@ -22,120 +21,143 @@ use Modules\Order\Models\SellerOrder;
 
 class FulfillmentExecutionService implements FulfillmentExecutionServiceInterface
 {
-    public function createFulfillments(SellerOrder $sellerOrder, array $groups): Collection
+    public function createFulfillments(SellerOrder $sellerOrder, array $fulfillmentGroups): Collection
     {
-        if (empty($groups)) {
-            throw new InvalidArgumentException('Fulfillment groups cannot be empty.');
-        }
+        return DB::transaction(function () use ($sellerOrder, $fulfillmentGroups): Collection {
+            $createdFulfillments = [];
+            $order = $sellerOrder->order;
 
-        return DB::transaction(function () use ($sellerOrder, $groups): Collection {
-            $createdFulfillments = new Collection;
-            $counter = 1;
+            foreach ($fulfillmentGroups as $index => $group) {
+                $mode = FulfillmentMode::from($group['mode']);
+                $fNumber = 'FUL-'.$sellerOrder->seller_order_number.'-'.str_pad((string) ($index + 1), 2, '0', STR_PAD_LEFT);
 
-            foreach ($groups as $group) {
-                $modeStr = (string) $group['mode'];
-                $mode = FulfillmentMode::from($modeStr);
+                // Invariant: Hybrid parent MUST have null supplier and null inventory location
+                $supplierId = $mode === FulfillmentMode::HYBRID ? null : ($group['supplier_id'] ?? null);
+                $locationId = $mode === FulfillmentMode::HYBRID ? null : ($group['supplier_location_id'] ?? $group['inventory_location_id'] ?? null);
 
-                $fulfillmentNumber = $sellerOrder->seller_order_number.'-F'.$counter++;
+                /** @var OrderFulfillment $fulfillment */
+                $fulfillment = OrderFulfillment::create([
+                    'uuid' => (string) Str::uuid(),
+                    'tenant_id' => $sellerOrder->tenant_id,
+                    'order_id' => $order->id,
+                    'seller_order_id' => $sellerOrder->id,
+                    'parent_fulfillment_id' => null,
+                    'fulfillment_number' => $fNumber,
+                    'fulfillment_mode' => $mode->value,
+                    'status' => FulfillmentStatus::PENDING->value,
+                    'supplier_id' => $supplierId,
+                    'supplier_location_id' => $mode === FulfillmentMode::DROPSHIPPING ? $locationId : null,
+                    'inventory_location_id' => $mode !== FulfillmentMode::DROPSHIPPING && $mode !== FulfillmentMode::HYBRID ? $locationId : null,
+                    'routing_snapshot' => $group['routing_snapshot'] ?? null,
+                    'metadata' => $group['metadata'] ?? null,
+                ]);
 
-                if ($mode === FulfillmentMode::HYBRID) {
-                    // Parent hybrid fulfillment
-                    /** @var OrderFulfillment $parentFulfillment */
-                    $parentFulfillment = OrderFulfillment::create([
-                        'uuid' => (string) Str::uuid(),
-                        'tenant_id' => $sellerOrder->tenant_id,
-                        'seller_order_id' => $sellerOrder->id,
-                        'parent_fulfillment_id' => null,
-                        'fulfillment_number' => $fulfillmentNumber,
-                        'fulfillment_mode' => $mode->value,
-                        'inventory_source_id' => null,
-                        'warehouse_id' => null,
-                        'supplier_id' => null,
-                        'supplier_location_id' => null,
-                        'status' => FulfillmentStatus::PENDING->value,
-                    ]);
+                // Create Parent Fulfillment Items & track parent quantities per order_item_id
+                /** @var array<int, BigDecimal> $parentItemQuantities */
+                $parentItemQuantities = [];
+                foreach ($group['items'] as $itemData) {
+                    $orderItemId = (int) $itemData['order_item_id'];
+                    $qtyDec = BigDecimal::of((string) $itemData['quantity']);
 
-                    // Attach parent items
-                    foreach ($group['items'] as $item) {
-                        OrderFulfillmentItem::create([
-                            'tenant_id' => $sellerOrder->tenant_id,
-                            'order_fulfillment_id' => $parentFulfillment->id,
-                            'order_item_id' => $item['order_item_id'],
-                            'quantity' => $item['quantity'],
-                        ]);
+                    if ($qtyDec->isNegativeOrZero()) {
+                        throw new InvalidArgumentException("Item quantity must be positive, got [{$qtyDec}].");
                     }
 
-                    // Create children if provided
-                    $children = $group['children'] ?? [];
-                    $childCounter = 1;
-                    foreach ($children as $child) {
-                        $childMode = FulfillmentMode::from((string) $child['mode']);
+                    OrderFulfillmentItem::create([
+                        'tenant_id' => $sellerOrder->tenant_id,
+                        'order_fulfillment_id' => $fulfillment->id,
+                        'order_item_id' => $orderItemId,
+                        'quantity' => (string) $qtyDec,
+                    ]);
+
+                    $parentItemQuantities[$orderItemId] = ($parentItemQuantities[$orderItemId] ?? BigDecimal::zero())->plus($qtyDec);
+                }
+
+                // If HYBRID, process and strictly validate child decompositions
+                if ($mode === FulfillmentMode::HYBRID) {
+                    $childrenData = $group['children'] ?? [];
+                    if (empty($childrenData)) {
+                        throw new InvalidArgumentException(
+                            "Hybrid fulfillment [{$fNumber}] must define children decompositions."
+                        );
+                    }
+
+                    /** @var array<int, BigDecimal> $childSumQuantities */
+                    $childSumQuantities = [];
+
+                    foreach ($childrenData as $childIndex => $childGroup) {
+                        $childMode = FulfillmentMode::from($childGroup['mode']);
                         if ($childMode === FulfillmentMode::HYBRID) {
-                            throw new InvalidArgumentException('A child fulfillment cannot be hybrid.');
+                            throw new DomainException('Hybrid fulfillment child cannot be hybrid mode.');
                         }
 
-                        $this->validateSupplierForGroup($sellerOrder, $child);
+                        $childNumber = $fNumber.'-C'.($childIndex + 1);
 
-                        $childNumber = $fulfillmentNumber.'-C'.$childCounter++;
                         /** @var OrderFulfillment $childFulfillment */
                         $childFulfillment = OrderFulfillment::create([
                             'uuid' => (string) Str::uuid(),
                             'tenant_id' => $sellerOrder->tenant_id,
+                            'order_id' => $order->id,
                             'seller_order_id' => $sellerOrder->id,
-                            'parent_fulfillment_id' => $parentFulfillment->id,
+                            'parent_fulfillment_id' => $fulfillment->id,
                             'fulfillment_number' => $childNumber,
                             'fulfillment_mode' => $childMode->value,
-                            'inventory_source_id' => $child['inventory_source_id'] ?? null,
-                            'warehouse_id' => $child['warehouse_id'] ?? null,
-                            'supplier_id' => $child['supplier_id'] ?? null,
-                            'supplier_location_id' => $child['supplier_location_id'] ?? null,
                             'status' => FulfillmentStatus::PENDING->value,
+                            'supplier_id' => $childGroup['supplier_id'] ?? null,
+                            'supplier_location_id' => $childMode === FulfillmentMode::DROPSHIPPING ? ($childGroup['supplier_location_id'] ?? null) : null,
+                            'inventory_location_id' => $childMode !== FulfillmentMode::DROPSHIPPING ? ($childGroup['inventory_location_id'] ?? null) : null,
+                            'routing_snapshot' => $childGroup['routing_snapshot'] ?? null,
+                            'metadata' => $childGroup['metadata'] ?? null,
                         ]);
 
-                        foreach ($child['items'] as $cItem) {
+                        foreach ($childGroup['items'] as $cItem) {
+                            $cItemId = (int) $cItem['order_item_id'];
+                            $cQtyDec = BigDecimal::of((string) $cItem['quantity']);
+
+                            if (! isset($parentItemQuantities[$cItemId])) {
+                                throw new InvalidArgumentException(
+                                    "Child fulfillment item OrderItem [{$cItemId}] is not present on parent hybrid fulfillment."
+                                );
+                            }
+
+                            if ($cQtyDec->isNegativeOrZero()) {
+                                throw new InvalidArgumentException("Child item quantity must be positive, got [{$cQtyDec}].");
+                            }
+
                             OrderFulfillmentItem::create([
                                 'tenant_id' => $sellerOrder->tenant_id,
                                 'order_fulfillment_id' => $childFulfillment->id,
-                                'order_item_id' => $cItem['order_item_id'],
-                                'quantity' => $cItem['quantity'],
+                                'order_item_id' => $cItemId,
+                                'quantity' => (string) $cQtyDec,
                             ]);
+
+                            $childSumQuantities[$cItemId] = ($childSumQuantities[$cItemId] ?? BigDecimal::zero())->plus($cQtyDec);
                         }
                     }
 
-                    $createdFulfillments->push($parentFulfillment->load(['children.items', 'items']));
-                } else {
-                    // Atomic leaf fulfillment
-                    $this->validateSupplierForGroup($sellerOrder, $group);
+                    // Hybrid Quantity Conservation Validation
+                    foreach ($parentItemQuantities as $orderItemId => $parentQty) {
+                        $childQty = $childSumQuantities[$orderItemId] ?? BigDecimal::zero();
+                        $cmp = $childQty->compareTo($parentQty);
 
-                    /** @var OrderFulfillment $fulfillment */
-                    $fulfillment = OrderFulfillment::create([
-                        'uuid' => (string) Str::uuid(),
-                        'tenant_id' => $sellerOrder->tenant_id,
-                        'seller_order_id' => $sellerOrder->id,
-                        'parent_fulfillment_id' => null,
-                        'fulfillment_number' => $fulfillmentNumber,
-                        'fulfillment_mode' => $mode->value,
-                        'inventory_source_id' => $group['inventory_source_id'] ?? null,
-                        'warehouse_id' => $group['warehouse_id'] ?? null,
-                        'supplier_id' => $group['supplier_id'] ?? null,
-                        'supplier_location_id' => $group['supplier_location_id'] ?? null,
-                        'status' => FulfillmentStatus::PENDING->value,
-                    ]);
+                        if ($cmp < 0) {
+                            throw new DomainException(
+                                "Hybrid child fulfillments under-allocate OrderItem [{$orderItemId}]: parent requires [{$parentQty}], children sum to [{$childQty}]."
+                            );
+                        }
 
-                    foreach ($group['items'] as $item) {
-                        OrderFulfillmentItem::create([
-                            'tenant_id' => $sellerOrder->tenant_id,
-                            'order_fulfillment_id' => $fulfillment->id,
-                            'order_item_id' => $item['order_item_id'],
-                            'quantity' => $item['quantity'],
-                        ]);
+                        if ($cmp > 0) {
+                            throw new DomainException(
+                                "Hybrid child fulfillments over-allocate OrderItem [{$orderItemId}]: parent requires [{$parentQty}], children sum to [{$childQty}]."
+                            );
+                        }
                     }
-
-                    $createdFulfillments->push($fulfillment->load('items'));
                 }
+
+                $createdFulfillments[] = $fulfillment->load(['items', 'children.items']);
             }
 
-            return $createdFulfillments;
+            return new Collection($createdFulfillments);
         });
     }
 
@@ -145,74 +167,70 @@ class FulfillmentExecutionService implements FulfillmentExecutionServiceInterfac
         string $trackingNumber,
         ?string $trackingUrl = null
     ): OrderShipment {
-        return DB::transaction(function () use ($fulfillment, $carrierCode, $trackingNumber, $trackingUrl): OrderShipment {
+        return DB::transaction(function () use (
+            $fulfillment,
+            $carrierCode,
+            $trackingNumber,
+            $trackingUrl
+        ): OrderShipment {
             /** @var OrderFulfillment $locked */
             $locked = OrderFulfillment::query()
-                ->where('tenant_id', $fulfillment->tenant_id)
                 ->where('id', $fulfillment->id)
                 ->lockForUpdate()
                 ->firstOrFail();
+
+            // 1. Hybrid parent guard
+            if ($locked->isHybrid()) {
+                throw new DomainException(
+                    'Cannot ship a hybrid fulfillment directly. Disassemble and ship atomic child fulfillments.'
+                );
+            }
+
+            // 2. Dispatch state transitions check
+            if ($locked->status === FulfillmentStatus::CANCELLED->value) {
+                throw new DomainException("Cannot ship cancelled fulfillment [{$locked->id}].");
+            }
+
+            if ($locked->status === FulfillmentStatus::SHIPPED->value) {
+                throw new DomainException("Fulfillment [{$locked->id}] is already shipped.");
+            }
+
+            if ($locked->status === FulfillmentStatus::DELIVERED->value) {
+                throw new DomainException("Fulfillment [{$locked->id}] is already delivered.");
+            }
+
+            if (! in_array($locked->status, [FulfillmentStatus::PENDING->value, FulfillmentStatus::ALLOCATED->value, FulfillmentStatus::PICKING->value, FulfillmentStatus::PACKING->value], true)) {
+                throw new DomainException("Fulfillment [{$locked->id}] is not in a shippable state (status: [{$locked->status}]).");
+            }
+
+            // Invariant: no duplicate shipment unless multi-shipment modeled
+            if ($locked->shipments()->count() > 0) {
+                throw new DomainException("Fulfillment [{$locked->id}] already has a shipment registered.");
+            }
+
+            $shipmentNumber = 'SHP-'.$locked->fulfillment_number;
+            $dispatchTimestamp = now();
 
             /** @var OrderShipment $shipment */
             $shipment = OrderShipment::create([
                 'uuid' => (string) Str::uuid(),
                 'tenant_id' => $locked->tenant_id,
                 'order_fulfillment_id' => $locked->id,
+                'shipment_number' => $shipmentNumber,
                 'carrier_code' => $carrierCode,
                 'carrier_name' => $carrierCode,
                 'tracking_number' => $trackingNumber,
                 'tracking_url' => $trackingUrl,
-                'status' => ShipmentStatus::MANIFESTED->value,
-                'dispatched_at' => now(),
+                'status' => ShipmentStatus::IN_TRANSIT->value,
+                'dispatched_at' => $dispatchTimestamp,
             ]);
 
-            $locked->update([
-                'status' => FulfillmentStatus::SHIPPED->value,
-                'shipped_at' => now(),
-            ]);
+            $locked->status = FulfillmentStatus::SHIPPED->value;
+            $locked->shipped_at = $dispatchTimestamp;
+
+            $locked->save();
 
             return $shipment;
         });
-    }
-
-    /**
-     * @param  array<string, mixed>  $group
-     */
-    private function validateSupplierForGroup(SellerOrder $sellerOrder, array $group): void
-    {
-        $supplierId = isset($group['supplier_id']) ? (int) $group['supplier_id'] : null;
-        if ($supplierId === null) {
-            return;
-        }
-
-        /** @var Supplier $supplier */
-        $supplier = Supplier::query()->where('id', $supplierId)->lockForUpdate()->firstOrFail();
-
-        if (! $supplier->is_active) {
-            throw new DomainException("Supplier [{$supplierId}] is deactivated.");
-        }
-
-        if ($supplier->isPlatform()) {
-            $access = TenantSupplierAccess::query()
-                ->where('tenant_id', $sellerOrder->tenant_id)
-                ->where('supplier_id', $supplier->id)
-                ->lockForUpdate()
-                ->first();
-
-            if ($access === null || ! $access->is_enabled) {
-                throw new DomainException("Platform supplier [{$supplierId}] is not enabled for tenant [{$sellerOrder->tenant_id}].");
-            }
-        } elseif ($supplier->isTenant()) {
-            if ($supplier->tenant_id !== $sellerOrder->tenant_id) {
-                throw new DomainException("Tenant supplier [{$supplierId}] does not belong to tenant [{$sellerOrder->tenant_id}].");
-            }
-        } elseif ($supplier->isPrivateVendor()) {
-            if ($supplier->tenant_id !== $sellerOrder->tenant_id) {
-                throw new DomainException("Private vendor supplier [{$supplierId}] does not belong to tenant [{$sellerOrder->tenant_id}].");
-            }
-            if ($sellerOrder->vendor_id === null || $supplier->vendor_id !== $sellerOrder->vendor_id) {
-                throw new DomainException("Private vendor supplier [{$supplierId}] vendor does not match seller order vendor.");
-            }
-        }
     }
 }

@@ -84,9 +84,7 @@ class Supplier extends Model
             if (empty($model->uuid)) {
                 $model->uuid = (string) Str::uuid();
             }
-            if (empty($model->contact_email)) {
-                $model->contact_email = 'supplier-'.($model->code ?? 'default').'@example.com';
-            }
+
         });
     }
 

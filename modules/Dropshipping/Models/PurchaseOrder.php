@@ -34,6 +34,7 @@ use Modules\Fulfillment\Models\OrderFulfillment;
  * @property Carbon|null $shipped_at
  * @property Carbon|null $delivered_at
  * @property Carbon|null $cancelled_at
+ * @property string|null $notes
  * @property Carbon $created_at
  * @property Carbon $updated_at
  * @property-read Tenant $tenant
@@ -67,6 +68,7 @@ class PurchaseOrder extends Model
         'shipped_at',
         'delivered_at',
         'cancelled_at',
+        'notes',
     ];
 
     protected $casts = [

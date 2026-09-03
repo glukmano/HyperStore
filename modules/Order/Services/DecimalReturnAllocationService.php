@@ -19,6 +19,7 @@ class DecimalReturnAllocationService
      *     refund_discount_reversal_minor: int,
      *     refund_tax_minor: int,
      *     net_customer_refund_minor: int,
+     *     vendor_gross_reversal_minor: int,
      *     vendor_payable_debit_minor: int,
      *     vendor_commission_reversal_minor: int
      * }
@@ -54,14 +55,21 @@ class DecimalReturnAllocationService
         $deltaTax = $this->cumulativeDiffFloor($tax, $totalQtyDec, $prevQtyDec, $cumQtyDec);
         $deltaCommission = $this->cumulativeDiffFloor($commission, $totalQtyDec, $prevQtyDec, $cumQtyDec);
 
+        // Customer refund includes tax
         $netCustomerRefund = $deltaSubtotal - $deltaDiscount + $deltaTax;
-        $vendorPayableDebit = $netCustomerRefund - $deltaCommission;
+
+        // Vendor refund economics: Tax MUST NOT increase Vendor payable debit!
+        // vendor_gross_reversal = subtotal_return - discount_return
+        $vendorGrossReversal = $deltaSubtotal - $deltaDiscount;
+        // vendor_payable_debit = vendor_gross_reversal - commission_reversal
+        $vendorPayableDebit = $vendorGrossReversal - $deltaCommission;
 
         return [
             'refund_subtotal_minor' => $deltaSubtotal,
             'refund_discount_reversal_minor' => $deltaDiscount,
             'refund_tax_minor' => $deltaTax,
             'net_customer_refund_minor' => $netCustomerRefund,
+            'vendor_gross_reversal_minor' => $vendorGrossReversal,
             'vendor_payable_debit_minor' => $vendorPayableDebit,
             'vendor_commission_reversal_minor' => $deltaCommission,
         ];

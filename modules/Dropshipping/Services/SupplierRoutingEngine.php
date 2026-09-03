@@ -28,14 +28,17 @@ class SupplierRoutingEngine implements SupplierRoutingEngineInterface
         $requiredQty = BigDecimal::of($quantity);
 
         // Fetch candidate offers for this product_variant
-        $candidateOffers = SupplierOffer::query()
+        $candidateOffersQuery = SupplierOffer::query()
             ->with(['supplier', 'supplierLocation', 'supplierProductVariant'])
             ->whereHas('supplierProductVariant', function ($q) use ($variant): void {
                 $q->where('product_variant_id', $variant->id);
             })
             ->where('is_available', true)
-            ->whereHas('supplierLocation', function ($q): void {
+            ->whereHas('supplierLocation', function ($q) use ($deliveryCountryCode): void {
                 $q->where('is_active', true);
+                if ($deliveryCountryCode !== null && $deliveryCountryCode !== '') {
+                    $q->where('country_code', strtoupper($deliveryCountryCode));
+                }
             })
             ->whereHas('supplier', function ($q) use ($tenantId, $vendorId): void {
                 $q->where('status', 'active')
@@ -52,18 +55,20 @@ class SupplierRoutingEngine implements SupplierRoutingEngineInterface
                             ->orWhere(function ($tq) use ($tenantId): void {
                                 $tq->where('scope_type', 'tenant')
                                     ->where('tenant_id', $tenantId);
-                            })
-                        // 3. Private vendor supplier matching vendor
-                            ->orWhere(function ($vq) use ($tenantId, $vendorId): void {
-                                $vq->where('scope_type', 'private_vendor')
-                                    ->where('tenant_id', $tenantId);
-                                if ($vendorId !== null) {
-                                    $vq->where('vendor_id', $vendorId);
-                                }
                             });
+
+                        // 3. Private vendor supplier matching vendor ONLY when vendorId is provided
+                        if ($vendorId !== null) {
+                            $sq->orWhere(function ($vq) use ($tenantId, $vendorId): void {
+                                $vq->where('scope_type', 'private_vendor')
+                                    ->where('tenant_id', $tenantId)
+                                    ->where('vendor_id', $vendorId);
+                            });
+                        }
                     });
-            })
-            ->get();
+            });
+
+        $candidateOffers = $candidateOffersQuery->get();
 
         $evaluated = [];
 
@@ -89,10 +94,15 @@ class SupplierRoutingEngine implements SupplierRoutingEngineInterface
                 'offer' => $offer,
                 'normalized_cost_minor' => $normalizedCostMinor,
                 'lead_time_days' => $offer->lead_time_days,
+                'rating_score' => $offer->supplier->rating_score ?? 100,
                 'audit' => [
                     'offer_id' => $offer->id,
                     'supplier_id' => $offer->supplier_id,
                     'supplier_code' => $offer->supplier->code,
+                    'supplier_scope' => $offer->supplier->scope_type,
+                    'supplier_vendor_id' => $offer->supplier->vendor_id,
+                    'supplier_product_variant_id' => $offer->supplier_product_variant_id,
+                    'supplier_sku' => $offer->supplierProductVariant->supplier_sku,
                     'original_cost_minor' => $offerCostMinor,
                     'original_currency' => $offerCurrency,
                     'target_currency' => $targetCurrency,
@@ -103,6 +113,8 @@ class SupplierRoutingEngine implements SupplierRoutingEngineInterface
                     'lead_time_days' => $offer->lead_time_days,
                     'stock_on_hand' => (string) $offer->stock_quantity,
                     'location_code' => $offer->supplierLocation->code,
+                    'location_country_code' => $offer->supplierLocation->country_code,
+                    'rating_score' => $offer->supplier->rating_score ?? 100,
                 ],
             ];
         }
@@ -114,20 +126,39 @@ class SupplierRoutingEngine implements SupplierRoutingEngineInterface
                 'audit_snapshot' => [
                     'status' => 'no_viable_offer',
                     'candidates_evaluated' => 0,
+                    'delivery_country_code' => $deliveryCountryCode,
                     'timestamp' => now()->toIso8601String(),
                 ],
                 'candidate_count' => 0,
             ];
         }
 
-        // Sort by lowest normalized cost, then lowest lead time
+        // Deterministic multi-factor tie-break:
+        // 1. Lowest normalized cost
+        // 2. Lowest lead time
+        // 3. Highest rating score
+        // 4. Offer ID ascending (deterministic tie-break)
         usort($evaluated, function ($a, $b): int {
             if ($a['normalized_cost_minor'] !== $b['normalized_cost_minor']) {
                 return $a['normalized_cost_minor'] <=> $b['normalized_cost_minor'];
             }
+            if ($a['lead_time_days'] !== $b['lead_time_days']) {
+                return $a['lead_time_days'] <=> $b['lead_time_days'];
+            }
+            if ($a['rating_score'] !== $b['rating_score']) {
+                return $b['rating_score'] <=> $a['rating_score'];
+            }
 
-            return $a['lead_time_days'] <=> $b['lead_time_days'];
+            return $a['offer']->id <=> $b['offer']->id;
         });
+
+        // Add ranking to candidate audits
+        $rankedCandidates = [];
+        foreach ($evaluated as $idx => $item) {
+            $candidateAudit = $item['audit'];
+            $candidateAudit['rank'] = $idx + 1;
+            $rankedCandidates[] = $candidateAudit;
+        }
 
         $winner = $evaluated[0];
 
@@ -138,7 +169,10 @@ class SupplierRoutingEngine implements SupplierRoutingEngineInterface
                 'status' => 'routed',
                 'selected_offer_id' => $winner['offer']->id,
                 'supplier_id' => $winner['offer']->supplier_id,
-                'all_candidates' => array_map(fn ($e) => $e['audit'], $evaluated),
+                'supplier_location_id' => $winner['offer']->supplier_location_id,
+                'supplier_sku' => $winner['offer']->supplierProductVariant->supplier_sku,
+                'delivery_country_code' => $deliveryCountryCode,
+                'all_candidates' => $rankedCandidates,
                 'timestamp' => now()->toIso8601String(),
             ],
             'candidate_count' => count($evaluated),

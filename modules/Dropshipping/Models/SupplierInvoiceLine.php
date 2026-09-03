@@ -18,6 +18,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $quantity
  * @property int $unit_cost_minor
  * @property int $line_total_minor
+ * @property int $tax_minor
  * @property Carbon $created_at
  * @property Carbon $updated_at
  * @property-read SupplierInvoice $supplierInvoice
@@ -36,12 +37,14 @@ class SupplierInvoiceLine extends Model
         'quantity',
         'unit_cost_minor',
         'line_total_minor',
+        'tax_minor',
     ];
 
     protected $casts = [
         'quantity' => 'decimal:8',
         'unit_cost_minor' => 'integer',
         'line_total_minor' => 'integer',
+        'tax_minor' => 'integer',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];

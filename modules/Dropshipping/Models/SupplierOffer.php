@@ -86,14 +86,25 @@ class SupplierOffer extends Model
 
     public function getCostMinorAttribute(): int
     {
-        return $this->location_wholesale_cost_minor
-            ?? $this->supplierProductVariant->canonical_wholesale_cost_minor
-            ?? 0;
+        $cost = $this->location_wholesale_cost_minor
+            ?? $this->supplierProductVariant?->canonical_wholesale_cost_minor;
+
+        if ($cost === null) {
+            throw new \DomainException("Wholesale procurement cost is missing for SupplierOffer [{$this->id}]. Fail closed.");
+        }
+
+        return $cost;
     }
 
     public function getCurrencyAttribute(): string
     {
-        return $this->supplierProductVariant->currency ?? 'EUR';
+        $currency = $this->supplierProductVariant?->currency;
+
+        if ($currency === null || $currency === '') {
+            throw new \DomainException("Procurement currency is missing for SupplierOffer [{$this->id}]. Fail closed.");
+        }
+
+        return $currency;
     }
 
     public function getStockOnHandAttribute(): string

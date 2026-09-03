@@ -9,6 +9,27 @@ beforeEach(function (): void {
     $this->allocator = new DecimalReturnAllocationService;
 });
 
+test('proves vendor refund economics excludes tax from vendor payable debit', function (): void {
+    $item = new OrderItem([
+        'quantity' => '1.00000000',
+        'subtotal_minor' => 2000,
+        'discount_minor' => 200,
+        'tax_minor' => 342,
+        'commission_amount_minor' => 300,
+    ]);
+
+    $alloc = $this->allocator->calculateItemAllocation($item, '0.00000000', '1.00000000');
+
+    expect($alloc['refund_subtotal_minor'])->toBe(2000)
+        ->and($alloc['refund_discount_reversal_minor'])->toBe(200)
+        ->and($alloc['refund_tax_minor'])->toBe(342)
+        ->and($alloc['vendor_commission_reversal_minor'])->toBe(300)
+        ->and($alloc['net_customer_refund_minor'])->toBe(2142)
+        ->and($alloc['vendor_gross_reversal_minor'])->toBe(1800)
+        ->and($alloc['vendor_payable_debit_minor'])->toBe(1500)
+        ->and($alloc['net_customer_refund_minor'])->not->toBe($alloc['vendor_payable_debit_minor']);
+});
+
 test('allocates integer return quantity accurately with cumulative difference of floor', function (): void {
     $item = new OrderItem([
         'quantity' => '3.00000000',
@@ -25,21 +46,25 @@ test('allocates integer return quantity accurately with cumulative difference of
         ->and($alloc1['refund_tax_minor'])->toBe(633)
         ->and($alloc1['vendor_commission_reversal_minor'])->toBe(500)
         ->and($alloc1['net_customer_refund_minor'])->toBe(3333 - 333 + 633)
-        ->and($alloc1['vendor_payable_debit_minor'])->toBe((3333 - 333 + 633) - 500);
+        ->and($alloc1['vendor_gross_reversal_minor'])->toBe(3333 - 333)
+        ->and($alloc1['vendor_payable_debit_minor'])->toBe((3333 - 333) - 500)
+        ->and($alloc1['net_customer_refund_minor'])->not->toBe($alloc1['vendor_payable_debit_minor']);
 
     // Return 2nd of 3
     $alloc2 = $this->allocator->calculateItemAllocation($item, '1.00000000', '1.00000000');
     expect($alloc2['refund_subtotal_minor'])->toBe(3333)
         ->and($alloc2['refund_discount_reversal_minor'])->toBe(333)
         ->and($alloc2['refund_tax_minor'])->toBe(633)
-        ->and($alloc2['vendor_commission_reversal_minor'])->toBe(500);
+        ->and($alloc2['vendor_commission_reversal_minor'])->toBe(500)
+        ->and($alloc2['vendor_payable_debit_minor'])->toBe((3333 - 333) - 500);
 
     // Return 3rd of 3 (Final unit captures remainders!)
     $alloc3 = $this->allocator->calculateItemAllocation($item, '2.00000000', '1.00000000');
     expect($alloc3['refund_subtotal_minor'])->toBe(3334)
         ->and($alloc3['refund_discount_reversal_minor'])->toBe(334)
         ->and($alloc3['refund_tax_minor'])->toBe(634)
-        ->and($alloc3['vendor_commission_reversal_minor'])->toBe(500);
+        ->and($alloc3['vendor_commission_reversal_minor'])->toBe(500)
+        ->and($alloc3['vendor_payable_debit_minor'])->toBe((3334 - 334) - 500);
 
     // Sum of all three allocations strictly equals original totals
     $sumSubtotal = $alloc1['refund_subtotal_minor'] + $alloc2['refund_subtotal_minor'] + $alloc3['refund_subtotal_minor'];
@@ -67,14 +92,17 @@ test('allocates fractional decimal quantities with conservation', function (): v
     expect($alloc1['refund_subtotal_minor'])->toBe(2500)
         ->and($alloc1['refund_discount_reversal_minor'])->toBe(166)
         ->and($alloc1['refund_tax_minor'])->toBe(466)
-        ->and($alloc1['vendor_commission_reversal_minor'])->toBe(233);
+        ->and($alloc1['vendor_commission_reversal_minor'])->toBe(233)
+        ->and($alloc1['vendor_payable_debit_minor'])->toBe((2500 - 166) - 233)
+        ->and($alloc1['net_customer_refund_minor'])->not->toBe($alloc1['vendor_payable_debit_minor']);
 
     // Return remaining 1.0 of 1.5
     $alloc2 = $this->allocator->calculateItemAllocation($item, '0.50000000', '1.00000000');
     expect($alloc2['refund_subtotal_minor'])->toBe(5000)
         ->and($alloc2['refund_discount_reversal_minor'])->toBe(334)
         ->and($alloc2['refund_tax_minor'])->toBe(934)
-        ->and($alloc2['vendor_commission_reversal_minor'])->toBe(467);
+        ->and($alloc2['vendor_commission_reversal_minor'])->toBe(467)
+        ->and($alloc2['vendor_payable_debit_minor'])->toBe((5000 - 334) - 467);
 
     // Total conservation
     expect($alloc1['refund_subtotal_minor'] + $alloc2['refund_subtotal_minor'])->toBe(7500)

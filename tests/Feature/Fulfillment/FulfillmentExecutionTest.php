@@ -272,7 +272,7 @@ test('dispatches shipment and transitions fulfillment status to shipped', functi
 
     expect($shipment->carrier_code)->toBe('DHL')
         ->and($shipment->tracking_number)->toBe('DHL-987654321')
-        ->and($shipment->status)->toBe(ShipmentStatus::MANIFESTED->value)
+        ->and($shipment->status)->toBe(ShipmentStatus::IN_TRANSIT->value)
         ->and($shipment->shipped_at)->not->toBeNull();
 
     $f->refresh();
@@ -280,4 +280,162 @@ test('dispatches shipment and transitions fulfillment status to shipped', functi
         ->and($f->tracking_number)->toBe('DHL-987654321')
         ->and($f->carrier_code)->toBe('DHL')
         ->and($f->shipped_at)->not->toBeNull();
+});
+
+test('hybrid fulfillment under-allocation fails closed', function (): void {
+    $groups = [
+        [
+            'mode' => FulfillmentMode::HYBRID->value,
+            'items' => [
+                ['order_item_id' => $this->item1->id, 'quantity' => '2.00000000'],
+            ],
+            'children' => [
+                [
+                    'mode' => FulfillmentMode::OWN_STOCK->value,
+                    'items' => [
+                        ['order_item_id' => $this->item1->id, 'quantity' => '1.00000000'], // Only 1 of 2!
+                    ],
+                ],
+            ],
+        ],
+    ];
+
+    $this->expectException(DomainException::class);
+    $this->expectExceptionMessage('under-allocate');
+
+    $this->executionService->createFulfillments($this->sellerOrder, $groups);
+});
+
+test('hybrid fulfillment over-allocation fails closed', function (): void {
+    $groups = [
+        [
+            'mode' => FulfillmentMode::HYBRID->value,
+            'items' => [
+                ['order_item_id' => $this->item1->id, 'quantity' => '2.00000000'],
+            ],
+            'children' => [
+                [
+                    'mode' => FulfillmentMode::OWN_STOCK->value,
+                    'items' => [
+                        ['order_item_id' => $this->item1->id, 'quantity' => '3.00000000'], // 3 of 2!
+                    ],
+                ],
+            ],
+        ],
+    ];
+
+    $this->expectException(DomainException::class);
+    $this->expectExceptionMessage('over-allocate');
+
+    $this->executionService->createFulfillments($this->sellerOrder, $groups);
+});
+
+test('hybrid child item not on parent fails closed', function (): void {
+    $groups = [
+        [
+            'mode' => FulfillmentMode::HYBRID->value,
+            'items' => [
+                ['order_item_id' => $this->item1->id, 'quantity' => '2.00000000'],
+            ],
+            'children' => [
+                [
+                    'mode' => FulfillmentMode::OWN_STOCK->value,
+                    'items' => [
+                        ['order_item_id' => $this->item2->id, 'quantity' => '1.00000000'], // Item 2 not on parent!
+                    ],
+                ],
+            ],
+        ],
+    ];
+
+    $this->expectException(InvalidArgumentException::class);
+    $this->expectExceptionMessage('not present on parent');
+
+    $this->executionService->createFulfillments($this->sellerOrder, $groups);
+});
+
+test('hybrid parent cannot be shipped directly and fails closed', function (): void {
+    $groups = [
+        [
+            'mode' => FulfillmentMode::HYBRID->value,
+            'items' => [
+                ['order_item_id' => $this->item1->id, 'quantity' => '2.00000000'],
+            ],
+            'children' => [
+                [
+                    'mode' => FulfillmentMode::OWN_STOCK->value,
+                    'items' => [
+                        ['order_item_id' => $this->item1->id, 'quantity' => '2.00000000'],
+                    ],
+                ],
+            ],
+        ],
+    ];
+
+    $fulfillments = $this->executionService->createFulfillments($this->sellerOrder, $groups);
+    $parent = $fulfillments[0];
+
+    $this->expectException(DomainException::class);
+    $this->expectExceptionMessage('Cannot ship a hybrid fulfillment directly');
+
+    $this->executionService->shipFulfillment(
+        fulfillment: $parent,
+        carrierCode: 'DHL',
+        trackingNumber: 'DHL-HYBRID-FAIL'
+    );
+});
+
+test('cancelled fulfillment cannot be shipped and fails closed', function (): void {
+    $groups = [
+        [
+            'mode' => FulfillmentMode::OWN_STOCK->value,
+            'items' => [
+                ['order_item_id' => $this->item1->id, 'quantity' => '2.00000000'],
+            ],
+        ],
+    ];
+
+    $fulfillments = $this->executionService->createFulfillments($this->sellerOrder, $groups);
+    $f = $fulfillments[0];
+    $f->update(['status' => FulfillmentStatus::CANCELLED->value]);
+
+    $this->expectException(DomainException::class);
+    $this->expectExceptionMessage('Cannot ship cancelled fulfillment');
+
+    $this->executionService->shipFulfillment(
+        fulfillment: $f,
+        carrierCode: 'DHL',
+        trackingNumber: 'DHL-CANCELLED-FAIL'
+    );
+});
+
+test('already shipped fulfillment cannot be duplicate shipped and fails closed', function (): void {
+    $groups = [
+        [
+            'mode' => FulfillmentMode::OWN_STOCK->value,
+            'items' => [
+                ['order_item_id' => $this->item1->id, 'quantity' => '2.00000000'],
+            ],
+        ],
+    ];
+
+    $fulfillments = $this->executionService->createFulfillments($this->sellerOrder, $groups);
+    $f = $fulfillments[0];
+
+    // First shipment
+    $this->executionService->shipFulfillment(
+        fulfillment: $f,
+        carrierCode: 'DHL',
+        trackingNumber: 'DHL-FIRST'
+    );
+
+    // Second shipment attempt must fail closed!
+    $this->expectException(DomainException::class);
+    $this->expectExceptionMessage('already shipped');
+
+    $this->executionService->shipFulfillment(
+        fulfillment: $f,
+        carrierCode: 'DHL',
+        trackingNumber: 'DHL-SECOND'
+    );
 });

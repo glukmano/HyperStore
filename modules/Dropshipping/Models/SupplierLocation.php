@@ -59,15 +59,7 @@ class SupplierLocation extends Model
             if (empty($model->uuid)) {
                 $model->uuid = (string) Str::uuid();
             }
-            if (empty($model->city)) {
-                $model->city = 'Unknown City';
-            }
-            if (empty($model->postal_code)) {
-                $model->postal_code = '00000';
-            }
-            if (empty($model->address_line1)) {
-                $model->address_line1 = 'Main St 1';
-            }
+
         });
     }
 

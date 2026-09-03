@@ -243,8 +243,9 @@ test('approves return item with fractional decimal allocation and difference-of-
         ->and($updatedSr->refund_discount_reversal_minor)->toBe(200)
         ->and($updatedSr->refund_tax_minor)->toBe(342)
         ->and($updatedSr->vendor_commission_reversal_minor)->toBe(300)
-        ->and($updatedSr->net_customer_refund_minor)->toBe(2000 - 200 + 342)
-        ->and($updatedSr->vendor_payable_debit_minor)->toBe((2000 - 200 + 342) - 300);
+        ->and($updatedSr->net_customer_refund_minor)->toBe(2142)
+        ->and($updatedSr->vendor_payable_debit_minor)->toBe(1500)
+        ->and($updatedSr->net_customer_refund_minor)->not->toBe($updatedSr->vendor_payable_debit_minor);
 
     $retItem = $updatedSr->items->firstWhere('order_item_id', $this->vendorItem->id);
     expect($retItem->approved_quantity)->toBe('1.00000000');
@@ -303,7 +304,12 @@ test('finalizes refund idempotently via payment port and marketplace subledger',
         ->first();
 
     expect($payableEntry)->not->toBeNull()
-        ->and($payableEntry->net_amount_minor)->toBe($finalized->vendor_payable_debit_minor);
+        ->and($payableEntry->amount_minor)->toBe(1800)
+        ->and($payableEntry->commission_amount_minor)->toBe(300)
+        ->and($payableEntry->net_amount_minor)->toBe(1500)
+        ->and($payableEntry->net_amount_minor)->toBe($finalized->vendor_payable_debit_minor)
+        ->and($finalized->net_customer_refund_minor)->toBe(2142)
+        ->and($finalized->net_customer_refund_minor)->not->toBe($finalized->vendor_payable_debit_minor);
 
     // 2. Replay idempotency: second call returns same without re-calling payment or re-debiting payable
     $replay = $this->refundOrchestrator->finalizeRefund(
