@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use App\Core\Localization\Middleware\SetLocaleAndDirectionMiddleware;
 use App\Core\Stores\Contracts\StoreCreationServiceInterface;
-use App\Core\SuperAdmin\Contracts\ContextualMutationAuthorizerInterface;
+use App\Core\SuperAdmin\Contracts\ControlCenterMutationExecutorInterface;
 use App\Core\SuperAdmin\Contracts\OfficialExtensionGovernanceServiceInterface;
 use App\Core\SuperAdmin\Contracts\PlatformHealthServiceInterface;
 use App\Core\SuperAdmin\Contracts\PlatformReleaseServiceInterface;
@@ -13,23 +13,20 @@ use App\Core\SuperAdmin\Contracts\PlatformSettingsServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantLifecycleServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantMembershipServiceInterface;
-use App\Core\SuperAdmin\Exceptions\UnauthorizedContextException;
 use App\Core\SuperAdmin\Http\Middleware\ControlCenterContextMiddleware;
 use App\Core\SuperAdmin\Http\Middleware\EnsureSuperAdminMiddleware;
 use App\Core\SuperAdmin\Models\OfficialExtension;
 use App\Core\SuperAdmin\Models\PlatformSaasPlan;
 use App\Core\Tenancy\Models\Tenant;
 use App\Livewire\ControlCenter\DashboardOverview;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-// ── Health check (Public liveness) ────────────────────────────────────────────
+// ── Health check (Minimal Public Liveness) ────────────────────────────────────
 Route::get('/up', function () {
     return response()->json([
         'status' => 'ok',
-        'app' => config('app.name'),
-        'version' => app()->version(),
-        'php' => PHP_VERSION,
         'timestamp' => now()->toIso8601String(),
     ]);
 });
@@ -43,47 +40,44 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class])
             Route::get('/', DashboardOverview::class)->name('control-center.dashboard');
             Route::get('/{tenant}', DashboardOverview::class)->name('control-center.tenant.dashboard');
 
-            // Tenant Administration Routes (Tenant Admin / Staff)
-            Route::post('/{tenant}/stores', function (Tenant $tenant, Request $request, StoreCreationServiceInterface $storeService) {
-                $user = $request->user();
-                if ($user === null) {
-                    throw UnauthorizedContextException::unauthenticated();
-                }
-
+            // Tenant Administration Routes (Tenant Admin / Staff / Impersonated)
+            Route::post('/{tenant}/stores', function (Tenant $tenant, Request $request, StoreCreationServiceInterface $storeService, ControlCenterMutationExecutorInterface $executor) {
                 /** @var array<string, mixed> $validated */
                 $validated = $request->validate([
                     'name' => 'required|string|max:255',
                     'slug' => 'nullable|string|max:255',
                 ]);
 
-                $store = $storeService->createStore($tenant->id, $validated, $user->id);
+                $store = $executor->execute($request, 'create_store', function (int $effectiveUserId) use ($tenant, $validated, $storeService) {
+                    return $storeService->createStore($tenant->id, $validated, $effectiveUserId);
+                });
 
                 return response()->json(['store' => $store], 201);
             })->name('control-center.tenant.stores.create');
 
-            Route::post('/{tenant}/memberships/{userId}/revoke', function (Tenant $tenant, int $userId, Request $request, TenantMembershipServiceInterface $membershipService) {
-                $user = $request->user();
-                if ($user === null) {
-                    throw UnauthorizedContextException::unauthenticated();
-                }
-
-                $membership = $membershipService->revokeMembership($tenant->id, $userId, $user->id);
+            Route::post('/{tenant}/memberships/{userId}/revoke', function (Tenant $tenant, int $userId, Request $request, TenantMembershipServiceInterface $membershipService, ControlCenterMutationExecutorInterface $executor) {
+                $membership = $executor->execute($request, 'revoke_membership', function (int $effectiveUserId) use ($tenant, $userId, $membershipService) {
+                    return $membershipService->revokeMembership($tenant->id, $userId, $effectiveUserId);
+                });
 
                 return response()->json(['membership' => $membership]);
             })->name('control-center.tenant.memberships.revoke');
+
+            Route::post('/{tenant}/credentials', function (Tenant $tenant, Request $request, ControlCenterMutationExecutorInterface $executor) {
+                $result = $executor->execute($request, 'credential_mutation', function (int $effectiveUserId) {
+                    return ['status' => 'mutated', 'effective_user_id' => $effectiveUserId];
+                });
+
+                return response()->json($result);
+            })->name('control-center.tenant.credentials.mutate');
 
             // Super Admin Only Area
             Route::middleware([EnsureSuperAdminMiddleware::class])
                 ->prefix('super-admin')
                 ->group(function () {
                     // Authenticated Super Admin Health Diagnostics
-                    Route::get('/health', function (Request $request, PlatformHealthServiceInterface $healthService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
-                        $diagnostics = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $healthService->checkHealth());
+                    Route::get('/health', function (Request $request, PlatformHealthServiceInterface $healthService, ControlCenterMutationExecutorInterface $executor) {
+                        $diagnostics = $executor->executeSuperAdmin($request, fn () => $healthService->checkHealth());
 
                         return response()->json($diagnostics);
                     })->name('control-center.health');
@@ -91,65 +85,40 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class])
                     Route::get('/dashboard', DashboardOverview::class)->name('control-center.super-admin.dashboard');
 
                     // Tenant Lifecycle Operations
-                    Route::post('/tenants/{tenant}/suspend', function (Tenant $tenant, Request $request, TenantLifecycleServiceInterface $lifecycleService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
+                    Route::post('/tenants/{tenant}/suspend', function (Tenant $tenant, Request $request, TenantLifecycleServiceInterface $lifecycleService, ControlCenterMutationExecutorInterface $executor) {
                         $reason = (string) $request->input('reason', 'Administrative suspension');
-                        $result = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $lifecycleService->suspend($tenant->id, $reason));
+                        $result = $executor->executeSuperAdmin($request, fn () => $lifecycleService->suspend($tenant->id, $reason));
 
                         return response()->json(['tenant' => $result]);
                     })->name('control-center.super-admin.tenants.suspend');
 
-                    Route::post('/tenants/{tenant}/activate', function (Tenant $tenant, Request $request, TenantLifecycleServiceInterface $lifecycleService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
-                        $result = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $lifecycleService->activate($tenant->id));
+                    Route::post('/tenants/{tenant}/activate', function (Tenant $tenant, Request $request, TenantLifecycleServiceInterface $lifecycleService, ControlCenterMutationExecutorInterface $executor) {
+                        $result = $executor->executeSuperAdmin($request, fn () => $lifecycleService->activate($tenant->id));
 
                         return response()->json(['tenant' => $result]);
                     })->name('control-center.super-admin.tenants.activate');
 
                     // SaaS Plan & License Operations
-                    Route::post('/plans/{plan}/limits', function (PlatformSaasPlan $plan, Request $request, PlatformSaasPlanMutationServiceInterface $planService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
+                    Route::post('/plans/{plan}/limits', function (PlatformSaasPlan $plan, Request $request, PlatformSaasPlanMutationServiceInterface $planService, ControlCenterMutationExecutorInterface $executor) {
                         /** @var array<string, int> $limits */
                         $limits = (array) $request->input('limits', []);
-                        $result = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $planService->updateHardLimits($plan->id, $limits));
+                        $result = $executor->executeSuperAdmin($request, fn () => $planService->updateHardLimits($plan->id, $limits));
 
                         return response()->json(['plan' => $result]);
                     })->name('control-center.super-admin.plans.limits');
 
-                    Route::post('/licenses/{tenant}/overrides', function (Tenant $tenant, Request $request, TenantLicenseServiceInterface $licenseService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
+                    Route::post('/licenses/{tenant}/overrides', function (Tenant $tenant, Request $request, TenantLicenseServiceInterface $licenseService, ControlCenterMutationExecutorInterface $executor) {
                         /** @var array<string, int> $limits */
                         $limits = (array) $request->input('override_limits', []);
                         /** @var array<string, mixed> $features */
                         $features = (array) $request->input('override_features', []);
-                        $result = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $licenseService->updateOverrides($tenant->id, $limits, $features));
+                        $result = $executor->executeSuperAdmin($request, fn () => $licenseService->updateOverrides($tenant->id, $limits, $features));
 
                         return response()->json(['license' => $result]);
                     })->name('control-center.super-admin.licenses.overrides');
 
                     // Releases, Extensions, Settings
-                    Route::post('/releases', function (Request $request, PlatformReleaseServiceInterface $releaseService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
+                    Route::post('/releases', function (Request $request, PlatformReleaseServiceInterface $releaseService, ControlCenterMutationExecutorInterface $executor) {
                         /** @var array{version: string, channel: string, release_notes: string, compatibility?: array<string, mixed>} $validated */
                         $validated = $request->validate([
                             'version' => 'required|string|max:50',
@@ -158,7 +127,7 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class])
                             'compatibility' => 'nullable|array',
                         ]);
 
-                        $result = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $releaseService->createRelease(
+                        $result = $executor->executeSuperAdmin($request, fn () => $releaseService->createRelease(
                             $validated['version'],
                             $validated['channel'],
                             $validated['release_notes'],
@@ -168,24 +137,14 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class])
                         return response()->json(['release' => $result], 201);
                     })->name('control-center.super-admin.releases.create');
 
-                    Route::post('/extensions/{extension}/approve', function (OfficialExtension $extension, Request $request, OfficialExtensionGovernanceServiceInterface $extensionService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
+                    Route::post('/extensions/{extension}/approve', function (OfficialExtension $extension, Request $request, OfficialExtensionGovernanceServiceInterface $extensionService, ControlCenterMutationExecutorInterface $executor) {
                         $version = (string) $request->input('approved_version', '1.0.0');
-                        $result = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $extensionService->approveExtension($extension->id, $version));
+                        $result = $executor->executeSuperAdmin($request, fn () => $extensionService->approveExtension($extension->id, $version));
 
                         return response()->json(['extension' => $result]);
                     })->name('control-center.super-admin.extensions.approve');
 
-                    Route::post('/settings', function (Request $request, PlatformSettingsServiceInterface $settingsService, ContextualMutationAuthorizerInterface $authorizer) {
-                        $user = $request->user();
-                        if ($user === null) {
-                            throw UnauthorizedContextException::unauthenticated();
-                        }
-
+                    Route::post('/settings', function (Request $request, PlatformSettingsServiceInterface $settingsService, ControlCenterMutationExecutorInterface $executor) {
                         /** @var array{key: string, value: string, is_encrypted?: bool} $validated */
                         $validated = $request->validate([
                             'key' => 'required|string|max:100',
@@ -193,7 +152,10 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class])
                             'is_encrypted' => 'boolean',
                         ]);
 
-                        $result = $authorizer->executeSuperAdminAuthorized($user->id, fn () => $settingsService->set(
+                        /** @var User $user */
+                        $user = $request->user();
+
+                        $result = $executor->executeSuperAdmin($request, fn () => $settingsService->set(
                             $validated['key'],
                             $validated['value'],
                             (bool) ($validated['is_encrypted'] ?? false),

@@ -7,6 +7,7 @@ namespace App\Core\SuperAdmin;
 use App\Core\Stores\Contracts\StoreCreationServiceInterface;
 use App\Core\Stores\Services\StoreCreationService;
 use App\Core\SuperAdmin\Contracts\ContextualMutationAuthorizerInterface;
+use App\Core\SuperAdmin\Contracts\ControlCenterMutationExecutorInterface;
 use App\Core\SuperAdmin\Contracts\ImpersonationServiceInterface;
 use App\Core\SuperAdmin\Contracts\OfficialExtensionGovernanceServiceInterface;
 use App\Core\SuperAdmin\Contracts\PlatformHealthServiceInterface;
@@ -19,6 +20,7 @@ use App\Core\SuperAdmin\Contracts\TenantLifecycleServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantMembershipServiceInterface;
 use App\Core\SuperAdmin\Contracts\TenantResourceEntitlementGuardInterface;
 use App\Core\SuperAdmin\Services\ContextualMutationAuthorizer;
+use App\Core\SuperAdmin\Services\ControlCenterMutationExecutor;
 use App\Core\SuperAdmin\Services\ImpersonationService;
 use App\Core\SuperAdmin\Services\OfficialExtensionGovernanceService;
 use App\Core\SuperAdmin\Services\PlatformHealthService;
@@ -49,5 +51,6 @@ class SuperAdminServiceProvider extends ServiceProvider
         $this->app->singleton(StoreCreationServiceInterface::class, StoreCreationService::class);
         $this->app->singleton(ContextualMutationAuthorizerInterface::class, ContextualMutationAuthorizer::class);
         $this->app->singleton(TenantMembershipServiceInterface::class, TenantMembershipService::class);
+        $this->app->singleton(ControlCenterMutationExecutorInterface::class, ControlCenterMutationExecutor::class);
     }
 }
