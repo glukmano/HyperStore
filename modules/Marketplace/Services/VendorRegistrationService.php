@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Services;
 
+use App\Core\SuperAdmin\Contracts\TenantResourceEntitlementGuardInterface;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
@@ -25,13 +26,14 @@ final class VendorRegistrationService
     public function __construct(
         private readonly VendorApprovalPolicyInterface $approvalPolicy,
         private readonly MarketplaceConcurrencyBarrierInterface $barrier,
+        private readonly ?TenantResourceEntitlementGuardInterface $guard = null,
     ) {}
 
     public function registerVendor(VendorRegistrationDTO $dto): Vendor
     {
         $normalizedSlug = VendorSlug::from($dto->platformSlug)->value();
 
-        return DB::transaction(function () use ($dto, $normalizedSlug): Vendor {
+        $mutation = function () use ($dto, $normalizedSlug): Vendor {
             // Check global platform slug uniqueness under advisory lock / check
             if (Vendor::withoutGlobalScopes()->where('platform_slug', $normalizedSlug)->exists()) {
                 throw SlugAlreadyTakenException::forSlug($normalizedSlug);
@@ -92,6 +94,16 @@ final class VendorRegistrationService
             }
 
             return $vendor;
-        });
+        };
+
+        if ($this->guard !== null) {
+            return $this->guard->admit($dto->tenantId, 'max_vendors', $mutation);
+        }
+
+        if (app()->bound(TenantResourceEntitlementGuardInterface::class)) {
+            return app(TenantResourceEntitlementGuardInterface::class)->admit($dto->tenantId, 'max_vendors', $mutation);
+        }
+
+        return DB::transaction($mutation);
     }
 }

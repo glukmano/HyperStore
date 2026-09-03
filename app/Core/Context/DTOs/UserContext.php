@@ -13,6 +13,11 @@ final readonly class UserContext implements UserContextInterface
         private ?string $email = null,
     ) {}
 
+    public static function authenticated(int $id, string $email): self
+    {
+        return new self($id, $email);
+    }
+
     public static function from(int $id, string $email): self
     {
         return new self($id, $email);

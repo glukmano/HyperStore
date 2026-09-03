@@ -22,6 +22,8 @@ class DashboardOverview extends Component
 
     public bool $storeResolved;
 
+    public bool $vendorResolved;
+
     public int $enabledModules;
 
     public int $disabledModules;
@@ -35,6 +37,7 @@ class DashboardOverview extends Component
         $this->direction = $localeManager->isRtl() ? 'rtl' : 'ltr';
         $this->tenantResolved = $contextManager->hasTenant();
         $this->storeResolved = $contextManager->hasStore();
+        $this->vendorResolved = $contextManager->hasVendor();
         $this->enabledModules = count($kernel->getRegistry()->enabled());
         $this->disabledModules = count($kernel->getRegistry()->disabled());
     }

@@ -100,3 +100,9 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 - [ADR-0111: Configurable Commercial Model & Vendor Payable Subledger](ADR-0111-configurable-commercial-model-and-vendor-payable-subledger.md)
 - [ADR-0112: Payout Allocation Reservation, Directional Payables & Atomic Finalization](ADR-0112-payout-allocation-reservation-directional-payables-and-atomic-finalization.md)
 - [ADR-0113: Global Vendor Slug, Domain Verification & Storefront Resolver](ADR-0113-global-vendor-slug-domain-verification-and-storefront-resolver.md)
+
+### Phase 12: Control Center & Super Admin Foundation
+- [ADR-0114: Control Center Unified Shell, Dynamic Navigation, and Runtime Context Governance](ADR-0114-control-center-unified-shell-and-runtime-context-governance.md)
+- [ADR-0115: Multi-Tier RBAC Architecture and Context-Scoped Permission Matrix](ADR-0115-multi-tier-rbac-and-context-scoped-permission-matrix.md)
+- [ADR-0116: Audited Context Switching, Cryptographic Impersonation Safety Boundaries, and Append-Only Audit Logging](ADR-0116-cryptographic-impersonation-safety-boundaries-and-immutable-audit-logging.md)
+- [ADR-0117: Super Admin Boundaries, Tenant Licensing, SaaS Plans, Release Governance, and Platform Health Diagnostics](ADR-0117-super-admin-boundaries-tenant-licensing-and-platform-health-diagnostics.md)

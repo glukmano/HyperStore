@@ -11,6 +11,7 @@ use App\Core\Context\Contracts\MarketContextInterface;
 use App\Core\Context\Contracts\StoreContextInterface;
 use App\Core\Context\Contracts\TenantContextInterface;
 use App\Core\Context\Contracts\UserContextInterface;
+use App\Core\Context\Contracts\VendorContextInterface;
 use App\Core\Context\DTOs\ChannelContext;
 use App\Core\Context\DTOs\CurrencyContext;
 use App\Core\Context\DTOs\LocaleContext;
@@ -18,11 +19,12 @@ use App\Core\Context\DTOs\MarketContext;
 use App\Core\Context\DTOs\StoreContext;
 use App\Core\Context\DTOs\TenantContext;
 use App\Core\Context\DTOs\UserContext;
+use App\Core\Context\DTOs\VendorContext;
 
 /**
  * ContextManager: In-memory request-scoped context container.
  *
- * Holds the current resolved contexts (Tenant, Store, Channel, Market, Locale, Currency, User).
+ * Holds the current resolved contexts (Tenant, Store, Channel, Market, Locale, Currency, User, Vendor).
  * All contexts default to unresolved — safe null behaviour is guaranteed.
  *
  * Physical tenancy strategy (DB-per-tenant / schema / shared) is NOT encoded here.
@@ -46,6 +48,8 @@ final class ContextManager
 
     private UserContextInterface $user;
 
+    private VendorContextInterface $vendor;
+
     public function __construct()
     {
         $this->tenant = TenantContext::unresolved();
@@ -55,6 +59,7 @@ final class ContextManager
         $this->locale = LocaleContext::unresolved();
         $this->currency = CurrencyContext::unresolved();
         $this->user = UserContext::guest();
+        $this->vendor = VendorContext::unresolved();
     }
 
     // ── Tenant ────────────────────────────────────────────────────────────────
@@ -176,6 +181,23 @@ final class ContextManager
         return $this->user->isAuthenticated();
     }
 
+    // ── Vendor ────────────────────────────────────────────────────────────────
+
+    public function getVendor(): VendorContextInterface
+    {
+        return $this->vendor;
+    }
+
+    public function setVendor(VendorContextInterface $vendor): void
+    {
+        $this->vendor = $vendor;
+    }
+
+    public function hasVendor(): bool
+    {
+        return $this->vendor->isResolved();
+    }
+
     // ── Reset (testing / teardown) ────────────────────────────────────────────
 
     public function reset(): void
@@ -187,5 +209,6 @@ final class ContextManager
         $this->locale = LocaleContext::unresolved();
         $this->currency = CurrencyContext::unresolved();
         $this->user = UserContext::guest();
+        $this->vendor = VendorContext::unresolved();
     }
 }

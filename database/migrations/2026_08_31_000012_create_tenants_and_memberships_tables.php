@@ -14,7 +14,7 @@ return new class extends Migration
             $table->id();
             $table->string('name', 255);
             $table->string('slug', 100)->unique();
-            $table->enum('status', ['active', 'suspended', 'archived'])->default('active');
+            $table->enum('status', ['provisioning', 'active', 'suspended', 'terminated', 'archived'])->default('active');
             $table->foreignId('owner_id')->nullable()->constrained('users')->nullOnDelete();
             $table->enum('customer_account_scope', ['tenant_wide', 'store_isolated'])->default('tenant_wide');
             $table->jsonb('settings')->nullable();

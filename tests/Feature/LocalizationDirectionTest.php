@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Core\Localization\Enums\Direction;
 use App\Core\Localization\LocaleManager;
+use App\Models\User;
 
 // ── Direction enum ────────────────────────────────────────────────────────────
 
@@ -73,11 +74,13 @@ test('LocaleManager returns supported locales from config', function () {
 // ── Route-level locale switching via ?lang= ───────────────────────────────────
 
 test('control-center responds with 200', function () {
-    $this->get('/control-center')->assertOk();
+    $user = User::factory()->create();
+    $this->actingAs($user)->get('/control-center')->assertOk();
 });
 
 test('control-center with ?lang=ar responds with 200', function () {
-    $this->get('/control-center?lang=ar')->assertOk();
+    $user = User::factory()->create();
+    $this->actingAs($user)->get('/control-center?lang=ar')->assertOk();
 });
 
 test('/up health check responds with JSON ok', function () {

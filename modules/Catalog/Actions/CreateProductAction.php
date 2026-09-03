@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Catalog\Actions;
 
 use App\Core\Audit\Contracts\AuditManagerInterface;
+use App\Core\SuperAdmin\Contracts\TenantResourceEntitlementGuardInterface;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Modules\Catalog\DTOs\ProductData;
@@ -22,7 +23,7 @@ class CreateProductAction
 
     public function execute(ProductData $data): Product
     {
-        return DB::transaction(function () use ($data): Product {
+        $mutation = function () use ($data): Product {
             // Cross-tenant validation for Brand
             if ($data->brandId !== null) {
                 $brand = Brand::find($data->brandId);
@@ -83,6 +84,12 @@ class CreateProductAction
             ProductCreated::dispatch($product);
 
             return $product->load(['translations', 'categories', 'brand', 'attributeSet']);
-        });
+        };
+
+        if (app()->bound(TenantResourceEntitlementGuardInterface::class) && $data->status !== 'archived') {
+            return app(TenantResourceEntitlementGuardInterface::class)->admit($data->tenantId, 'max_products', $mutation);
+        }
+
+        return DB::transaction($mutation);
     }
 }
