@@ -96,13 +96,13 @@ class VendorPayableAvailabilityPolicyTest extends TestCase
     }
 
     /**
-     * Test C: Neither Store nor Tenant configured -> typed fail-closed exception -> no earning created
+     * Test C1: Neither Store nor Tenant configured -> policy lookup throws typed exception
      */
-    public function test_scenario_c_unconfigured_policy_fails_closed_and_creates_no_payable(): void
+    public function test_scenario_c1_policy_lookup_unconfigured_fails_closed_with_typed_exception(): void
     {
         $tenant = Tenant::create([
-            'name' => 'Tenant C',
-            'slug' => 'tenant-c',
+            'name' => 'Tenant C1',
+            'slug' => 'tenant-c1',
             'settings' => [
                 'marketplace' => [
                     'commercial_model' => 'platform_as_merchant_of_record',
@@ -112,49 +112,73 @@ class VendorPayableAvailabilityPolicyTest extends TestCase
 
         $store = Store::create([
             'tenant_id' => $tenant->id,
-            'name' => 'Store C',
-            'slug' => 'store-c',
+            'name' => 'Store C1',
+            'slug' => 'store-c1',
+            'settings' => [],
+        ]);
+
+        $this->expectException(MissingVendorPayableAvailabilityPolicyException::class);
+        $this->policy->getHoldDays($tenant->id, $store->id);
+    }
+
+    /**
+     * Test C2: VendorPayableSubledgerService::accrueEarning() with missing hold policy fails closed and creates zero entries
+     */
+    public function test_scenario_c2_accrue_earning_with_missing_hold_policy_fails_closed_and_creates_zero_entries(): void
+    {
+        $tenant = Tenant::create([
+            'name' => 'Tenant C2',
+            'slug' => 'tenant-c2',
+            'settings' => [
+                'marketplace' => [
+                    'commercial_model' => 'platform_as_merchant_of_record',
+                ],
+            ],
+        ]);
+
+        $store = Store::create([
+            'tenant_id' => $tenant->id,
+            'name' => 'Store C2',
+            'slug' => 'store-c2',
             'settings' => [],
         ]);
 
         $plan = VendorPlan::create([
             'tenant_id' => $tenant->id,
-            'name' => 'Plan C',
-            'code' => 'plan-c',
+            'name' => 'Plan C2',
+            'code' => 'plan-c2',
         ]);
 
         $vendor = Vendor::create([
             'tenant_id' => $tenant->id,
             'vendor_plan_id' => $plan->id,
-            'name' => 'Vendor C',
-            'platform_slug' => 'vendor-c',
-            'legal_name' => 'Vendor C Corp',
-            'email' => 'vendor-c@test.com',
+            'name' => 'Vendor C2',
+            'platform_slug' => 'vendor-c2',
+            'legal_name' => 'Vendor C2 Corp',
+            'email' => 'vendor-c2@test.com',
         ]);
 
-        // Policy directly throws typed exception
-        $this->expectException(MissingVendorPayableAvailabilityPolicyException::class);
-        $this->policy->getHoldDays($tenant->id, $store->id);
-
-        // Subledger service fails closed without creating any payable entry
         $subledger = app(VendorPayableSubledgerService::class);
+        $thrown = false;
+
         try {
             $subledger->accrueEarning(
                 tenantId: $tenant->id,
                 vendorId: $vendor->id,
                 orderItemId: 1,
                 sourceType: 'order_item',
-                sourceUuid: 'oi-c-1',
+                sourceUuid: 'oi-c2-1',
                 currency: 'EUR',
                 amountMinor: 10000,
                 commissionMinor: 1000,
                 storeId: $store->id
             );
         } catch (MissingVendorPayableAvailabilityPolicyException) {
-            // Expected
+            $thrown = true;
         }
 
-        $this->assertSame(0, VendorPayableEntry::count());
+        $this->assertTrue($thrown, 'Expected MissingVendorPayableAvailabilityPolicyException was not thrown.');
+        $this->assertSame(0, VendorPayableEntry::count(), 'Zero vendor_payable_entries rows must exist when policy cannot be resolved.');
     }
 
     /**

@@ -14,6 +14,7 @@ use Illuminate\Support\Str;
 use Modules\Catalog\Models\Product;
 use Modules\Catalog\Models\ProductVariant;
 use Modules\Marketplace\Enums\VendorListingStatus;
+use Modules\Marketplace\Exceptions\VendorListingQuotaException;
 
 /**
  * @property int $id
@@ -60,6 +61,20 @@ class VendorListing extends Model
         static::creating(function (self $model): void {
             if (empty($model->uuid)) {
                 $model->uuid = (string) Str::uuid();
+            }
+
+            if ($model->vendor_id !== null) {
+                /** @var Vendor|null $vendor */
+                $vendor = Vendor::where('id', $model->vendor_id)->lockForUpdate()->first();
+                if ($vendor !== null && $vendor->plan !== null && $vendor->plan->product_limit !== null) {
+                    $currentListingCount = static::where('tenant_id', $model->tenant_id)
+                        ->where('vendor_id', $model->vendor_id)
+                        ->count();
+
+                    if ($currentListingCount >= $vendor->plan->product_limit) {
+                        throw VendorListingQuotaException::quotaExceeded($vendor->plan->product_limit);
+                    }
+                }
             }
         });
     }

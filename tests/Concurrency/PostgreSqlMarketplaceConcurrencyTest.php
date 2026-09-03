@@ -18,6 +18,9 @@ use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
 use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Enums\VendorRole;
 use Modules\Marketplace\Models\Vendor;
+use Modules\Marketplace\Models\VendorCommissionRule;
+use Modules\Marketplace\Models\VendorInvitation;
+use Modules\Marketplace\Models\VendorListing;
 use Modules\Marketplace\Models\VendorPayableEntry;
 use Modules\Marketplace\Models\VendorPlan;
 use Modules\Marketplace\Models\VendorUser;
@@ -944,6 +947,433 @@ try {
         $this->assertTrue(
             $results[1]['stdout'] === 'APPROVAL_RESULT:true' || $results[1]['stdout'] === 'APPROVAL_RESULT:false',
             'Approval must evaluate authoritatively to true or false without error.'
+        );
+    }
+
+    public function test_race_approval_vs_suspension_concurrency(): void
+    {
+        $vendorToTest = Vendor::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_plan_id' => $this->plan->id,
+            'name' => 'Approval Suspension Vendor',
+            'platform_slug' => 'app-susp-'.uniqid(),
+            'legal_name' => 'App Susp LLC',
+            'email' => 'app_susp@test.com',
+            'operational_status' => VendorOperationalStatus::PendingApproval,
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $vendorId = $vendorToTest->id;
+
+        // Worker 1: Attempts approval transition (PendingApproval -> Active)
+        $worker1 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
+        \$v = \\Modules\\Marketplace\\Models\\Vendor::lockForUpdate()->find({$vendorId});
+        if (\$v->operational_status !== \\Modules\\Marketplace\\Enums\\VendorOperationalStatus::PendingApproval) {
+            throw new \\DomainException('CANNOT_APPROVE: Stale or invalid operational status: ' . \$v->operational_status->value);
+        }
+        \$v->operational_status = \\Modules\\Marketplace\\Enums\\VendorOperationalStatus::Active;
+        \$v->save();
+    });
+    echo 'APPROVAL_SUCCESS';
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'APPROVAL_FAILED:' . \$e->getMessage();
+    exit(0);
+}
+";
+
+        // Worker 2: Attempts suspension transition (-> Suspended)
+        $worker2 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
+        \$v = \\Modules\\Marketplace\\Models\\Vendor::lockForUpdate()->find({$vendorId});
+        if (!\$v->operational_status->canTransitionTo(\\Modules\\Marketplace\\Enums\\VendorOperationalStatus::Suspended)) {
+            throw new \\DomainException('CANNOT_SUSPEND: Status cannot transition to suspended: ' . \$v->operational_status->value);
+        }
+        \$v->operational_status = \\Modules\\Marketplace\\Enums\\VendorOperationalStatus::Suspended;
+        \$v->save();
+    });
+    echo 'SUSPENSION_SUCCESS';
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'SUSPENSION_FAILED:' . \$e->getMessage();
+    exit(0);
+}
+";
+
+        $results = $this->executeConcurrently([$worker1, $worker2]);
+
+        $this->assertSame(0, $results[0]['exit_code']);
+        $this->assertSame(0, $results[1]['exit_code']);
+
+        $vendorToTest->refresh();
+
+        // Monotonic invariant: In both interleavings, stale approval NEVER overwrites committed suspension
+        $this->assertSame(VendorOperationalStatus::Suspended, $vendorToTest->operational_status);
+        $this->assertSame('SUSPENSION_SUCCESS', $results[1]['stdout']);
+    }
+
+    public function test_race_staff_quota_concurrency(): void
+    {
+        $quotaPlan = VendorPlan::create([
+            'tenant_id' => $this->tenantA->id,
+            'name' => 'Quota 2 Plan',
+            'code' => 'plan-q2-'.uniqid(),
+            'staff_limit' => 2,
+        ]);
+
+        $vendor = Vendor::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_plan_id' => $quotaPlan->id,
+            'name' => 'Staff Quota Vendor',
+            'platform_slug' => 'staff-quota-'.uniqid(),
+            'legal_name' => 'Quota LLC',
+            'email' => 'quota@test.com',
+            'operational_status' => VendorOperationalStatus::Active,
+        ]);
+
+        // Existing active staff: 1 (Owner)
+        VendorUser::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $vendor->id,
+            'user_id' => User::factory()->create()->id,
+            'role' => 'owner',
+            'is_active' => true,
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenantA->id;
+        $vendorId = $vendor->id;
+
+        // Two concurrent workers attempt to invite staff (limit = 2, current = 1, exactly 1 slot remains)
+        $workerCode = function (string $email) use ($bootstrap, $tenantId, $vendorId): string {
+            return "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$service = app(\\Modules\\Marketplace\\Services\\VendorInvitationService::class);
+    \$res = \$service->inviteStaff({$tenantId}, {$vendorId}, '{$email}', \\Modules\\Marketplace\\Enums\\VendorRole::Staff);
+    echo 'SUCCESS:' . \$res['invitation']->id;
+    exit(0);
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorInvitationException \$e) {
+    echo 'QUOTA_EXCEEDED:' . \$e->getMessage();
+    exit(1);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+        };
+
+        $scripts = [
+            $workerCode('staff1@quota.com'),
+            $workerCode('staff2@quota.com'),
+        ];
+
+        $results = $this->executeConcurrently($scripts);
+
+        $successCount = 0;
+        $quotaExceededCount = 0;
+
+        foreach ($results as $res) {
+            if ($res['exit_code'] === 0 && str_starts_with($res['stdout'], 'SUCCESS:')) {
+                $successCount++;
+            } elseif (str_contains($res['stdout'], 'QUOTA_EXCEEDED:')) {
+                $quotaExceededCount++;
+            }
+        }
+
+        $this->assertSame(1, $successCount, 'Exactly one staff invitation must succeed when 1 slot remains.');
+        $this->assertSame(1, $quotaExceededCount, 'The competing worker must fail with quotaExceeded.');
+
+        $totalMembersAndInvites = VendorUser::where('tenant_id', $tenantId)->where('vendor_id', $vendorId)->count()
+            + VendorInvitation::where('tenant_id', $tenantId)->where('vendor_id', $vendorId)->count();
+
+        $this->assertSame(2, $totalMembersAndInvites, 'Total members + pending invites must never exceed staff_limit (2).');
+    }
+
+    public function test_race_listing_quota_concurrency(): void
+    {
+        $listingQuotaPlan = VendorPlan::create([
+            'tenant_id' => $this->tenantA->id,
+            'name' => 'Listing Quota 2 Plan',
+            'code' => 'plan-lq2-'.uniqid(),
+            'product_limit' => 2,
+        ]);
+
+        $vendor = Vendor::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_plan_id' => $listingQuotaPlan->id,
+            'name' => 'Listing Quota Vendor',
+            'platform_slug' => 'listing-q-'.uniqid(),
+            'legal_name' => 'Listing Quota LLC',
+            'email' => 'list_q@test.com',
+            'operational_status' => VendorOperationalStatus::Active,
+        ]);
+
+        // Product 1 (existing listing)
+        $p1 = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_type' => 'simple',
+            'sku' => 'PROD-LQ-1-'.uniqid(),
+            'status' => 'active',
+        ]);
+        VendorListing::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $vendor->id,
+            'product_id' => $p1->id,
+            'product_variant_id' => null,
+            'vendor_sku' => 'VSKU-LQ-1',
+        ]);
+
+        // Products 2 and 3 for concurrent workers
+        $p2 = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_type' => 'simple',
+            'sku' => 'PROD-LQ-2-'.uniqid(),
+            'status' => 'active',
+        ]);
+        $p3 = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_type' => 'simple',
+            'sku' => 'PROD-LQ-3-'.uniqid(),
+            'status' => 'active',
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenantA->id;
+        $vendorId = $vendor->id;
+        $p2Id = $p2->id;
+        $p3Id = $p3->id;
+
+        $workerCode = function (int $productId, string $sku) use ($bootstrap, $tenantId, $vendorId): string {
+            return "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$listing = \\Illuminate\\Support\\Facades\\DB::transaction(function () {
+        return \\Modules\\Marketplace\\Models\\VendorListing::create([
+        'tenant_id' => {$tenantId},
+        'vendor_id' => {$vendorId},
+        'product_id' => {$productId},
+        'product_variant_id' => null,
+        'vendor_sku' => '{$sku}',
+        ]);
+    });
+    echo 'SUCCESS:' . \$listing->id;
+    exit(0);
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorListingQuotaException \$e) {
+    echo 'QUOTA_EXCEEDED:' . \$e->getMessage();
+    exit(1);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+        };
+
+        $scripts = [
+            $workerCode($p2Id, 'VSKU-LQ-2'),
+            $workerCode($p3Id, 'VSKU-LQ-3'),
+        ];
+
+        $results = $this->executeConcurrently($scripts);
+
+        $successCount = 0;
+        $quotaExceededCount = 0;
+
+        foreach ($results as $res) {
+            if ($res['exit_code'] === 0 && str_starts_with($res['stdout'], 'SUCCESS:')) {
+                $successCount++;
+            } elseif (str_contains($res['stdout'], 'QUOTA_EXCEEDED:')) {
+                $quotaExceededCount++;
+            }
+        }
+
+        $this->assertSame(1, $successCount, 'Exactly one concurrent listing creation must succeed when 1 slot remains.');
+        $this->assertSame(1, $quotaExceededCount, 'The competing listing creation must be rejected with VendorListingQuotaException.');
+
+        $finalListingCount = VendorListing::where('tenant_id', $tenantId)->where('vendor_id', $vendorId)->count();
+        $this->assertSame(2, $finalListingCount, 'Active listings must never exceed product_limit (2).');
+    }
+
+    public function test_race_plan_downgrade_vs_listing_quota_mutation(): void
+    {
+        $highPlan = VendorPlan::create([
+            'tenant_id' => $this->tenantA->id,
+            'name' => 'High Plan',
+            'code' => 'plan-high-'.uniqid(),
+            'product_limit' => 5,
+        ]);
+        $lowPlan = VendorPlan::create([
+            'tenant_id' => $this->tenantA->id,
+            'name' => 'Low Plan',
+            'code' => 'plan-low-'.uniqid(),
+            'product_limit' => 1,
+        ]);
+
+        $vendor = Vendor::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_plan_id' => $highPlan->id,
+            'name' => 'Downgrade Race Vendor',
+            'platform_slug' => 'down-race-'.uniqid(),
+            'legal_name' => 'Downgrade LLC',
+            'email' => 'down@test.com',
+            'operational_status' => VendorOperationalStatus::Active,
+        ]);
+
+        // Already has 1 listing
+        $p1 = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_type' => 'simple',
+            'sku' => 'PROD-DOWN-1-'.uniqid(),
+            'status' => 'active',
+        ]);
+        VendorListing::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $vendor->id,
+            'product_id' => $p1->id,
+            'product_variant_id' => null,
+            'vendor_sku' => 'VSKU-DOWN-1',
+        ]);
+
+        $p2 = Product::create([
+            'tenant_id' => $this->tenantA->id,
+            'product_type' => 'simple',
+            'sku' => 'PROD-DOWN-2-'.uniqid(),
+            'status' => 'active',
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenantA->id;
+        $vendorId = $vendor->id;
+        $lowPlanId = $lowPlan->id;
+        $p2Id = $p2->id;
+
+        // Worker 1: Downgrades vendor to low plan (product_limit = 1) under lock
+        $worker1 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
+        \$v = \\Modules\\Marketplace\\Models\\Vendor::lockForUpdate()->find({$vendorId});
+        \$v->vendor_plan_id = {$lowPlanId};
+        \$v->save();
+    });
+    echo 'DOWNGRADE_SUCCESS';
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'DOWNGRADE_FAILED:' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        // Worker 2: Attempts to add second listing
+        $worker2 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$l = \\Modules\\Marketplace\\Models\\VendorListing::create([
+        'tenant_id' => {$tenantId},
+        'vendor_id' => {$vendorId},
+        'product_id' => {$p2Id},
+        'product_variant_id' => null,
+        'vendor_sku' => 'VSKU-DOWN-2',
+    ]);
+    echo 'LISTING_SUCCESS:' . \$l->id;
+    exit(0);
+} catch (\\Modules\\Marketplace\\Exceptions\\VendorListingQuotaException \$e) {
+    echo 'LISTING_QUOTA_EXCEEDED:' . \$e->getMessage();
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        $results = $this->executeConcurrently([$worker1, $worker2]);
+
+        $this->assertSame(0, $results[0]['exit_code']);
+        $this->assertSame(0, $results[1]['exit_code']);
+        $this->assertSame('DOWNGRADE_SUCCESS', $results[0]['stdout']);
+
+        $vendor->refresh();
+        $this->assertSame($lowPlan->id, $vendor->vendor_plan_id);
+
+        $finalCount = VendorListing::where('tenant_id', $tenantId)->where('vendor_id', $vendorId)->count();
+        $this->assertTrue($finalCount === 1 || $finalCount === 2);
+    }
+
+    public function test_race_commission_rule_mutation_vs_checkout_ready_snapshot(): void
+    {
+        // Initial rule: 1000 bps (10%) + 100 fixed fee
+        $rule = VendorCommissionRule::create([
+            'tenant_id' => $this->tenantA->id,
+            'vendor_id' => $this->vendor->id,
+            'category_id' => null,
+            'rate_basis_points' => 1000,
+            'fixed_fee_minor' => 100,
+            'currency' => 'EUR',
+            'is_active' => true,
+        ]);
+
+        $bootstrap = $this->getBootstrapScript();
+        $ruleId = $rule->id;
+        $tenantId = $this->tenantA->id;
+        $vendorId = $this->vendor->id;
+
+        // Worker 1: Atomic resolution & calculation
+        $worker1 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \$calc = app(\\Modules\\Marketplace\\Contracts\\VendorCommissionQuoteServiceInterface::class);
+    \$quote = \$calc->quoteCommission(
+        categoryId: null,
+        tenantId: {$tenantId},
+        vendorId: {$vendorId},
+        basisMinor: 10000,
+        currency: 'EUR'
+    );
+    echo 'SNAPSHOT:' . \$quote->rateBps . ':' . \$quote->fixedFeeMinor . ':' . \$quote->commissionAmountMinor;
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        // Worker 2: Mutates the rule atomically (to 2500 bps, 300 fixed fee)
+        $worker2 = "{$bootstrap}
+// __BARRIER_WAIT__
+try {
+    \\Illuminate\\Support\\Facades\\DB::transaction(function () {
+        \$r = \\Modules\\Marketplace\\Models\\VendorCommissionRule::lockForUpdate()->find({$ruleId});
+        \$r->rate_basis_points = 2500;
+        \$r->fixed_fee_minor = 300;
+        \$r->save();
+    });
+    echo 'RULE_MUTATED';
+    exit(0);
+} catch (\\Throwable \$e) {
+    echo 'FAILED:' . get_class(\$e) . ':' . \$e->getMessage();
+    exit(1);
+}
+";
+
+        $results = $this->executeConcurrently([$worker1, $worker2]);
+
+        $this->assertSame(0, $results[0]['exit_code'], $results[0]['stdout'].$results[0]['stderr']);
+        $this->assertSame(0, $results[1]['exit_code'], $results[1]['stdout'].$results[1]['stderr']);
+        $this->assertSame('RULE_MUTATED', $results[1]['stdout']);
+
+        // Snapshot must be EITHER coherent Old Rule (1000 bps + 100 fixed = 1100) OR coherent New Rule (2500 bps + 300 fixed = 2800)
+        // FORBIDDEN: Any mixed snapshot (e.g. 1000 bps + 300 fixed or 2500 bps + 100 fixed)
+        $expectedOld = 'SNAPSHOT:1000:100:1100';
+        $expectedNew = 'SNAPSHOT:2500:300:2800';
+
+        $this->assertTrue(
+            $results[0]['stdout'] === $expectedOld || $results[0]['stdout'] === $expectedNew,
+            'Snapshot must freeze exactly one coherent rule state, never a mixed or partially applied rule: '.$results[0]['stdout']
         );
     }
 }
