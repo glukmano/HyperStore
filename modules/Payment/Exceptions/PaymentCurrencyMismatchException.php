@@ -12,4 +12,9 @@ class PaymentCurrencyMismatchException extends RuntimeException
     {
         return new self("Requested currency {$requested} does not match order currency {$expected}.");
     }
+
+    public static function forCurrencies(string $requested, string $expected): self
+    {
+        return self::forMismatch($requested, $expected);
+    }
 }

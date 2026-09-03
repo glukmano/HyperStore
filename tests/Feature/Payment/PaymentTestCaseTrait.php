@@ -72,6 +72,23 @@ trait PaymentTestCaseTrait
         $this->contextManager->setTenant(TenantContext::from($this->tenant->id));
     }
 
+    protected function createGuestOrder(
+        int $grandTotalMinor = 10000,
+        string $currency = 'EUR',
+        string $orderStatus = 'placed',
+        string $paymentStatus = 'pending',
+        ?string $guestTokenHash = null
+    ): Order {
+        return $this->createOrder(
+            grandTotalMinor: $grandTotalMinor,
+            currency: $currency,
+            orderStatus: $orderStatus,
+            paymentStatus: $paymentStatus,
+            userId: null,
+            guestTokenHash: $guestTokenHash
+        );
+    }
+
     protected function createOrder(
         int $grandTotalMinor = 10000,
         string $currency = 'EUR',

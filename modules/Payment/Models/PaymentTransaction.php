@@ -8,9 +8,11 @@ use App\Core\Tenancy\Traits\BelongsToTenant;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Str;
 
 /**
  * @property int $id
+ * @property string $uuid
  * @property int $tenant_id
  * @property int $payment_id
  * @property int|null $payment_operation_key_id
@@ -39,6 +41,7 @@ class PaymentTransaction extends Model
 
     protected $fillable = [
         'tenant_id',
+        'uuid',
         'payment_id',
         'payment_operation_key_id',
         'operation_type',
@@ -67,6 +70,15 @@ class PaymentTransaction extends Model
             'amount_minor' => 'integer',
             'action_payload' => 'array',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $model): void {
+            if (empty($model->uuid)) {
+                $model->uuid = (string) Str::uuid();
+            }
+        });
     }
 
     /**

@@ -34,12 +34,8 @@ class PaymentController extends Controller
         $order = Order::query()
             ->where('tenant_id', $tenantId)
             ->where(function ($query) use ($orderIdentifier) {
-                if (is_numeric($orderIdentifier)) {
-                    $query->where('id', (int) $orderIdentifier);
-                } else {
-                    $query->where('uuid', $orderIdentifier)
-                        ->orWhere('order_number', $orderIdentifier);
-                }
+                $query->where('uuid', $orderIdentifier)
+                    ->orWhere('order_number', $orderIdentifier);
             })
             ->first();
 
@@ -92,12 +88,8 @@ class PaymentController extends Controller
         $order = Order::query()
             ->where('tenant_id', $tenantId)
             ->where(function ($query) use ($orderIdentifier) {
-                if (is_numeric($orderIdentifier)) {
-                    $query->where('id', (int) $orderIdentifier);
-                } else {
-                    $query->where('uuid', $orderIdentifier)
-                        ->orWhere('order_number', $orderIdentifier);
-                }
+                $query->where('uuid', $orderIdentifier)
+                    ->orWhere('order_number', $orderIdentifier);
             })
             ->first();
 
@@ -116,7 +108,7 @@ class PaymentController extends Controller
         $payment = Payment::query()
             ->where('tenant_id', $tenantId)
             ->where('order_id', $order->id)
-            ->with('transactions')
+            ->with(['transactions', 'order'])
             ->first();
 
         if ($payment === null) {

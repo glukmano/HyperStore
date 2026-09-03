@@ -8,9 +8,16 @@ use App\Core\Context\DTOs\TenantContext;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Laravel\Sanctum\Sanctum;
+use Modules\Payment\Contracts\PaymentGatewayRegistryInterface;
+use Modules\Payment\DTOs\GatewayPaymentRequest;
+use Modules\Payment\DTOs\GatewayPaymentResult;
 use Modules\Payment\DTOs\InitiatePaymentDTO;
 use Modules\Payment\Models\Payment;
+use Modules\Payment\Models\PaymentOperationKey;
+use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Providers\FakePaymentGateway;
 use Modules\Payment\Services\PaymentInitiationService;
+use RuntimeException;
 use Spatie\Permission\Models\Permission;
 use Tests\TestCase;
 
@@ -65,48 +72,162 @@ class PaymentSecurityTest extends TestCase
         $viewResponse->assertStatus(403);
     }
 
-    public function test_guest_can_access_payment_with_valid_guest_token(): void
+    public function test_true_guest_order_access_and_isolation(): void
     {
-        $rawToken = 'secret-guest-token-12345';
+        $rawToken = 'secret-guest-token-xyz-98765';
         $tokenHash = hash('sha256', $rawToken);
 
-        $order = $this->createOrder(
+        // True guest: userId is explicitly null, no Sanctum actingAs
+        $order = $this->createGuestOrder(
             grandTotalMinor: 5000,
             currency: 'EUR',
-            userId: null,
             guestTokenHash: $tokenHash
         );
+        $this->assertNull($order->user_id);
 
-        $response = $this->withHeader('X-Order-Token', $rawToken)
+        // 1. Unauthenticated guest with valid token: success
+        $this->flushHeaders();
+        $initResponse = $this->withHeader('X-Order-Token', $rawToken)
             ->postJson("/api/v1/orders/{$order->uuid}/payments", [
                 'amount_minor' => 5000,
                 'currency' => 'EUR',
             ]);
+        $initResponse->assertStatus(201);
 
-        $response->assertStatus(201);
-
+        $this->flushHeaders();
         $viewResponse = $this->withHeader('X-Order-Token', $rawToken)
             ->getJson("/api/v1/orders/{$order->uuid}/payments");
-
         $viewResponse->assertStatus(200);
-    }
 
-    public function test_guest_with_invalid_token_is_rejected(): void
-    {
-        $order = $this->createOrder(
+        // 2. Unauthenticated guest with missing token: 403
+        $this->flushHeaders();
+        $noTokenResponse = $this->getJson("/api/v1/orders/{$order->uuid}/payments");
+        $noTokenResponse->assertStatus(403);
+
+        // 3. Unauthenticated guest with wrong token: 403
+        $this->flushHeaders();
+        $wrongTokenResponse = $this->withHeader('X-Order-Token', 'invalid-token-string')
+            ->getJson("/api/v1/orders/{$order->uuid}/payments");
+        $wrongTokenResponse->assertStatus(403);
+
+        // 4. Token for another order: 403
+        $this->flushHeaders();
+        $otherOrder = $this->createGuestOrder(
             grandTotalMinor: 5000,
             currency: 'EUR',
-            userId: null,
-            guestTokenHash: hash('sha256', 'real-token')
+            guestTokenHash: hash('sha256', 'another-token')
+        );
+        $otherOrderResponse = $this->withHeader('X-Order-Token', $rawToken)
+            ->getJson("/api/v1/orders/{$otherOrder->uuid}/payments");
+        $otherOrderResponse->assertStatus(403);
+
+        // 5. Invariant: Raw guest token is absent from database records
+        $payment = Payment::where('order_id', $order->id)->firstOrFail();
+        $this->assertStringNotContainsString($rawToken, (string) json_encode($payment->toArray()));
+
+        $transactions = PaymentTransaction::where('payment_id', $payment->id)->get();
+        foreach ($transactions as $tx) {
+            $this->assertStringNotContainsString($rawToken, (string) json_encode($tx->toArray()));
+        }
+
+        $opKeys = PaymentOperationKey::where('order_id', $order->id)->get();
+        foreach ($opKeys as $key) {
+            $this->assertStringNotContainsString($rawToken, (string) json_encode($key->toArray()));
+        }
+    }
+
+    public function test_api_responses_do_not_expose_internal_database_integer_ids(): void
+    {
+        $order = $this->createOrder(grandTotalMinor: 5000, currency: 'EUR', userId: $this->user->id);
+        Sanctum::actingAs($this->user);
+
+        $this->postJson("/api/v1/orders/{$order->uuid}/payments", [
+            'amount_minor' => 5000,
+            'currency' => 'EUR',
+        ])->assertStatus(201);
+
+        $viewResponse = $this->getJson("/api/v1/orders/{$order->uuid}/payments");
+        $viewResponse->assertStatus(200);
+
+        $json = $viewResponse->json();
+        $this->assertArrayHasKey('data', $json);
+        $data = $json['data'];
+
+        // Invariant: NO internal database integer IDs
+        $this->assertArrayNotHasKey('id', $data);
+        $this->assertArrayNotHasKey('order_id', $data);
+
+        // Must expose public UUIDs
+        $this->assertArrayHasKey('uuid', $data);
+        $this->assertArrayHasKey('order_uuid', $data);
+        $this->assertSame($order->uuid, $data['order_uuid']);
+
+        // Transactions list check
+        if (! empty($data['transactions'])) {
+            foreach ($data['transactions'] as $tx) {
+                $this->assertArrayNotHasKey('id', $tx);
+                $this->assertArrayNotHasKey('payment_id', $tx);
+                $this->assertArrayHasKey('uuid', $tx);
+            }
+        }
+
+        // Numeric database order ID rejected on public routes
+        $this->getJson("/api/v1/orders/{$order->id}/payments")->assertStatus(404);
+    }
+
+    public function test_sensitive_exception_strings_are_never_persisted_or_leaked(): void
+    {
+        $sensitiveString = 'api_secret_key_12345_leaked';
+
+        // Mock gateway to throw an exception with this sensitive string
+        /** @var PaymentGatewayRegistryInterface $registry */
+        $registry = app(PaymentGatewayRegistryInterface::class);
+        $mockGateway = new class($sensitiveString) extends FakePaymentGateway
+        {
+            public function __construct(private readonly string $secret) {}
+
+            public function getProviderCode(): string
+            {
+                return 'mock_leak';
+            }
+
+            public function purchase(GatewayPaymentRequest $request): GatewayPaymentResult
+            {
+                throw new RuntimeException("Fatal error: {$this->secret}");
+            }
+        };
+        $registry->register($mockGateway);
+
+        $order = $this->createOrder(grandTotalMinor: 5000, currency: 'EUR', userId: $this->user->id);
+
+        $dto = new InitiatePaymentDTO(
+            tenantId: $this->tenant->id,
+            orderId: $order->id,
+            amountMinor: 5000,
+            currency: 'EUR',
+            providerCode: 'mock_leak',
+            idempotencyKey: 'idem_leak_test'
         );
 
-        $response = $this->withHeader('X-Order-Token', 'wrong-token')
-            ->postJson("/api/v1/orders/{$order->uuid}/payments", [
-                'amount_minor' => 5000,
-                'currency' => 'EUR',
-            ]);
+        $service = app(PaymentInitiationService::class);
+        $result = $service->initiatePayment($dto);
 
-        $response->assertStatus(403);
+        // Result returned should have normalized error code
+        $this->assertSame('failure', $result['transaction_status']);
+        $this->assertSame('gateway_error', $result['normalized_error_code']);
+        $this->assertStringNotContainsString($sensitiveString, (string) json_encode($result));
+
+        // Verify database: payment_transactions
+        $transactions = PaymentTransaction::where('tenant_id', $this->tenant->id)->get();
+        foreach ($transactions as $tx) {
+            $this->assertStringNotContainsString($sensitiveString, (string) json_encode($tx->toArray()));
+        }
+
+        // Verify database: payment_operation_keys
+        $opKeys = PaymentOperationKey::where('tenant_id', $this->tenant->id)->get();
+        foreach ($opKeys as $key) {
+            $this->assertStringNotContainsString($sensitiveString, (string) json_encode($key->toArray()));
+        }
     }
 
     public function test_cross_tenant_access_is_concealed(): void

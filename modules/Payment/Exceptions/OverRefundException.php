@@ -12,4 +12,9 @@ class OverRefundException extends RuntimeException
     {
         return new self("Refund amount {$requested} exceeds remaining refundable amount {$remaining}.");
     }
+
+    public static function forAmounts(int $requested, int $remaining): self
+    {
+        return self::forAmount($requested, $remaining);
+    }
 }

@@ -8,11 +8,29 @@ use Illuminate\Support\Facades\DB;
 use Modules\Order\Contracts\OrderPaymentSynchronizationServiceInterface;
 use Modules\Order\Enums\PaymentStatus;
 use Modules\Order\Events\OrderStatusChanged;
+use Modules\Order\Exceptions\InvalidOrderTransitionException;
 use Modules\Order\Models\Order;
 use Modules\Order\Models\OrderStatusHistory;
 
 class OrderPaymentSynchronizationService implements OrderPaymentSynchronizationServiceInterface
 {
+    private const ALLOWED_TRANSITIONS = [
+        PaymentStatus::PENDING->value => [
+            PaymentStatus::AUTHORIZED->value,
+            PaymentStatus::PAID->value,
+            PaymentStatus::VOIDED->value,
+        ],
+        PaymentStatus::AUTHORIZED->value => [
+            PaymentStatus::PAID->value,
+            PaymentStatus::VOIDED->value,
+        ],
+        PaymentStatus::PAID->value => [
+            PaymentStatus::REFUNDED->value,
+        ],
+        PaymentStatus::REFUNDED->value => [],
+        PaymentStatus::VOIDED->value => [],
+    ];
+
     /**
      * @param  array<string, mixed>  $metadata
      */
@@ -37,6 +55,11 @@ class OrderPaymentSynchronizationService implements OrderPaymentSynchronizationS
 
             $fromStatus = $lockedOrder->payment_status;
             $toStatus = $status->value;
+
+            $allowed = self::ALLOWED_TRANSITIONS[$fromStatus] ?? [];
+            if (! in_array($toStatus, $allowed, true)) {
+                throw InvalidOrderTransitionException::forTransition($fromStatus, $toStatus, 'payment');
+            }
 
             $lockedOrder->payment_status = $toStatus;
             $lockedOrder->version++;

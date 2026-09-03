@@ -68,6 +68,7 @@ return new class extends Migration
         // 3. payment_transactions
         Schema::create('payment_transactions', function (Blueprint $table): void {
             $table->id();
+            $table->uuid('uuid')->unique();
             $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
             $table->foreignId('payment_id')->constrained('payments')->cascadeOnDelete();
             $table->foreignId('payment_operation_key_id')->nullable()->constrained('payment_operation_keys')->nullOnDelete();

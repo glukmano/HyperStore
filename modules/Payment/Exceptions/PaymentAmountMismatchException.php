@@ -12,4 +12,9 @@ class PaymentAmountMismatchException extends RuntimeException
     {
         return new self("Requested payment amount {$requested} does not match order grand total {$expected}.");
     }
+
+    public static function forAmounts(int $requested, int $expected): self
+    {
+        return self::forMismatch($requested, $expected);
+    }
 }

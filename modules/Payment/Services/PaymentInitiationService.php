@@ -4,28 +4,25 @@ declare(strict_types=1);
 
 namespace Modules\Payment\Services;
 
-use Exception;
 use Illuminate\Support\Facades\DB;
 use Modules\Order\Contracts\OrderPaymentSynchronizationServiceInterface;
 use Modules\Order\Enums\PaymentStatus as OrderPaymentStatus;
 use Modules\Order\Models\Order;
 use Modules\Payment\Contracts\PaymentConcurrencyBarrierInterface;
-use Modules\Payment\Contracts\PaymentGatewayInterface;
-use Modules\Payment\Contracts\PaymentGatewayReconciliationInterface;
 use Modules\Payment\Contracts\PaymentGatewayRegistryInterface;
 use Modules\Payment\Contracts\PaymentIdempotencyServiceInterface;
 use Modules\Payment\DTOs\GatewayPaymentRequest;
-use Modules\Payment\DTOs\GatewayReconciliationRequest;
 use Modules\Payment\DTOs\InitiatePaymentDTO;
 use Modules\Payment\DTOs\PaymentActionDTO;
 use Modules\Payment\Enums\PaymentOperationType;
 use Modules\Payment\Enums\PaymentStatus;
 use Modules\Payment\Enums\PaymentTransactionStatus;
-use Modules\Payment\Enums\ReconciliationStatus;
 use Modules\Payment\Events\PaymentActionRequired;
 use Modules\Payment\Events\PaymentAuthorized;
 use Modules\Payment\Events\PaymentCaptured;
 use Modules\Payment\Events\PaymentCreated;
+use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
+use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
 use Modules\Payment\Exceptions\OrderAlreadyCancelledException;
 use Modules\Payment\Exceptions\PaymentAmountMismatchException;
 use Modules\Payment\Exceptions\PaymentCurrencyMismatchException;
@@ -33,6 +30,7 @@ use Modules\Payment\Exceptions\PaymentReconciliationPendingException;
 use Modules\Payment\Models\Payment;
 use Modules\Payment\Models\PaymentOperationKey;
 use Modules\Payment\Models\PaymentTransaction;
+use Throwable;
 
 class PaymentInitiationService
 {
@@ -40,7 +38,8 @@ class PaymentInitiationService
         private readonly PaymentIdempotencyServiceInterface $idempotencyService,
         private readonly PaymentGatewayRegistryInterface $gatewayRegistry,
         private readonly OrderPaymentSynchronizationServiceInterface $orderPaymentSyncService,
-        private readonly PaymentConcurrencyBarrierInterface $concurrencyBarrier
+        private readonly PaymentConcurrencyBarrierInterface $concurrencyBarrier,
+        private readonly PaymentTransactionReconciliationService $reconciliationService
     ) {}
 
     /**
@@ -48,24 +47,6 @@ class PaymentInitiationService
      */
     public function initiatePayment(InitiatePaymentDTO $dto): array
     {
-        /** @var Order $order */
-        $order = Order::query()
-            ->where('tenant_id', $dto->tenantId)
-            ->where('id', $dto->orderId)
-            ->firstOrFail();
-
-        if ($order->order_status === 'cancelled') {
-            throw OrderAlreadyCancelledException::forOrder($order->id);
-        }
-
-        if ($dto->amountMinor !== $order->grand_total_minor) {
-            throw PaymentAmountMismatchException::forMismatch($dto->amountMinor, $order->grand_total_minor);
-        }
-
-        if (strtoupper($dto->currency) !== strtoupper($order->currency)) {
-            throw PaymentCurrencyMismatchException::forMismatch($dto->currency, $order->currency);
-        }
-
         $payload = [
             'tenant_id' => $dto->tenantId,
             'order_id' => $dto->orderId,
@@ -85,63 +66,83 @@ class PaymentInitiationService
             operationType: 'initiate_payment',
             idempotencyKey: $dto->idempotencyKey,
             requestPayload: $payload,
-            callback: function (PaymentOperationKey $opKey) use ($dto, $order): array {
-                if ($order->grand_total_minor === 0) {
-                    return $this->executeZeroTotalSettlement($dto, $order, $opKey);
-                }
-
-                return $this->executeGatewayPayment($dto, $order, $opKey);
-            }
+            callback: fn (PaymentOperationKey $opKey): array => $this->executeInitiation($dto, $opKey)
         );
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function executeZeroTotalSettlement(InitiatePaymentDTO $dto, Order $order, PaymentOperationKey $opKey): array
+    private function executeInitiation(InitiatePaymentDTO $dto, PaymentOperationKey $opKey): array
+    {
+        /** @var Order $order */
+        $order = Order::query()->where('tenant_id', $dto->tenantId)->where('id', $dto->orderId)->firstOrFail();
+
+        if ($order->order_status === 'cancelled') {
+            throw OrderAlreadyCancelledException::forOrder($order->id);
+        }
+
+        if ($dto->amountMinor !== $order->grand_total_minor) {
+            throw PaymentAmountMismatchException::forAmounts($dto->amountMinor, $order->grand_total_minor);
+        }
+
+        if (strtoupper($dto->currency) !== strtoupper($order->currency)) {
+            throw PaymentCurrencyMismatchException::forCurrencies($dto->currency, $order->currency);
+        }
+
+        // Branch 1: Zero-Total Order Settlement
+        if ($dto->amountMinor === 0) {
+            return $this->handleZeroTotalOrder($dto, $order, $opKey);
+        }
+
+        // Branch 2: Standard Monetary Payment via Provider
+        return $this->handleGatewayPayment($dto, $order, $opKey);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function handleZeroTotalOrder(InitiatePaymentDTO $dto, Order $order, PaymentOperationKey $opKey): array
     {
         return DB::transaction(function () use ($dto, $order, $opKey): array {
             /** @var Payment $payment */
-            $payment = Payment::query()->firstOrCreate(
-                [
-                    'tenant_id' => $dto->tenantId,
-                    'order_id' => $order->id,
-                ],
-                [
-                    'amount_minor' => 0,
-                    'currency' => $order->currency,
-                    'status' => PaymentStatus::CAPTURED->value,
-                    'captured_amount_minor' => 0,
-                    'captured_at' => now(),
-                    'metadata' => array_merge($dto->metadata, ['settlement_type' => 'zero_total']),
-                ]
-            );
-
-            $opKey->payment_id = $payment->id;
-            $opKey->save();
+            $payment = Payment::query()
+                ->firstOrCreate(
+                    ['tenant_id' => $dto->tenantId, 'order_id' => $order->id],
+                    [
+                        'status' => PaymentStatus::PENDING->value,
+                        'amount_minor' => 0,
+                        'currency' => $dto->currency,
+                        'authorized_amount_minor' => 0,
+                        'captured_amount_minor' => 0,
+                        'refunded_amount_minor' => 0,
+                        'metadata' => $dto->metadata,
+                    ]
+                );
 
             /** @var PaymentTransaction $transaction */
-            $transaction = PaymentTransaction::query()->firstOrCreate(
-                [
-                    'payment_operation_key_id' => $opKey->id,
-                ],
-                [
-                    'tenant_id' => $dto->tenantId,
-                    'payment_id' => $payment->id,
-                    'operation_type' => PaymentOperationType::ZERO_TOTAL_SETTLEMENT->value,
-                    'status' => PaymentTransactionStatus::SUCCESS->value,
-                    'amount_minor' => 0,
-                    'currency' => $order->currency,
-                    'provider_code' => null,
-                    'provider_reference' => null,
-                ]
-            );
+            $transaction = PaymentTransaction::query()
+                ->firstOrCreate(
+                    ['payment_operation_key_id' => $opKey->id],
+                    [
+                        'tenant_id' => $dto->tenantId,
+                        'payment_id' => $payment->id,
+                        'operation_type' => PaymentOperationType::ZERO_TOTAL_SETTLEMENT->value,
+                        'status' => PaymentTransactionStatus::SUCCESS->value,
+                        'amount_minor' => 0,
+                        'currency' => $dto->currency,
+                    ]
+                );
+
+            $payment->status = PaymentStatus::CAPTURED->value;
+            $payment->captured_at = now();
+            $payment->save();
 
             $this->orderPaymentSyncService->syncPaymentStatus(
                 tenantId: $dto->tenantId,
                 orderId: $order->id,
                 status: OrderPaymentStatus::PAID,
-                reason: 'Zero total internal settlement'
+                reason: 'Zero-total order settled internally'
             );
 
             DB::afterCommit(function () use ($payment, $transaction): void {
@@ -149,23 +150,14 @@ class PaymentInitiationService
                 PaymentCaptured::dispatch($payment, $transaction);
             });
 
-            return [
-                'payment_id' => $payment->id,
-                'payment_uuid' => $payment->uuid,
-                'status' => $payment->status,
-                'amount_minor' => $payment->amount_minor,
-                'currency' => $payment->currency,
-                'captured_amount_minor' => $payment->captured_amount_minor,
-                'transaction_id' => $transaction->id,
-                'transaction_status' => $transaction->status,
-            ];
+            return $this->reconciliationService->formatResponse($payment, $transaction);
         });
     }
 
     /**
      * @return array<string, mixed>
      */
-    private function executeGatewayPayment(InitiatePaymentDTO $dto, Order $order, PaymentOperationKey $opKey): array
+    private function handleGatewayPayment(InitiatePaymentDTO $dto, Order $order, PaymentOperationKey $opKey): array
     {
         $providerCode = $dto->providerCode ?? 'fake';
         $gateway = $this->gatewayRegistry->get($providerCode);
@@ -173,21 +165,33 @@ class PaymentInitiationService
         // 1. Pre-Call Phase under DB transaction
         [$payment, $transaction] = DB::transaction(function () use ($dto, $order, $opKey, $providerCode): array {
             /** @var Payment $payment */
-            $payment = Payment::query()->firstOrCreate(
-                [
+            $payment = Payment::query()
+                ->where('tenant_id', $dto->tenantId)
+                ->where('order_id', $order->id)
+                ->lockForUpdate()
+                ->first();
+
+            if ($payment === null) {
+                $payment = Payment::create([
                     'tenant_id' => $dto->tenantId,
                     'order_id' => $order->id,
-                ],
-                [
-                    'amount_minor' => $dto->amountMinor,
-                    'currency' => strtoupper($dto->currency),
                     'status' => PaymentStatus::PENDING->value,
+                    'amount_minor' => $dto->amountMinor,
+                    'currency' => $dto->currency,
+                    'authorized_amount_minor' => 0,
+                    'captured_amount_minor' => 0,
+                    'refunded_amount_minor' => 0,
                     'metadata' => $dto->metadata,
-                ]
-            );
+                ]);
 
-            $opKey->payment_id = $payment->id;
-            $opKey->save();
+                DB::afterCommit(function () use ($payment): void {
+                    PaymentCreated::dispatch($payment);
+                });
+            } else {
+                if ($payment->status !== PaymentStatus::PENDING->value) {
+                    throw InvalidPaymentTransitionException::forTransition($payment->status, 'initiated');
+                }
+            }
 
             /** @var PaymentTransaction|null $existingTx */
             $existingTx = PaymentTransaction::query()
@@ -198,20 +202,18 @@ class PaymentInitiationService
                 return [$payment, $existingTx];
             }
 
-            $operationType = $dto->captureImmediately
-                ? PaymentOperationType::PURCHASE->value
-                : PaymentOperationType::AUTHORIZE->value;
-
+            $opType = $dto->captureImmediately ? PaymentOperationType::PURCHASE : PaymentOperationType::AUTHORIZE;
             $providerIdempotencyKey = "hyp_tx_{$dto->tenantId}_{$order->id}_{$opKey->id}";
 
+            /** @var PaymentTransaction $transaction */
             $transaction = PaymentTransaction::create([
                 'tenant_id' => $dto->tenantId,
                 'payment_id' => $payment->id,
                 'payment_operation_key_id' => $opKey->id,
-                'operation_type' => $operationType,
+                'operation_type' => $opType->value,
                 'status' => PaymentTransactionStatus::PENDING->value,
                 'amount_minor' => $dto->amountMinor,
-                'currency' => strtoupper($dto->currency),
+                'currency' => $dto->currency,
                 'provider_code' => $providerCode,
                 'payment_method_type' => $dto->paymentMethodType,
                 'provider_idempotency_key' => $providerIdempotencyKey,
@@ -220,19 +222,14 @@ class PaymentInitiationService
             return [$payment, $transaction];
         });
 
-        // Check if existing transaction is already completed or unknown
+        // If existing transaction is already completed, return replay
         if ($transaction->status === PaymentTransactionStatus::SUCCESS->value) {
-            $refreshed = $payment->fresh();
-            if ($refreshed === null) {
-                throw new \RuntimeException('Payment not found');
-            }
-
-            return $this->formatResponse($refreshed, $transaction);
+            return $this->reconciliationService->formatResponse($payment->fresh() ?? $payment, $transaction);
         }
 
-        // If transaction is unknown, attempt reconciliation
+        // If transaction is unknown, route to shared reconciliation
         if ($transaction->status === PaymentTransactionStatus::UNKNOWN->value) {
-            return $this->reconcileUnknownTransaction($gateway, $payment, $transaction, $dto, $order);
+            return $this->reconciliationService->reconcile($transaction, $payment, $opKey);
         }
 
         $this->concurrencyBarrier->wait('after_pre_call_commit');
@@ -254,18 +251,28 @@ class PaymentInitiationService
             $result = $dto->captureImmediately
                 ? $gateway->purchase($request)
                 : $gateway->authorize($request);
-        } catch (Exception $e) {
-            // Indeterminate network failure -> mark transaction unknown
-            DB::transaction(function () use ($transaction, $e): void {
+        } catch (GatewayIndeterminateOutcomeException) {
+            DB::transaction(function () use ($transaction): void {
                 /** @var PaymentTransaction $lockedTx */
                 $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
                 $lockedTx->status = PaymentTransactionStatus::UNKNOWN->value;
-                $lockedTx->normalized_error_code = 'timeout';
-                $lockedTx->action_payload = ['error' => $e->getMessage()];
+                $lockedTx->normalized_error_code = 'gateway_timeout';
+                $lockedTx->action_payload = null;
                 $lockedTx->save();
             });
 
             throw PaymentReconciliationPendingException::forTransaction($transaction->id);
+        } catch (Throwable) {
+            return DB::transaction(function () use ($payment, $transaction): array {
+                /** @var PaymentTransaction $lockedTx */
+                $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
+                $lockedTx->status = PaymentTransactionStatus::FAILURE->value;
+                $lockedTx->normalized_error_code = 'gateway_error';
+                $lockedTx->action_payload = null;
+                $lockedTx->save();
+
+                return $this->reconciliationService->formatResponse($payment->fresh() ?? $payment, $lockedTx);
+            });
         }
 
         // 3. Post-Call Phase under DB transaction
@@ -279,6 +286,8 @@ class PaymentInitiationService
                 $lockedTx->status = PaymentTransactionStatus::SUCCESS->value;
                 $lockedTx->provider_reference = $result->providerReference;
                 $lockedTx->provider_response_code = $result->providerResponseCode;
+                $lockedTx->normalized_error_code = null;
+                $lockedTx->action_payload = null;
                 $lockedTx->save();
 
                 if ($dto->captureImmediately) {
@@ -331,122 +340,11 @@ class PaymentInitiationService
                 $lockedTx->provider_reference = $result->providerReference;
                 $lockedTx->provider_response_code = $result->providerResponseCode;
                 $lockedTx->normalized_error_code = $result->normalizedErrorCode ?? 'declined';
+                $lockedTx->action_payload = null;
                 $lockedTx->save();
-                // Notice: lockedPayment remains in PENDING for retry!
             }
 
-            return $this->formatResponse($lockedPayment, $lockedTx);
+            return $this->reconciliationService->formatResponse($lockedPayment, $lockedTx);
         });
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function reconcileUnknownTransaction(
-        PaymentGatewayInterface $gateway,
-        Payment $payment,
-        PaymentTransaction $transaction,
-        InitiatePaymentDTO $dto,
-        Order $order
-    ): array {
-        if (! $gateway instanceof PaymentGatewayReconciliationInterface || ! $gateway->supportsReconciliation()) {
-            throw PaymentReconciliationPendingException::forTransaction($transaction->id);
-        }
-
-        $reconcileReq = new GatewayReconciliationRequest(
-            tenantId: $dto->tenantId,
-            providerReference: $transaction->provider_reference,
-            providerIdempotencyKey: $transaction->provider_idempotency_key,
-            operationType: $transaction->operation_type,
-            expectedAmountMinor: $dto->amountMinor,
-            expectedCurrency: $dto->currency
-        );
-
-        $reconcileRes = $gateway->reconcileOperation($reconcileReq);
-
-        if ($reconcileRes->status === ReconciliationStatus::SUCCESS) {
-            return DB::transaction(function () use ($payment, $transaction, $reconcileRes, $dto, $order): array {
-                /** @var Payment $lockedPayment */
-                $lockedPayment = Payment::query()->where('id', $payment->id)->lockForUpdate()->firstOrFail();
-                /** @var PaymentTransaction $lockedTx */
-                $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
-
-                $lockedTx->status = PaymentTransactionStatus::SUCCESS->value;
-                $lockedTx->provider_reference = $reconcileRes->providerReference;
-                $lockedTx->save();
-
-                if ($dto->captureImmediately) {
-                    $lockedPayment->status = PaymentStatus::CAPTURED->value;
-                    $lockedPayment->captured_amount_minor = $dto->amountMinor;
-                    $lockedPayment->captured_at = now();
-                    $lockedPayment->save();
-
-                    $this->orderPaymentSyncService->syncPaymentStatus(
-                        tenantId: $dto->tenantId,
-                        orderId: $order->id,
-                        status: OrderPaymentStatus::PAID,
-                        reason: 'Payment reconciled and captured successfully'
-                    );
-
-                    DB::afterCommit(function () use ($lockedPayment, $lockedTx): void {
-                        PaymentCaptured::dispatch($lockedPayment, $lockedTx);
-                    });
-                } else {
-                    $lockedPayment->status = PaymentStatus::AUTHORIZED->value;
-                    $lockedPayment->authorized_amount_minor = $dto->amountMinor;
-                    $lockedPayment->authorized_at = now();
-                    $lockedPayment->save();
-
-                    $this->orderPaymentSyncService->syncPaymentStatus(
-                        tenantId: $dto->tenantId,
-                        orderId: $order->id,
-                        status: OrderPaymentStatus::AUTHORIZED,
-                        reason: 'Payment reconciled and authorized successfully'
-                    );
-
-                    DB::afterCommit(function () use ($lockedPayment, $lockedTx): void {
-                        PaymentAuthorized::dispatch($lockedPayment, $lockedTx);
-                    });
-                }
-
-                return $this->formatResponse($lockedPayment, $lockedTx);
-            });
-        }
-
-        if ($reconcileRes->status === ReconciliationStatus::FAILURE) {
-            DB::transaction(function () use ($transaction, $reconcileRes): void {
-                /** @var PaymentTransaction $lockedTx */
-                $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
-                $lockedTx->status = PaymentTransactionStatus::FAILURE->value;
-                $lockedTx->normalized_error_code = $reconcileRes->normalizedErrorCode ?? 'declined';
-                $lockedTx->save();
-            });
-        }
-
-        // still_pending or unknown -> leave transaction in UNKNOWN status, throw pending exception
-        throw PaymentReconciliationPendingException::forTransaction($transaction->id);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function formatResponse(Payment $payment, PaymentTransaction $transaction): array
-    {
-        return [
-            'payment_id' => $payment->id,
-            'payment_uuid' => $payment->uuid,
-            'status' => $payment->status,
-            'amount_minor' => $payment->amount_minor,
-            'currency' => $payment->currency,
-            'authorized_amount_minor' => $payment->authorized_amount_minor,
-            'captured_amount_minor' => $payment->captured_amount_minor,
-            'refunded_amount_minor' => $payment->refunded_amount_minor,
-            'transaction_id' => $transaction->id,
-            'transaction_status' => $transaction->status,
-            'action_type' => $transaction->action_type,
-            'action_payload' => $transaction->action_payload,
-            'provider_reference' => $transaction->provider_reference,
-            'normalized_error_code' => $transaction->normalized_error_code,
-        ];
     }
 }

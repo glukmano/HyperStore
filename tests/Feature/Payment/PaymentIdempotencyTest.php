@@ -44,12 +44,12 @@ class PaymentIdempotencyTest extends TestCase
         $result1 = $this->service->initiatePayment($dto);
         $result2 = $this->service->initiatePayment($dto);
 
-        $this->assertSame($result1['payment_id'], $result2['payment_id']);
-        $this->assertSame($result1['transaction_id'], $result2['transaction_id']);
+        $this->assertSame($result1['payment_uuid'], $result2['payment_uuid']);
+        $this->assertSame($result1['transaction_uuid'], $result2['transaction_uuid']);
 
         // DB asserts: exactly one Payment and one Transaction exist
         $this->assertSame(1, Payment::where('order_id', $order->id)->count());
-        $this->assertSame(1, PaymentTransaction::where('payment_id', $result1['payment_id'])->count());
+        $this->assertSame(1, PaymentTransaction::where('tenant_id', $this->tenant->id)->count());
         $this->assertSame(1, PaymentOperationKey::where('idempotency_key', 'idem_replay_test')->count());
     }
 

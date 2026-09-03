@@ -19,9 +19,8 @@ class PaymentResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            'id' => $this->id,
             'uuid' => $this->uuid,
-            'order_id' => $this->order_id,
+            'order_uuid' => $this->order?->uuid,
             'status' => $this->status,
             'amount_minor' => $this->amount_minor,
             'currency' => $this->currency,

@@ -51,14 +51,14 @@ class PaymentIdempotencyService implements PaymentIdempotencyServiceInterface
             return $response;
         } catch (PaymentReconciliationPendingException $e) {
             $opKey->status = 'unknown';
-            $opKey->error_payload = ['error' => $e->getMessage()];
+            $opKey->error_payload = ['error_code' => 'GATEWAY_TIMEOUT', 'retryable' => true];
             $opKey->lease_expires_at = null;
             $opKey->save();
 
             throw $e;
         } catch (Exception $e) {
             $opKey->status = 'failed';
-            $opKey->error_payload = ['error' => $e->getMessage()];
+            $opKey->error_payload = ['error_code' => 'OPERATION_FAILED', 'retryable' => false];
             $opKey->lease_expires_at = null;
             $opKey->save();
 

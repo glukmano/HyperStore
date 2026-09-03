@@ -15,7 +15,7 @@ use Modules\Payment\DTOs\GatewayRefundRequest;
 use Modules\Payment\DTOs\GatewayVoidRequest;
 use Modules\Payment\DTOs\PaymentActionDTO;
 use Modules\Payment\Enums\PaymentActionType;
-use RuntimeException;
+use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
 
 class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayReconciliationInterface
 {
@@ -50,7 +50,7 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
     /**
      * @param  array<string, mixed>  $data
      */
-    private function saveRecord(string $key, array $data): void
+    public function saveRecord(string $key, array $data): void
     {
         file_put_contents($this->getStoragePath($key), json_encode($data));
     }
@@ -83,7 +83,7 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
                 'currency' => $request->currency,
             ]);
 
-            throw new RuntimeException('Simulated network timeout/disconnect after gateway processing.');
+            throw GatewayIndeterminateOutcomeException::timeout('Simulated network timeout/disconnect after gateway processing.');
         }
 
         if ($this->forcedNextOutcome === 'decline' || $request->paymentMethodReference === 'pm_decline') {
@@ -120,6 +120,18 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
     {
         $this->monetaryExecutionCount++;
 
+        if ($this->forcedNextOutcome === 'timeout_after_success' || $request->paymentMethodReference === 'pm_timeout_after_success') {
+            $reference = 'auth_fake_timeout_'.bin2hex(random_bytes(6));
+            $this->saveRecord($request->providerIdempotencyKey, [
+                'status' => 'authorized',
+                'reference' => $reference,
+                'amount' => $request->amountMinor,
+                'currency' => $request->currency,
+            ]);
+
+            throw GatewayIndeterminateOutcomeException::timeout('Simulated network timeout/disconnect after gateway processing.');
+        }
+
         if ($this->forcedNextOutcome === 'decline' || $request->paymentMethodReference === 'pm_decline') {
             return GatewayPaymentResult::failure(
                 errorCode: 'authorization_declined',
@@ -141,8 +153,20 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
     public function capture(GatewayCaptureRequest $request): GatewayPaymentResult
     {
         $this->monetaryExecutionCount++;
-        $reference = 'cap_fake_'.bin2hex(random_bytes(6));
 
+        if ($this->forcedNextOutcome === 'timeout_after_success') {
+            $reference = 'cap_fake_timeout_'.bin2hex(random_bytes(6));
+            $this->saveRecord($request->providerIdempotencyKey, [
+                'status' => 'captured',
+                'reference' => $reference,
+                'amount' => $request->amountMinor,
+                'currency' => $request->currency,
+            ]);
+
+            throw GatewayIndeterminateOutcomeException::timeout('Simulated network timeout/disconnect after gateway processing.');
+        }
+
+        $reference = 'cap_fake_'.bin2hex(random_bytes(6));
         $this->saveRecord($request->providerIdempotencyKey, [
             'status' => 'captured',
             'reference' => $reference,
@@ -156,8 +180,20 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
     public function refund(GatewayRefundRequest $request): GatewayPaymentResult
     {
         $this->monetaryExecutionCount++;
-        $reference = 'ref_fake_'.bin2hex(random_bytes(6));
 
+        if ($this->forcedNextOutcome === 'timeout_after_success') {
+            $reference = 'ref_fake_timeout_'.bin2hex(random_bytes(6));
+            $this->saveRecord($request->providerIdempotencyKey, [
+                'status' => 'refunded',
+                'reference' => $reference,
+                'amount' => $request->amountMinor,
+                'currency' => $request->currency,
+            ]);
+
+            throw GatewayIndeterminateOutcomeException::timeout('Simulated network timeout/disconnect after gateway processing.');
+        }
+
+        $reference = 'ref_fake_'.bin2hex(random_bytes(6));
         $this->saveRecord($request->providerIdempotencyKey, [
             'status' => 'refunded',
             'reference' => $reference,
@@ -170,8 +206,21 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
 
     public function void(GatewayVoidRequest $request): GatewayPaymentResult
     {
-        $reference = 'void_fake_'.bin2hex(random_bytes(6));
+        $this->monetaryExecutionCount++;
 
+        if ($this->forcedNextOutcome === 'timeout_after_success') {
+            $reference = 'void_fake_timeout_'.bin2hex(random_bytes(6));
+            $this->saveRecord($request->providerIdempotencyKey, [
+                'status' => 'voided',
+                'reference' => $reference,
+                'amount' => 0,
+                'currency' => '',
+            ]);
+
+            throw GatewayIndeterminateOutcomeException::timeout('Simulated network timeout/disconnect after gateway processing.');
+        }
+
+        $reference = 'void_fake_'.bin2hex(random_bytes(6));
         $this->saveRecord($request->providerIdempotencyKey, [
             'status' => 'voided',
             'reference' => $reference,
@@ -192,7 +241,7 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
 
         if ($request->providerIdempotencyKey !== null) {
             $record = $this->getRecord($request->providerIdempotencyKey);
-            if ($record !== null && ($record['status'] === 'success' || $record['status'] === 'captured' || $record['status'] === 'authorized')) {
+            if ($record !== null && in_array($record['status'], ['success', 'captured', 'authorized', 'refunded', 'voided'], true)) {
                 return GatewayReconciliationResult::success($record['reference']);
             }
         }

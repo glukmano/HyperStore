@@ -79,7 +79,7 @@ class PaymentZeroTotalTest extends TestCase
 
         // Replay same request returns cached response
         $replay = $this->initiationService->initiatePayment($dto);
-        $this->assertSame($result['payment_id'], $replay['payment_id']);
+        $this->assertSame($result['payment_uuid'], $replay['payment_uuid']);
         $this->assertSame(0, $this->gateway->monetaryExecutionCount);
     }
 }

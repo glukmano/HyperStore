@@ -12,4 +12,9 @@ class OverCaptureException extends RuntimeException
     {
         return new self("Capture amount {$requested} exceeds remaining capturable amount {$remaining}.");
     }
+
+    public static function forAmounts(int $requested, int $remaining): self
+    {
+        return self::forAmount($requested, $remaining);
+    }
 }

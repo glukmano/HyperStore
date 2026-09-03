@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Modules\Payment\Services;
 
-use Exception;
 use Illuminate\Support\Facades\DB;
 use Modules\Order\Contracts\OrderPaymentSynchronizationServiceInterface;
 use Modules\Order\Enums\PaymentStatus as OrderPaymentStatus;
@@ -17,12 +16,15 @@ use Modules\Payment\Enums\PaymentStatus;
 use Modules\Payment\Enums\PaymentTransactionStatus;
 use Modules\Payment\Events\PaymentPartiallyRefunded;
 use Modules\Payment\Events\PaymentRefunded;
+use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
 use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
 use Modules\Payment\Exceptions\OverRefundException;
+use Modules\Payment\Exceptions\PaymentNotFoundException;
 use Modules\Payment\Exceptions\PaymentReconciliationPendingException;
 use Modules\Payment\Models\Payment;
 use Modules\Payment\Models\PaymentOperationKey;
 use Modules\Payment\Models\PaymentTransaction;
+use Throwable;
 
 class PaymentRefundService
 {
@@ -30,7 +32,8 @@ class PaymentRefundService
         private readonly PaymentIdempotencyServiceInterface $idempotencyService,
         private readonly PaymentGatewayRegistryInterface $gatewayRegistry,
         private readonly OrderPaymentSynchronizationServiceInterface $orderPaymentSyncService,
-        private readonly PaymentConcurrencyBarrierInterface $concurrencyBarrier
+        private readonly PaymentConcurrencyBarrierInterface $concurrencyBarrier,
+        private readonly PaymentTransactionReconciliationService $reconciliationService
     ) {}
 
     /**
@@ -44,11 +47,12 @@ class PaymentRefundService
         ?string $idempotencyKey = null,
         array $metadata = []
     ): array {
-        /** @var Payment $payment */
-        $payment = Payment::query()
-            ->where('tenant_id', $tenantId)
-            ->where('uuid', $paymentUuid)
-            ->firstOrFail();
+        /** @var Payment|null $payment */
+        $payment = Payment::query()->where('tenant_id', $tenantId)->where('uuid', $paymentUuid)->first();
+
+        if ($payment === null) {
+            throw PaymentNotFoundException::forUuid($paymentUuid);
+        }
 
         $payload = [
             'tenant_id' => $tenantId,
@@ -61,12 +65,10 @@ class PaymentRefundService
             tenantId: $tenantId,
             orderId: $payment->order_id,
             paymentId: $payment->id,
-            operationType: 'refund_payment',
+            operationType: 'refund',
             idempotencyKey: $idempotencyKey,
             requestPayload: $payload,
-            callback: function (PaymentOperationKey $opKey) use ($payment, $amountMinor, $metadata): array {
-                return $this->executeRefund($payment, $amountMinor, $opKey, $metadata);
-            }
+            callback: fn (PaymentOperationKey $opKey): array => $this->executeRefund($payment, $amountMinor, $opKey, $metadata)
         );
     }
 
@@ -80,6 +82,7 @@ class PaymentRefundService
         PaymentOperationKey $opKey,
         array $metadata
     ): array {
+        // Step 1: Pre-call verification under row lock
         [$lockedPayment, $transaction] = DB::transaction(function () use ($payment, $amountMinor, $opKey): array {
             /** @var Payment $locked */
             $locked = Payment::query()->where('id', $payment->id)->lockForUpdate()->firstOrFail();
@@ -89,9 +92,8 @@ class PaymentRefundService
             }
 
             $remainingRefundable = $locked->captured_amount_minor - $locked->refunded_amount_minor;
-
             if ($amountMinor > $remainingRefundable) {
-                throw OverRefundException::forAmount($amountMinor, $remainingRefundable);
+                throw OverRefundException::forAmounts($amountMinor, $remainingRefundable);
             }
 
             /** @var PaymentTransaction|null $existingTx */
@@ -111,7 +113,7 @@ class PaymentRefundService
                 ->latest('id')
                 ->first();
 
-            $providerCode = $captureTx->provider_code ?? 'fake';
+            $providerCode = $captureTx instanceof PaymentTransaction && $captureTx->provider_code !== null ? $captureTx->provider_code : 'fake';
             $providerIdempotencyKey = "hyp_tx_{$locked->tenant_id}_{$locked->order_id}_{$opKey->id}";
 
             $transaction = PaymentTransaction::create([
@@ -130,18 +132,19 @@ class PaymentRefundService
             return [$locked, $transaction];
         });
 
+        // Replay completed transaction
         if ($transaction->status === PaymentTransactionStatus::SUCCESS->value) {
-            $refreshed = $lockedPayment->fresh();
-            if ($refreshed === null) {
-                throw new \RuntimeException('Payment not found');
-            }
+            return $this->reconciliationService->formatResponse($lockedPayment->fresh() ?? $lockedPayment, $transaction);
+        }
 
-            return $this->formatResponse($refreshed, $transaction);
+        // Reconcile indeterminate transaction
+        if ($transaction->status === PaymentTransactionStatus::UNKNOWN->value) {
+            return $this->reconciliationService->reconcile($transaction, $lockedPayment, $opKey);
         }
 
         $this->concurrencyBarrier->wait('after_refund_pre_call_commit');
 
-        // Remote gateway refund
+        // Remote gateway refund outside DB transaction
         $providerCode = $transaction->provider_code ?? 'fake';
         $gateway = $this->gatewayRegistry->get($providerCode);
 
@@ -158,17 +161,28 @@ class PaymentRefundService
 
         try {
             $result = $gateway->refund($request);
-        } catch (Exception $e) {
-            DB::transaction(function () use ($transaction, $e): void {
+        } catch (GatewayIndeterminateOutcomeException) {
+            DB::transaction(function () use ($transaction): void {
                 /** @var PaymentTransaction $lockedTx */
                 $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
                 $lockedTx->status = PaymentTransactionStatus::UNKNOWN->value;
-                $lockedTx->normalized_error_code = 'timeout';
-                $lockedTx->action_payload = ['error' => $e->getMessage()];
+                $lockedTx->normalized_error_code = 'gateway_timeout';
+                $lockedTx->action_payload = null;
                 $lockedTx->save();
             });
 
             throw PaymentReconciliationPendingException::forTransaction($transaction->id);
+        } catch (Throwable) {
+            return DB::transaction(function () use ($lockedPayment, $transaction): array {
+                /** @var PaymentTransaction $lockedTx */
+                $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
+                $lockedTx->status = PaymentTransactionStatus::FAILURE->value;
+                $lockedTx->normalized_error_code = 'gateway_error';
+                $lockedTx->action_payload = null;
+                $lockedTx->save();
+
+                return $this->reconciliationService->formatResponse($lockedPayment->fresh() ?? $lockedPayment, $lockedTx);
+            });
         }
 
         return DB::transaction(function () use ($lockedPayment, $transaction, $result, $amountMinor): array {
@@ -180,6 +194,8 @@ class PaymentRefundService
             if ($result->status === PaymentTransactionStatus::SUCCESS) {
                 $finalTx->status = PaymentTransactionStatus::SUCCESS->value;
                 $finalTx->provider_reference = $result->providerReference;
+                $finalTx->normalized_error_code = null;
+                $finalTx->action_payload = null;
                 $finalTx->save();
 
                 $finalPayment->refunded_amount_minor += $amountMinor;
@@ -209,31 +225,11 @@ class PaymentRefundService
             } else {
                 $finalTx->status = PaymentTransactionStatus::FAILURE->value;
                 $finalTx->normalized_error_code = $result->normalizedErrorCode ?? 'refund_declined';
+                $finalTx->action_payload = null;
                 $finalTx->save();
             }
 
-            return $this->formatResponse($finalPayment, $finalTx);
+            return $this->reconciliationService->formatResponse($finalPayment, $finalTx);
         });
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function formatResponse(Payment $payment, PaymentTransaction $transaction): array
-    {
-        return [
-            'payment_id' => $payment->id,
-            'payment_uuid' => $payment->uuid,
-            'status' => $payment->status,
-            'amount_minor' => $payment->amount_minor,
-            'currency' => $payment->currency,
-            'authorized_amount_minor' => $payment->authorized_amount_minor,
-            'captured_amount_minor' => $payment->captured_amount_minor,
-            'refunded_amount_minor' => $payment->refunded_amount_minor,
-            'transaction_id' => $transaction->id,
-            'transaction_status' => $transaction->status,
-            'provider_reference' => $transaction->provider_reference,
-            'normalized_error_code' => $transaction->normalized_error_code,
-        ];
     }
 }

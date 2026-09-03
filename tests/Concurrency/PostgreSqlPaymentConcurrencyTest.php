@@ -17,17 +17,22 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Cart\Models\Cart;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Order\Exceptions\InvalidOrderTransitionException;
 use Modules\Order\Models\Order;
+use Modules\Payment\Contracts\PaymentGatewayRegistryInterface;
 use Modules\Payment\DTOs\InitiatePaymentDTO;
 use Modules\Payment\Enums\PaymentStatus;
 use Modules\Payment\Enums\PaymentTransactionStatus;
+use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
 use Modules\Payment\Exceptions\PaymentReconciliationPendingException;
 use Modules\Payment\Models\Payment;
 use Modules\Payment\Models\PaymentOperationKey;
 use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Providers\FakePaymentGateway;
 use Modules\Payment\Services\PaymentCaptureService;
 use Modules\Payment\Services\PaymentInitiationService;
 use Modules\Payment\Services\PaymentRefundService;
+use Modules\Payment\Services\PaymentTransactionReconciliationService;
 use Tests\TestCase;
 
 class PostgreSqlPaymentConcurrencyTest extends TestCase
@@ -261,7 +266,7 @@ try {
         providerCode: 'fake',
         idempotencyKey: 'race_a_key_'.uniqid()
     ));
-    echo json_encode(['status' => 'success', 'payment_id' => \$res['payment_id']]);
+    echo json_encode(['status' => 'success', 'payment_uuid' => \$res['payment_uuid']]);
 } catch (\Throwable \$e) {
     echo json_encode(['status' => 'error', 'message' => \$e->getMessage()]);
 }
@@ -298,7 +303,7 @@ try {
         providerCode: 'fake',
         idempotencyKey: 'race_b_shared_key'
     ));
-    echo json_encode(['status' => 'success', 'payment_id' => \$res['payment_id']]);
+    echo json_encode(['status' => 'success', 'payment_uuid' => \$res['payment_uuid']]);
 } catch (\Throwable \$e) {
     echo json_encode(['status' => 'error', 'message' => \$e->getMessage()]);
 }
@@ -314,7 +319,7 @@ PHP;
 
         $this->assertSame('success', $r1['status'] ?? null, 'Worker 1: '.($r1['message'] ?? ($results[0]['stdout'].' '.$results[0]['stderr'])));
         $this->assertSame('success', $r2['status'] ?? null, 'Worker 2: '.($r2['message'] ?? ($results[1]['stdout'].' '.$results[1]['stderr'])));
-        $this->assertSame($r1['payment_id'], $r2['payment_id']);
+        $this->assertSame($r1['payment_uuid'], $r2['payment_uuid']);
         $this->assertSame(1, Payment::where('order_id', $order->id)->count());
     }
 
@@ -815,5 +820,297 @@ PHP;
 
         // DB level invariant: exactly 1 transaction exists with this provider idempotency key
         $this->assertSame(1, PaymentTransaction::where('provider_idempotency_key', 'race_m_shared_provider_idemp')->count());
+    }
+
+    public function test_race_n_unknown_capture_retry_race_applies_captured_amount_once_only(): void
+    {
+        $order = $this->createTestOrder(10000, 'EUR');
+
+        /** @var Payment $payment */
+        $payment = Payment::create([
+            'tenant_id' => $this->tenant->id,
+            'order_id' => $order->id,
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'status' => 'authorized',
+            'authorized_amount_minor' => 10000,
+        ]);
+
+        /** @var PaymentTransaction $tx */
+        $tx = PaymentTransaction::create([
+            'tenant_id' => $this->tenant->id,
+            'payment_id' => $payment->id,
+            'operation_type' => 'capture',
+            'status' => 'unknown',
+            'amount_minor' => 4000,
+            'currency' => 'EUR',
+            'provider_code' => 'fake',
+            'provider_idempotency_key' => 'race_n_capture_key',
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->get('fake');
+        $gateway->saveRecord('race_n_capture_key', [
+            'status' => 'captured',
+            'reference' => 'cap_race_n_ref',
+            'amount' => 4000,
+            'currency' => 'EUR',
+        ]);
+
+        $bootstrap = $this->getWorkerBootstrap();
+
+        $workerCode = $bootstrap.<<<PHP
+use Modules\Payment\Models\Payment;
+use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Services\PaymentTransactionReconciliationService;
+
+// __BARRIER_WAIT__
+
+try {
+    \$service = app(PaymentTransactionReconciliationService::class);
+    \$tx = PaymentTransaction::find(__TX_ID__);
+    \$payment = Payment::find(__PAYMENT_ID__);
+    \$res = \$service->reconcile(\$tx, \$payment);
+    echo json_encode(["status" => "reconciled", "captured" => \$res["captured_amount_minor"]]);
+} catch (\\Throwable \$e) {
+    echo json_encode(["status" => "failed", "error" => \$e->getMessage()]);
+}
+PHP;
+
+        $s1 = str_replace(['__TENANT_ID__', '__TX_ID__', '__PAYMENT_ID__'], [(string) $this->tenant->id, (string) $tx->id, (string) $payment->id], $workerCode);
+        $s2 = str_replace(['__TENANT_ID__', '__TX_ID__', '__PAYMENT_ID__'], [(string) $this->tenant->id, (string) $tx->id, (string) $payment->id], $workerCode);
+
+        $results = $this->runSynchronizedParallelWorkers([$s1, $s2]);
+
+        // Invariant: captured amount is exactly 4000, NEVER 8000!
+        $this->assertSame(4000, $payment->fresh()->captured_amount_minor);
+        $this->assertSame('authorized', $payment->fresh()->status);
+    }
+
+    public function test_race_o_unknown_refund_retry_race_applies_refunded_amount_once_only(): void
+    {
+        $order = $this->createTestOrder(10000, 'EUR');
+
+        /** @var Payment $payment */
+        $payment = Payment::create([
+            'tenant_id' => $this->tenant->id,
+            'order_id' => $order->id,
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'status' => 'captured',
+            'captured_amount_minor' => 10000,
+        ]);
+
+        /** @var PaymentTransaction $tx */
+        $tx = PaymentTransaction::create([
+            'tenant_id' => $this->tenant->id,
+            'payment_id' => $payment->id,
+            'operation_type' => 'refund',
+            'status' => 'unknown',
+            'amount_minor' => 3000,
+            'currency' => 'EUR',
+            'provider_code' => 'fake',
+            'provider_idempotency_key' => 'race_o_refund_key',
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->get('fake');
+        $gateway->saveRecord('race_o_refund_key', [
+            'status' => 'refunded',
+            'reference' => 'ref_race_o_ref',
+            'amount' => 3000,
+            'currency' => 'EUR',
+        ]);
+
+        $bootstrap = $this->getWorkerBootstrap();
+
+        $workerCode = $bootstrap.<<<PHP
+use Modules\Payment\Models\Payment;
+use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Services\PaymentTransactionReconciliationService;
+
+// __BARRIER_WAIT__
+
+try {
+    \$service = app(PaymentTransactionReconciliationService::class);
+    \$tx = PaymentTransaction::find(__TX_ID__);
+    \$payment = Payment::find(__PAYMENT_ID__);
+    \$res = \$service->reconcile(\$tx, \$payment);
+    echo json_encode(["status" => "reconciled", "refunded" => \$res["refunded_amount_minor"]]);
+} catch (\\Throwable \$e) {
+    echo json_encode(["status" => "failed", "error" => \$e->getMessage()]);
+}
+PHP;
+
+        $s1 = str_replace(['__TENANT_ID__', '__TX_ID__', '__PAYMENT_ID__'], [(string) $this->tenant->id, (string) $tx->id, (string) $payment->id], $workerCode);
+        $s2 = str_replace(['__TENANT_ID__', '__TX_ID__', '__PAYMENT_ID__'], [(string) $this->tenant->id, (string) $tx->id, (string) $payment->id], $workerCode);
+
+        $results = $this->runSynchronizedParallelWorkers([$s1, $s2]);
+
+        // Invariant: refunded amount is exactly 3000, NEVER 6000!
+        $this->assertSame(3000, $payment->fresh()->refunded_amount_minor);
+        $this->assertSame('partially_refunded', $payment->fresh()->status);
+    }
+
+    public function test_race_p_unknown_void_retry_race_cancels_payment_once_only(): void
+    {
+        $order = $this->createTestOrder(10000, 'EUR');
+
+        /** @var Payment $payment */
+        $payment = Payment::create([
+            'tenant_id' => $this->tenant->id,
+            'order_id' => $order->id,
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'status' => 'authorized',
+            'authorized_amount_minor' => 10000,
+        ]);
+
+        /** @var PaymentTransaction $tx */
+        $tx = PaymentTransaction::create([
+            'tenant_id' => $this->tenant->id,
+            'payment_id' => $payment->id,
+            'operation_type' => 'void',
+            'status' => 'unknown',
+            'amount_minor' => 0,
+            'currency' => 'EUR',
+            'provider_code' => 'fake',
+            'provider_idempotency_key' => 'race_p_void_key',
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->get('fake');
+        $gateway->saveRecord('race_p_void_key', [
+            'status' => 'voided',
+            'reference' => 'void_race_p_ref',
+            'amount' => 0,
+            'currency' => 'EUR',
+        ]);
+
+        $bootstrap = $this->getWorkerBootstrap();
+
+        $workerCode = $bootstrap.<<<PHP
+use Modules\Payment\Models\Payment;
+use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Services\PaymentTransactionReconciliationService;
+
+// __BARRIER_WAIT__
+
+try {
+    \$service = app(PaymentTransactionReconciliationService::class);
+    \$tx = PaymentTransaction::find(__TX_ID__);
+    \$payment = Payment::find(__PAYMENT_ID__);
+    \$res = \$service->reconcile(\$tx, \$payment);
+    echo json_encode(["status" => "reconciled", "payment_status" => \$res["status"]]);
+} catch (\\Throwable \$e) {
+    echo json_encode(["status" => "failed", "error" => \$e->getMessage()]);
+}
+PHP;
+
+        $s1 = str_replace(['__TENANT_ID__', '__TX_ID__', '__PAYMENT_ID__'], [(string) $this->tenant->id, (string) $tx->id, (string) $payment->id], $workerCode);
+        $s2 = str_replace(['__TENANT_ID__', '__TX_ID__', '__PAYMENT_ID__'], [(string) $this->tenant->id, (string) $tx->id, (string) $payment->id], $workerCode);
+
+        $results = $this->runSynchronizedParallelWorkers([$s1, $s2]);
+
+        $this->assertSame('cancelled', $payment->fresh()->status);
+        $this->assertSame('voided', $order->fresh()->payment_status);
+    }
+
+    public function test_race_q_stale_authorization_reconciliation_fails_closed_against_voided_order(): void
+    {
+        $order = $this->createTestOrder(10000, 'EUR');
+        $order->payment_status = 'voided';
+        $order->save();
+
+        /** @var Payment $payment */
+        $payment = Payment::create([
+            'tenant_id' => $this->tenant->id,
+            'order_id' => $order->id,
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'status' => 'cancelled',
+        ]);
+
+        /** @var PaymentTransaction $tx */
+        $tx = PaymentTransaction::create([
+            'tenant_id' => $this->tenant->id,
+            'payment_id' => $payment->id,
+            'operation_type' => 'authorize',
+            'status' => 'unknown',
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'provider_code' => 'fake',
+            'provider_idempotency_key' => 'race_q_auth_key',
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->get('fake');
+        $gateway->saveRecord('race_q_auth_key', [
+            'status' => 'authorized',
+            'reference' => 'auth_race_q_ref',
+            'amount' => 10000,
+            'currency' => 'EUR',
+        ]);
+
+        $service = app(PaymentTransactionReconciliationService::class);
+
+        try {
+            $service->reconcile($tx, $payment);
+            $this->fail('Expected InvalidPaymentTransitionException or InvalidOrderTransitionException');
+        } catch (InvalidPaymentTransitionException|InvalidOrderTransitionException $e) {
+            $this->assertTrue(true);
+        }
+
+        $this->assertSame('voided', $order->fresh()->payment_status);
+    }
+
+    public function test_race_r_stale_capture_reconciliation_fails_closed_against_refunded_order(): void
+    {
+        $order = $this->createTestOrder(10000, 'EUR');
+        $order->payment_status = 'refunded';
+        $order->save();
+
+        /** @var Payment $payment */
+        $payment = Payment::create([
+            'tenant_id' => $this->tenant->id,
+            'order_id' => $order->id,
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'status' => 'refunded',
+            'captured_amount_minor' => 10000,
+            'refunded_amount_minor' => 10000,
+        ]);
+
+        /** @var PaymentTransaction $tx */
+        $tx = PaymentTransaction::create([
+            'tenant_id' => $this->tenant->id,
+            'payment_id' => $payment->id,
+            'operation_type' => 'capture',
+            'status' => 'unknown',
+            'amount_minor' => 10000,
+            'currency' => 'EUR',
+            'provider_code' => 'fake',
+            'provider_idempotency_key' => 'race_r_cap_key',
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->get('fake');
+        $gateway->saveRecord('race_r_cap_key', [
+            'status' => 'captured',
+            'reference' => 'cap_race_r_ref',
+            'amount' => 10000,
+            'currency' => 'EUR',
+        ]);
+
+        $service = app(PaymentTransactionReconciliationService::class);
+
+        try {
+            $service->reconcile($tx, $payment);
+            $this->fail('Expected InvalidPaymentTransitionException or InvalidOrderTransitionException');
+        } catch (InvalidPaymentTransitionException|InvalidOrderTransitionException $e) {
+            $this->assertTrue(true);
+        }
+
+        $this->assertSame('refunded', $order->fresh()->payment_status);
     }
 }

@@ -19,7 +19,7 @@ class PaymentTransactionResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            'id' => $this->id,
+            'uuid' => $this->uuid,
             'operation_type' => $this->operation_type,
             'status' => $this->status,
             'amount_minor' => $this->amount_minor,
