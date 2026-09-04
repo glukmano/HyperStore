@@ -1,0 +1,8 @@
+{
+    "name": "hyperstore/test-fixture-plugin",
+    "type": "project",
+    "license": "MIT",
+    "autoload": { "psr-4": { "Plugins\\TestFixturePlugin\\": "src/" } },
+    "require": { "php": "^8.4" },
+    "config": { "vendor-dir": "vendor" }
+}

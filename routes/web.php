@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use App\Core\Context\Middleware\ResolveContextMiddleware;
 use App\Core\Localization\Middleware\SetLocaleAndDirectionMiddleware;
+use App\Core\Plugin\Livewire\PluginDetail;
+use App\Core\Plugin\Livewire\PluginList;
 use App\Core\Stores\Contracts\StoreCreationServiceInterface;
 use App\Core\SuperAdmin\Contracts\ControlCenterMutationExecutorInterface;
 use App\Core\SuperAdmin\Contracts\OfficialExtensionGovernanceServiceInterface;
@@ -77,6 +79,11 @@ Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, Resolv
         Route::get('/channels', ChannelManager::class)->name('channels');
         Route::get('/settings', TenantSettingsManager::class)->name('settings');
         Route::get('/users', UserRoleManager::class)->name('users');
+
+        Route::prefix('plugins')->name('plugins.')->group(function () {
+            Route::get('/', PluginList::class)->name('index');
+            Route::get('/{pluginId}', PluginDetail::class)->name('show');
+        });
     });
 
 // ── Control Center ────────────────────────────────────────────────────────────

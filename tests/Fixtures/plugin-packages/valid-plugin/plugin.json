@@ -1,0 +1,16 @@
+{
+    "manifest_version": 1,
+    "id": "test-fixture-plugin",
+    "name": "Test Fixture Plugin",
+    "version": "1.0.0",
+    "author": "HyperStore Test Suite",
+    "license": "MIT",
+    "compatibility": { "platform": "*", "php": "^8.4" },
+    "dependencies": {},
+    "requested_permissions": ["plugin.test-fixture-plugin.view"],
+    "capabilities": ["control_center_navigation"],
+    "entrypoint": "Plugins\\TestFixturePlugin\\TestFixturePluginServiceProvider",
+    "namespace": "Plugins\\TestFixturePlugin",
+    "migrations": "database/migrations",
+    "settings_schema": {}
+}

@@ -1,0 +1,17 @@
+{
+    "name": "hyperstore/hello-world-plugin",
+    "description": "HyperStore Phase-16 Plugin SDK reference/fixture plugin.",
+    "type": "project",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Plugins\\HelloWorldPlugin\\": "src/"
+        }
+    },
+    "require": {
+        "php": "^8.4"
+    },
+    "config": {
+        "vendor-dir": "vendor"
+    }
+}

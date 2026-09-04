@@ -22,6 +22,23 @@ use App\Core\Modular\ModuleRegistry;
 use App\Core\Navigation\Contracts\NavigationRegistryInterface;
 use App\Core\Navigation\DTOs\NavigationItem;
 use App\Core\Navigation\NavigationRegistry;
+use App\Core\Plugin\Console\Commands\PluginDisableCommand;
+use App\Core\Plugin\Console\Commands\PluginDoctorCommand;
+use App\Core\Plugin\Console\Commands\PluginEnableCommand;
+use App\Core\Plugin\Console\Commands\PluginInspectCommand;
+use App\Core\Plugin\Console\Commands\PluginInstallCommand;
+use App\Core\Plugin\Console\Commands\PluginListCommand;
+use App\Core\Plugin\Console\Commands\PluginUninstallCommand;
+use App\Core\Plugin\Console\Commands\PluginUpdateCommand;
+use App\Core\Plugin\Contracts\PluginCodeSwapperInterface;
+use App\Core\Plugin\Contracts\PluginRegistryInterface;
+use App\Core\Plugin\PluginKernel;
+use App\Core\Plugin\PluginRegistry;
+use App\Core\Plugin\Services\PluginComposerDependencyChecker;
+use App\Core\Plugin\Services\PluginLifecycleService;
+use App\Core\Plugin\Services\PluginRenameCodeSwapper;
+use App\Core\Plugin\Services\PluginSignatureVerifier;
+use App\Core\Plugin\Services\PluginZipInstaller;
 use App\Core\Routing\DomainAddressingService;
 use App\Core\Theme\Contracts\ThemeRegistryInterface;
 use App\Core\Theme\Contracts\ThemeResolverInterface;
@@ -55,6 +72,21 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(NavigationRegistryInterface::class, NavigationRegistry::class);
         $this->app->singleton(ThemeRegistryInterface::class, ThemeRegistry::class);
         $this->app->singleton(ThemeResolverInterface::class, ThemeResolver::class);
+
+        $this->app->singleton(PluginRegistryInterface::class, PluginRegistry::class);
+        $this->app->singleton(PluginSignatureVerifier::class);
+        $this->app->singleton(PluginZipInstaller::class);
+        $this->app->singleton(PluginComposerDependencyChecker::class);
+        $this->app->singleton(PluginCodeSwapperInterface::class, PluginRenameCodeSwapper::class);
+        $this->app->singleton(PluginLifecycleService::class);
+        $this->app->singleton(PluginKernel::class, function ($app) {
+            return new PluginKernel(
+                app: $app,
+                registry: $app->make(PluginRegistryInterface::class),
+                pluginsBasePath: base_path('plugins'),
+                auditManager: $app->make(AuditManagerInterface::class),
+            );
+        });
     }
 
     public function boot(): void
@@ -62,6 +94,14 @@ class AppServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 ModuleListCommand::class,
+                PluginListCommand::class,
+                PluginInspectCommand::class,
+                PluginInstallCommand::class,
+                PluginEnableCommand::class,
+                PluginDisableCommand::class,
+                PluginUpdateCommand::class,
+                PluginUninstallCommand::class,
+                PluginDoctorCommand::class,
             ]);
         }
 
@@ -131,6 +171,17 @@ class AppServiceProvider extends ServiceProvider
             order: 50,
         ));
 
+        $navigation->register(new NavigationItem(
+            key: 'platform-plugins',
+            label: 'Plugins',
+            routeName: 'control-center.platform.plugins.index',
+            group: 'Platform',
+            permission: 'plugins.view',
+            context: 'tenant',
+            icon: '🧩',
+            order: 60,
+        ));
+
         $this->app->make(ThemeRegistryInterface::class)->register(
             ThemeManifest::fromJsonFile(base_path('themes/default/theme.json'))
         );
@@ -143,5 +194,11 @@ class AppServiceProvider extends ServiceProvider
         $kernel->discover();
         $kernel->registerModules();
         $kernel->bootModules();
+
+        // Plugins load strictly after all Modules (ADR-0006, ADR-0133).
+        $pluginKernel = $this->app->make(PluginKernel::class);
+        $pluginKernel->discover();
+        $pluginKernel->registerPlugins();
+        $pluginKernel->bootPlugins();
     }
 }

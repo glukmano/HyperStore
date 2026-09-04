@@ -1,0 +1,17 @@
+{
+    "manifest_version": 1,
+    "id": "hello-world-plugin",
+    "name": "Hello World Plugin",
+    "version": "1.0.0",
+    "author": "HyperStore",
+    "license": "MIT",
+    "description": "Reference/fixture plugin proving the Phase-16 Plugin SDK: navigation registration, a Control Center page, a seeded permission, a translation string, and a scheduled task. No commerce logic.",
+    "compatibility": { "platform": "*", "php": "^8.4" },
+    "dependencies": {},
+    "requested_permissions": ["plugin.hello-world-plugin.view"],
+    "capabilities": ["control_center_navigation", "scheduled_tasks"],
+    "entrypoint": "Plugins\\HelloWorldPlugin\\HelloWorldPluginServiceProvider",
+    "namespace": "Plugins\\HelloWorldPlugin",
+    "migrations": "database/migrations",
+    "settings_schema": {}
+}
