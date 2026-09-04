@@ -19,10 +19,12 @@ class PlatformHealthProbeTest extends TestCase
 
     public function test_anonymous_request_to_health_probe_is_denied(): void
     {
-        $this->withoutExceptionHandling();
-        $this->expectException(UnauthorizedContextException::class);
+        // Phase-15 authentication-access completion fix (2026-09-04): a JSON-expecting
+        // guest request is denied with a standard 401 (Laravel's Authenticate middleware
+        // never redirects a JSON request) — never a 500.
+        $response = $this->getJson(route('control-center.health'));
 
-        $this->getJson(route('control-center.health'));
+        $response->assertStatus(401);
     }
 
     public function test_tenant_admin_request_to_health_probe_is_denied(): void

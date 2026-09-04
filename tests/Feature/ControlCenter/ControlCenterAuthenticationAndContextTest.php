@@ -60,12 +60,32 @@ class ControlCenterAuthenticationAndContextTest extends TestCase
         ]);
     }
 
-    public function test_unauthenticated_request_fails_closed(): void
+    public function test_unauthenticated_request_redirects_to_login_instead_of_erroring(): void
     {
-        $this->withoutExceptionHandling();
-        $this->expectException(UnauthorizedContextException::class);
+        // Phase-15 authentication-access completion fix (2026-09-04): a guest hitting
+        // any Control Center route must never 500 — the `auth` middleware (now placed
+        // before ControlCenterContextMiddleware in routes/web.php) intercepts first and
+        // redirects to the named `login` route, preserving the intended URL.
+        $response = $this->get(route('control-center.tenant.dashboard', ['tenant' => $this->tenant->id]));
 
-        $this->get(route('control-center.tenant.dashboard', ['tenant' => $this->tenant->id]));
+        $response->assertRedirect(route('login'));
+    }
+
+    public function test_authenticated_user_without_tenant_membership_gets_403_not_500(): void
+    {
+        $outsider = User::create([
+            'name' => 'Outsider 403',
+            'email' => 'outsider-403@other.com',
+            'password' => bcrypt('secret123'),
+            'status' => 'active',
+            'is_super_admin' => false,
+        ]);
+
+        $this->actingAs($outsider);
+
+        $response = $this->get(route('control-center.tenant.dashboard', ['tenant' => $this->tenant->id]));
+
+        $response->assertStatus(403);
     }
 
     public function test_authenticated_user_without_tenant_membership_fails_closed(): void

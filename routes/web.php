@@ -20,6 +20,7 @@ use App\Core\SuperAdmin\Models\OfficialExtension;
 use App\Core\SuperAdmin\Models\PlatformSaasPlan;
 use App\Core\Tenancy\Models\Tenant;
 use App\Core\Theme\Http\Middleware\ResolveStorefrontThemeMiddleware;
+use App\Http\Controllers\Auth\AuthenticatedSessionController;
 use App\Livewire\ControlCenter\ChannelManager;
 use App\Livewire\ControlCenter\DashboardOverview;
 use App\Livewire\ControlCenter\MarketManager;
@@ -44,6 +45,13 @@ Route::get('/up', function () {
         'status' => 'ok',
         'timestamp' => now()->toIso8601String(),
     ]);
+});
+
+// ── Authentication (minimal first-party web session entry) ─────────────────────
+Route::middleware(['web', SetLocaleAndDirectionMiddleware::class])->group(function (): void {
+    Route::get('/login', [AuthenticatedSessionController::class, 'create'])->name('login');
+    Route::post('/login', [AuthenticatedSessionController::class, 'store'])->name('login.store');
+    Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->middleware('auth')->name('logout');
 });
 
 // ── Storefront (public, theme-rendered) ────────────────────────────────────────
@@ -76,7 +84,7 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class])
     ->prefix('control-center')
     ->group(function () {
         // Authenticated Context-Governed Routes
-        Route::middleware([ControlCenterContextMiddleware::class])->group(function () {
+        Route::middleware(['auth', ControlCenterContextMiddleware::class])->group(function () {
             Route::get('/', DashboardOverview::class)->name('control-center.dashboard');
             Route::get('/{tenant}', DashboardOverview::class)->name('control-center.tenant.dashboard');
 
