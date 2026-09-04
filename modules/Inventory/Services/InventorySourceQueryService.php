@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Inventory\Services;
 
 use DateTimeImmutable;
+use Modules\Inventory\Contracts\ExternalStockProviderInterface;
 use Modules\Inventory\Contracts\InventorySourceQueryInterface;
 use Modules\Inventory\DTOs\InventoryContext;
 use Modules\Inventory\DTOs\InventorySourceDTO;
@@ -23,6 +24,7 @@ class InventorySourceQueryService implements InventorySourceQueryInterface
 {
     public function __construct(
         private readonly InventorySourceEligibilityService $eligibilityService,
+        private readonly ?ExternalStockProviderInterface $externalStockProvider = null,
     ) {}
 
     /**
@@ -103,12 +105,46 @@ class InventorySourceQueryService implements InventorySourceQueryInterface
             );
         }
 
+        // External supplier stock (ADR-0124): normalized, read-only availability —
+        // never written into stock_items.on_hand. Fails closed on any resolution failure.
+        if ($source->source_type === 'supplier') {
+            if ($this->externalStockProvider === null) {
+                return new SourceAvailabilityDTO(
+                    sourceId: $sourceId,
+                    available: Quantity::zero(),
+                    onHand: Quantity::zero(),
+                    reserved: Quantity::zero(),
+                    readiness: SourceAvailabilityDTO::UNAVAILABLE,
+                );
+            }
+
+            $snapshot = $this->externalStockProvider->getAvailability($source);
+            if ($snapshot->unavailable || $snapshot->available === null || $snapshot->available->isZero()) {
+                return new SourceAvailabilityDTO(
+                    sourceId: $sourceId,
+                    available: Quantity::zero(),
+                    onHand: Quantity::zero(),
+                    reserved: Quantity::zero(),
+                    readiness: SourceAvailabilityDTO::UNAVAILABLE,
+                );
+            }
+
+            return new SourceAvailabilityDTO(
+                sourceId: $sourceId,
+                available: $snapshot->available,
+                onHand: Quantity::zero(),
+                reserved: Quantity::zero(),
+                readiness: SourceAvailabilityDTO::READY,
+            );
+        }
+
         /** @var StockItem|null $stockItem */
         $stockItem = StockItem::query()
             ->where('tenant_id', $context->tenantId)
             ->where('inventory_source_id', $sourceId)
             ->where('product_id', $productId)
             ->where('product_variant_id', $variantId)
+            ->with('product')
             ->first();
 
         if ($stockItem === null) {
@@ -128,7 +164,9 @@ class InventorySourceQueryService implements InventorySourceQueryInterface
 
         // Determine readiness
         $backorderMode = $stockItem->backorder_mode ?? 'deny';
-        $isPreorder = (bool) ($stockItem->is_preorder ?? false);
+        // Preorder readiness is Catalog-owned truth (Product.product_type), never an Inventory-owned flag
+        // (ADR-0127) — Inventory does not duplicate or re-derive commercial product-type ownership.
+        $isPreorder = $stockItem->product?->product_type === 'preorder';
 
         if ($hasStock) {
             $readiness = SourceAvailabilityDTO::READY;

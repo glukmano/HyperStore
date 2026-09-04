@@ -18,6 +18,7 @@ class InventoryOperationKey extends Model
     protected $fillable = [
         'tenant_id',
         'idempotency_key',
+        'payload_hash',
         'operation_type',
         'resource_type',
         'resource_id',

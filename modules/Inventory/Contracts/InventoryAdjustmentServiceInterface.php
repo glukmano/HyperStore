@@ -48,4 +48,30 @@ interface InventoryAdjustmentServiceInterface
         ?string $reason = null,
         ?string $idempotencyKey = null
     ): InventoryMovement;
+
+    /**
+     * Identity-based variants for cross-module callers (e.g. Order/RMA) that must
+     * never import Inventory's Eloquent models directly — mirrors the same
+     * interface-only boundary already used for InventoryReservationServiceInterface.
+     */
+    public function receiveByIdentity(
+        int $tenantId,
+        int $inventorySourceId,
+        int $productId,
+        ?int $productVariantId,
+        Quantity $quantity,
+        ?string $referenceType = null,
+        ?string $referenceId = null,
+        ?string $idempotencyKey = null
+    ): InventoryMovement;
+
+    public function quarantineByIdentity(
+        int $tenantId,
+        int $inventorySourceId,
+        int $productId,
+        ?int $productVariantId,
+        Quantity $quantity,
+        ?string $reason = null,
+        ?string $idempotencyKey = null
+    ): InventoryMovement;
 }

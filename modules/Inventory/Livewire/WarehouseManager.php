@@ -18,7 +18,9 @@ class WarehouseManager extends Component
 
     public string $country_code = 'CH';
 
-    public string $type = 'owned';
+    public ?string $type = null;
+
+    public string $ownership_type = 'platform';
 
     public string $timezone = 'UTC';
 
@@ -28,6 +30,8 @@ class WarehouseManager extends Component
             'code' => ['required', 'string', 'max:100'],
             'name' => ['required', 'string', 'max:255'],
             'country_code' => ['required', 'string', 'size:2'],
+            'type' => ['nullable', 'string', 'in:fulfillment_center,retail_store,distribution_center,hub'],
+            'ownership_type' => ['required', 'string', 'in:platform,vendor,3pl'],
         ]);
 
         $tenant = app(ContextManager::class)->getTenant();
@@ -43,6 +47,7 @@ class WarehouseManager extends Component
             'name' => $this->name,
             'country_code' => strtoupper($this->country_code),
             'type' => $this->type,
+            'ownership_type' => $this->ownership_type,
             'timezone' => $this->timezone,
             'status' => 'active',
         ]);

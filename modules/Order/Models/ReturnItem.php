@@ -22,6 +22,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string $quantity_received
  * @property string|null $condition
  * @property string $restock_action
+ * @property string|null $disposition_operation_uuid
+ * @property int|null $destination_inventory_source_id
+ * @property Carbon|null $disposed_at
  * @property string $action
  * @property Carbon $created_at
  * @property Carbon $updated_at
@@ -45,6 +48,9 @@ class ReturnItem extends Model
         'quantity_received',
         'condition',
         'restock_action',
+        'disposition_operation_uuid',
+        'destination_inventory_source_id',
+        'disposed_at',
         'action',
     ];
 
@@ -52,6 +58,7 @@ class ReturnItem extends Model
         'quantity_requested' => 'decimal:8',
         'quantity_approved' => 'decimal:8',
         'quantity_received' => 'decimal:8',
+        'disposed_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];

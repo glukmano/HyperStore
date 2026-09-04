@@ -15,6 +15,7 @@ use Modules\Order\Contracts\OrderNumberGeneratorInterface;
 use Modules\Order\Contracts\OrderOwnershipServiceInterface;
 use Modules\Order\Contracts\OrderPaymentSynchronizationServiceInterface;
 use Modules\Order\Contracts\OrderStateMachineServiceInterface;
+use Modules\Order\Contracts\ReturnPhysicalDispositionServiceInterface;
 use Modules\Order\Contracts\ReturnRefundOrchestratorInterface;
 use Modules\Order\Contracts\ReturnRequestServiceInterface;
 use Modules\Order\Contracts\SellerOrderOwnershipServiceInterface;
@@ -32,6 +33,7 @@ use Modules\Order\Services\OrderNumberGenerator;
 use Modules\Order\Services\OrderOwnershipService;
 use Modules\Order\Services\OrderPaymentSynchronizationService;
 use Modules\Order\Services\OrderStateMachineService;
+use Modules\Order\Services\ReturnPhysicalDispositionService;
 use Modules\Order\Services\ReturnRefundOrchestrator;
 use Modules\Order\Services\ReturnRequestService;
 use Modules\Order\Services\SellerOrderOwnershipService;
@@ -65,6 +67,8 @@ class OrderServiceProvider extends ModuleServiceProvider
         $this->app->singleton(ShippingRefundPolicyInterface::class, NotRefundableByDefaultShippingRefundPolicy::class);
         $this->app->singleton(ReturnRefundOrchestratorInterface::class, ReturnRefundOrchestrator::class);
         $this->app->singleton(ReturnRefundOrchestrator::class);
+        $this->app->singleton(ReturnPhysicalDispositionServiceInterface::class, ReturnPhysicalDispositionService::class);
+        $this->app->singleton(ReturnPhysicalDispositionService::class);
     }
 
     public function boot(): void

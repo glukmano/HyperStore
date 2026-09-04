@@ -57,6 +57,7 @@ test('Warehouse transfer flow supports cumulative multi-step partial receiving',
     ]);
 
     $item = InventoryTransferItem::create([
+        'tenant_id' => $this->tenant->id,
         'inventory_transfer_id' => $transfer->id,
         'product_id' => $this->product->id,
         'requested_quantity' => '10.0000',

@@ -68,6 +68,9 @@ class StockItem extends Model
         return $this->belongsTo(InventorySource::class);
     }
 
+    /**
+     * @return BelongsTo<Product, $this>
+     */
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);

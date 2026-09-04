@@ -29,7 +29,29 @@ class PostgreSqlOrderMigrationTest extends TestCase
 
     private const ADMIN_DB = 'postgres';
 
-    private const TARGET_MIGRATION = 'database/migrations/2026_09_02_000090_create_order_tables.php';
+    /**
+     * order_tables plus every migration file that (as of writing) holds a foreign
+     * key referencing order_items — Marketplace (fk_payable_entries_order_item),
+     * and Phase-13 (fk_soi_tenant_order_item, fk_ofi_order_item, fk_pol_order_item,
+     * fk_ri_order_item) — plus Payment/Ledger/Control-Center/Phase-14, which share
+     * order_tables' migration batch and must therefore resolve to real files too
+     * (an unresolvable batch-mate is silently skipped by `--path`-restricted
+     * rollback rather than rolled back, which is what breaks this test once any
+     * later migration FK-depends on order_items). None of these paths touch
+     * anything created before order_tables.
+     *
+     * @var list<string>
+     */
+    private const array TARGET_MIGRATION_PATHS = [
+        'database/migrations/2026_09_02_000090_create_order_tables.php',
+        'database/migrations/2026_09_03_000010_create_payment_tables.php',
+        'database/migrations/2026_09_03_000020_create_ledger_tables.php',
+        'database/migrations/2026_09_03_000030_create_marketplace_tables.php',
+        'database/migrations/2026_09_03_000031_add_marketplace_snapshots_to_order_items.php',
+        'database/migrations/2026_09_03_000040_create_control_center_and_super_admin_tables.php',
+        'database/migrations/2026_09_03_000050_create_phase_13_orders_fulfillment_dropshipping_tables.php',
+        'database/migrations/2026_09_04_000060_create_phase_14_inventory_operations_extension_tables.php',
+    ];
 
     private string $testDb;
 
@@ -95,7 +117,10 @@ class PostgreSqlOrderMigrationTest extends TestCase
         $this->connectTo($this->testDb);
     }
 
-    private function runArtisanMigrate(string $command, ?string $migrationPath, string $database): string
+    /**
+     * @param  string|list<string>|null  $migrationPath
+     */
+    private function runArtisanMigrate(string $command, string|array|null $migrationPath, string $database): string
     {
         $bp = base_path();
 
@@ -117,8 +142,9 @@ class PostgreSqlOrderMigrationTest extends TestCase
         }, array_keys($env), $env)));
 
         $artisan = escapeshellarg("{$bp}/artisan");
-        $pathFlag = $migrationPath !== null ? '--path='.escapeshellarg($migrationPath) : '';
-        $output = shell_exec("env {$envStr} php {$artisan} {$command} {$pathFlag} --force --no-ansi 2>&1");
+        $paths = $migrationPath === null ? [] : (is_array($migrationPath) ? $migrationPath : [$migrationPath]);
+        $pathFlags = implode(' ', array_map(static fn (string $p): string => '--path='.escapeshellarg($p), $paths));
+        $output = shell_exec("env {$envStr} php {$artisan} {$command} {$pathFlags} --force --no-ansi 2>&1");
 
         return (string) $output;
     }
@@ -135,8 +161,14 @@ class PostgreSqlOrderMigrationTest extends TestCase
             $this->assertNotNull($exists, "Table {$tbl} must exist after initial migration.");
         }
 
-        // 2. Rollback step: rollback order tables migration
-        $output = $this->runArtisanMigrate('migrate:rollback', self::TARGET_MIGRATION, $this->testDb);
+        // 2. Rollback step: rollback order_tables together with every batch-mate migration
+        // that either FK-depends on order_items or shares its migration batch (see
+        // TARGET_MIGRATION_PATHS doc comment). A --path restricted to ONLY order_tables
+        // leaves its dependents unresolved ("Migration not found", silently skipped rather
+        // than rolled back), which now blocks `DROP TABLE order_items`. This stays scoped
+        // to order_tables' own batch — nothing created before it (users/permissions/etc.,
+        // or package-published migrations) is touched.
+        $output = $this->runArtisanMigrate('migrate:rollback', self::TARGET_MIGRATION_PATHS, $this->testDb);
         $this->assertStringNotContainsString('FAIL', $output, "Rollback must succeed. Output:\n{$output}");
         $this->connectTo($this->testDb);
 
@@ -149,8 +181,8 @@ class PostgreSqlOrderMigrationTest extends TestCase
             $this->assertNull($exists, "Table {$tbl} must NOT exist after rollback.");
         }
 
-        // 3. Re-migration step
-        $output = $this->runArtisanMigrate('migrate', self::TARGET_MIGRATION, $this->testDb);
+        // 3. Re-migration step (same scoped path set, mirroring the rollback above)
+        $output = $this->runArtisanMigrate('migrate', self::TARGET_MIGRATION_PATHS, $this->testDb);
         $this->assertStringNotContainsString('FAIL', $output, "Re-migration must succeed. Output:\n{$output}");
         $this->connectTo($this->testDb);
 

@@ -24,7 +24,7 @@ class TransferManager extends Component
 
         return view('inventory::livewire.transfer-manager', [
             'transfers' => InventoryTransfer::where('tenant_id', $tenantId)->with(['sourceWarehouse', 'destinationWarehouse', 'items'])->latest()->paginate(25),
-            'warehouses' => Warehouse::where('tenant_id', $tenantId)->get(),
+            'warehouses' => Warehouse::where('tenant_id', $tenantId)->where('status', 'active')->get(),
         ])->layout('layouts.control-center', ['title' => 'Warehouse Transfers']);
     }
 }

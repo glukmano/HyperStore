@@ -6,7 +6,10 @@ namespace Modules\Inventory\Models;
 
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use InvalidArgumentException;
+use Modules\Marketplace\Models\Vendor;
 
 class Warehouse extends Model
 {
@@ -19,6 +22,8 @@ class Warehouse extends Model
         'code',
         'name',
         'type',
+        'ownership_type',
+        'vendor_id',
         'status',
         'country_code',
         'state_code',
@@ -42,8 +47,31 @@ class Warehouse extends Model
         'metadata' => 'array',
     ];
 
+    public static function boot(): void
+    {
+        parent::boot();
+
+        static::saving(function (Warehouse $warehouse) {
+            if ($warehouse->ownership_type === 'vendor' && $warehouse->vendor_id === null) {
+                throw new InvalidArgumentException('Warehouse ownership_type "vendor" requires vendor_id to be set.');
+            }
+            if ($warehouse->ownership_type !== 'vendor' && $warehouse->vendor_id !== null) {
+                throw new InvalidArgumentException('Warehouse vendor_id may only be set when ownership_type is "vendor".');
+            }
+            $vendor = $warehouse->vendor;
+            if ($vendor instanceof Vendor && (int) $vendor->tenant_id !== (int) $warehouse->tenant_id) {
+                throw new InvalidArgumentException("Warehouse tenant_id [{$warehouse->tenant_id}] does not match Vendor tenant_id [{$vendor->tenant_id}].");
+            }
+        });
+    }
+
     public function inventorySources(): HasMany
     {
         return $this->hasMany(InventorySource::class);
+    }
+
+    public function vendor(): BelongsTo
+    {
+        return $this->belongsTo(Vendor::class);
     }
 }

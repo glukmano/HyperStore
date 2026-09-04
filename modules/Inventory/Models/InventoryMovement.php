@@ -22,6 +22,7 @@ class InventoryMovement extends Model
         'reservation_commit',
         'transfer_out',
         'transfer_in',
+        'transfer_pending_in',
         'damaged',
         'quarantine_in',
         'quarantine_out',

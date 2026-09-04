@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Inventory\Models;
 
+use App\Core\Tenancy\Traits\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Modules\Catalog\Models\Product;
@@ -11,9 +12,12 @@ use Modules\Catalog\Models\ProductVariant;
 
 class InventoryTransferItem extends Model
 {
+    use BelongsToTenant;
+
     protected $table = 'inventory_transfer_items';
 
     protected $fillable = [
+        'tenant_id',
         'inventory_transfer_id',
         'product_id',
         'product_variant_id',

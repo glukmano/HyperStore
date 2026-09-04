@@ -12,7 +12,6 @@ use Modules\Inventory\DTOs\InventoryContext;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\InventoryTransfer;
-use Modules\Inventory\Models\InventoryTransferItem;
 use Modules\Inventory\Models\StockItem;
 use Modules\Inventory\Models\Warehouse;
 use Modules\Inventory\Registries\InventorySourceTypeRegistry;
@@ -53,6 +52,8 @@ Route::middleware(['api', 'auth:sanctum,web', ResolveContextMiddleware::class])-
             'name' => ['required', 'string', 'max:255'],
             'country_code' => ['required', 'string', 'size:2'],
             'type' => ['nullable', 'string', 'in:fulfillment_center,retail_store,distribution_center,hub'],
+            'ownership_type' => ['nullable', 'string', 'in:platform,vendor,3pl'],
+            'vendor_id' => ['nullable', 'integer', 'required_if:ownership_type,vendor'],
         ]);
         $wh = Warehouse::create(array_merge($data, ['tenant_id' => $tenantId]));
 
@@ -271,9 +272,9 @@ Route::middleware(['api', 'auth:sanctum,web', ResolveContextMiddleware::class])-
     });
 
     // 8. Transfers Lifecycle
-    Route::post('transfers/create', function (Request $request) use ($getTenantId) {
+    Route::post('transfers/create', function (Request $request, InventoryTransferServiceInterface $service) use ($getTenantId) {
         $tenantId = $getTenantId();
-        if (! $request->user()?->can('inventory.transfer') && ! $request->user()?->is_super_admin) {
+        if (! $request->user()?->can('inventory.transfer.create') && ! $request->user()?->can('inventory.transfer') && ! $request->user()?->is_super_admin) {
             throw new AccessDeniedHttpException('Permission denied.');
         }
         $data = $request->validate([
@@ -284,32 +285,24 @@ Route::middleware(['api', 'auth:sanctum,web', ResolveContextMiddleware::class])-
             'items.*.product_id' => ['required', 'integer'],
             'items.*.variant_id' => ['nullable', 'integer'],
             'items.*.requested_quantity' => ['required', 'string'],
+            'idempotency_key' => ['nullable', 'string'],
         ]);
 
-        // Validate source ownership
-        /** @var InventorySource $source */
-        $source = InventorySource::query()->where('tenant_id', $tenantId)->findOrFail($data['source_inventory_source_id']);
-        /** @var InventorySource $dest */
-        $dest = InventorySource::query()->where('tenant_id', $tenantId)->findOrFail($data['destination_inventory_source_id']);
+        /** @var list<array{product_id: int, product_variant_id: int|null, requested_quantity: string}> $items */
+        $items = array_values(array_map(static fn (array $it): array => [
+            'product_id' => (int) $it['product_id'],
+            'product_variant_id' => isset($it['variant_id']) ? (int) $it['variant_id'] : null,
+            'requested_quantity' => (string) $it['requested_quantity'],
+        ], $data['items']));
 
-        $transfer = InventoryTransfer::create([
-            'tenant_id' => $tenantId,
-            'transfer_number' => $data['transfer_number'],
-            'source_inventory_source_id' => $source->id,
-            'destination_inventory_source_id' => $dest->id,
-            'source_warehouse_id' => $source->warehouse_id,
-            'destination_warehouse_id' => $dest->warehouse_id,
-            'status' => 'draft',
-        ]);
-
-        foreach ($data['items'] as $it) {
-            InventoryTransferItem::create([
-                'inventory_transfer_id' => $transfer->id,
-                'product_id' => $it['product_id'],
-                'product_variant_id' => $it['variant_id'] ?? null,
-                'requested_quantity' => $it['requested_quantity'],
-            ]);
-        }
+        $transfer = $service->create(
+            tenantId: $tenantId,
+            sourceInventorySourceId: (int) $data['source_inventory_source_id'],
+            destinationInventorySourceId: (int) $data['destination_inventory_source_id'],
+            transferNumber: $data['transfer_number'],
+            items: $items,
+            idempotencyKey: $data['idempotency_key'] ?? null,
+        );
 
         return response()->json(['data' => $transfer->load('items')], 201);
     });

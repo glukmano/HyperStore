@@ -9,6 +9,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventoryOperationKey;
+use Modules\Inventory\Models\InventoryTransfer;
 
 class InventoryIdempotencyService
 {
@@ -20,14 +21,18 @@ class InventoryIdempotencyService
 
     /**
      * @param  callable(): mixed  $callback
+     * @param  array<string, mixed>|null  $requestPayload  When provided, a differing payload replayed under the
+     *                                                     same idempotency key fails closed instead of silently
+     *                                                     returning the first result (ADR-0125/ADR-0126).
      */
-    public function execute(int $tenantId, ?string $idempotencyKey, string $operationType, string $resourceType, ?string $resourceId, callable $callback): mixed
+    public function execute(int $tenantId, ?string $idempotencyKey, string $operationType, string $resourceType, ?string $resourceId, callable $callback, ?array $requestPayload = null): mixed
     {
         if ($idempotencyKey === null || trim($idempotencyKey) === '') {
             return $callback();
         }
 
         $trimmedKey = trim($idempotencyKey);
+        $payloadHash = $requestPayload !== null ? hash('sha256', json_encode($requestPayload, JSON_THROW_ON_ERROR)) : null;
 
         for ($iteration = 0; $iteration < 3; $iteration++) {
             // 1. Check existing record
@@ -36,6 +41,10 @@ class InventoryIdempotencyService
                 ->where('idempotency_key', $trimmedKey)
                 ->where('operation_type', $operationType)
                 ->first();
+
+            if ($existing !== null && $payloadHash !== null && $existing->payload_hash !== null && $existing->payload_hash !== $payloadHash) {
+                throw new \RuntimeException("Idempotency key [{$trimmedKey}] for operation [{$operationType}] was already used with a different payload. Fail closed.");
+            }
 
             if ($existing !== null && $existing->status === 'completed') {
                 return $this->resolveStoredResult($existing);
@@ -89,6 +98,7 @@ class InventoryIdempotencyService
                 InventoryOperationKey::create([
                     'tenant_id' => $tenantId,
                     'idempotency_key' => $trimmedKey,
+                    'payload_hash' => $payloadHash,
                     'operation_type' => $operationType,
                     'resource_type' => $resourceType,
                     'resource_id' => $resourceId,
@@ -151,6 +161,9 @@ class InventoryIdempotencyService
 
                 if ($result instanceof InventoryMovement) {
                     $storedResourceType = 'inventory_movements';
+                    $storedResourceId = (string) $result->id;
+                } elseif ($result instanceof InventoryTransfer) {
+                    $storedResourceType = 'inventory_transfers';
                     $storedResourceId = (string) $result->id;
                 }
 
@@ -218,6 +231,13 @@ class InventoryIdempotencyService
             $movement = InventoryMovement::find((int) $record->resource_id);
             if ($movement !== null) {
                 return $movement;
+            }
+        }
+
+        if ($record->resource_type === 'inventory_transfers' && $record->resource_id !== null) {
+            $transfer = InventoryTransfer::find((int) $record->resource_id);
+            if ($transfer !== null) {
+                return $transfer;
             }
         }
 

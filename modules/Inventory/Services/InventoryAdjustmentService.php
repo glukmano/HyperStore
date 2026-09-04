@@ -12,7 +12,10 @@ use Modules\Inventory\Events\InventoryReceived;
 use Modules\Inventory\Events\LowStockDetected;
 use Modules\Inventory\Events\OutOfStockDetected;
 use Modules\Inventory\Models\InventoryMovement;
+use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
+use Modules\Inventory\Models\Warehouse;
+use Modules\Inventory\Support\WarehouseVendorAuthorizationGuard;
 use Modules\Inventory\ValueObjects\Quantity;
 
 class InventoryAdjustmentService implements InventoryAdjustmentServiceInterface
@@ -48,6 +51,14 @@ class InventoryAdjustmentService implements InventoryAdjustmentServiceInterface
                 return DB::transaction(function () use ($stockItem, $delta, $movementType, $reason, $referenceType, $referenceId) {
                     /** @var StockItem $locked */
                     $locked = StockItem::query()->where('id', $stockItem->id)->lockForUpdate()->firstOrFail();
+
+                    /** @var InventorySource|null $invSource */
+                    $invSource = InventorySource::query()->where('id', $locked->inventory_source_id)->first();
+                    if ($invSource !== null && $invSource->warehouse_id !== null) {
+                        /** @var Warehouse|null $warehouse */
+                        $warehouse = Warehouse::query()->where('id', $invSource->warehouse_id)->first();
+                        WarehouseVendorAuthorizationGuard::assertWarehouseOperable($warehouse);
+                    }
 
                     $currentOnHand = Quantity::fromString((string) $locked->on_hand);
                     $newOnHand = $currentOnHand->add($delta);
@@ -212,5 +223,47 @@ class InventoryAdjustmentService implements InventoryAdjustmentServiceInterface
                 'created_at' => now(),
             ]);
         });
+    }
+
+    public function receiveByIdentity(
+        int $tenantId,
+        int $inventorySourceId,
+        int $productId,
+        ?int $productVariantId,
+        Quantity $quantity,
+        ?string $referenceType = null,
+        ?string $referenceId = null,
+        ?string $idempotencyKey = null
+    ): InventoryMovement {
+        $stockItem = $this->resolveOrCreateStockItem($tenantId, $inventorySourceId, $productId, $productVariantId);
+
+        return $this->receive($stockItem, $quantity, $referenceType, $referenceId, $idempotencyKey);
+    }
+
+    public function quarantineByIdentity(
+        int $tenantId,
+        int $inventorySourceId,
+        int $productId,
+        ?int $productVariantId,
+        Quantity $quantity,
+        ?string $reason = null,
+        ?string $idempotencyKey = null
+    ): InventoryMovement {
+        $stockItem = $this->resolveOrCreateStockItem($tenantId, $inventorySourceId, $productId, $productVariantId);
+
+        return $this->quarantine($stockItem, $quantity, $reason, $idempotencyKey);
+    }
+
+    private function resolveOrCreateStockItem(int $tenantId, int $inventorySourceId, int $productId, ?int $productVariantId): StockItem
+    {
+        return StockItem::firstOrCreate([
+            'tenant_id' => $tenantId,
+            'inventory_source_id' => $inventorySourceId,
+            'product_id' => $productId,
+            'product_variant_id' => $productVariantId,
+        ], [
+            'on_hand' => '0.0000',
+            'reserved' => '0.0000',
+        ]);
     }
 }

@@ -41,6 +41,7 @@ use Modules\Payment\Models\PaymentTransaction;
  * @property int $vendor_commission_reversal_minor
  * @property Carbon|null $approved_at
  * @property Carbon|null $received_at
+ * @property Carbon|null $inspected_at
  * @property Carbon|null $completed_at
  * @property Carbon $created_at
  * @property Carbon $updated_at
@@ -82,6 +83,7 @@ class SellerReturn extends Model
         'vendor_commission_reversal_minor',
         'approved_at',
         'received_at',
+        'inspected_at',
         'completed_at',
     ];
 
@@ -96,6 +98,7 @@ class SellerReturn extends Model
         'refund_finalized_at' => 'datetime',
         'approved_at' => 'datetime',
         'received_at' => 'datetime',
+        'inspected_at' => 'datetime',
         'completed_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
