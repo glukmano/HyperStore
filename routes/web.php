@@ -23,6 +23,12 @@ use App\Core\SuperAdmin\Models\PlatformSaasPlan;
 use App\Core\Tenancy\Models\Tenant;
 use App\Core\Theme\Http\Middleware\ResolveStorefrontThemeMiddleware;
 use App\Http\Controllers\Auth\AuthenticatedSessionController;
+use App\Http\Controllers\Auth\EmailVerificationNotificationController;
+use App\Http\Controllers\Auth\EmailVerificationPromptController;
+use App\Http\Controllers\Auth\NewPasswordController;
+use App\Http\Controllers\Auth\PasswordResetLinkController;
+use App\Http\Controllers\Auth\RegisteredUserController;
+use App\Http\Controllers\Auth\VerifyEmailController;
 use App\Livewire\ControlCenter\ChannelManager;
 use App\Livewire\ControlCenter\DashboardOverview;
 use App\Livewire\ControlCenter\MarketManager;
@@ -32,14 +38,19 @@ use App\Livewire\ControlCenter\UserRoleManager;
 use App\Livewire\Storefront\CartPage;
 use App\Livewire\Storefront\CategoryPage;
 use App\Livewire\Storefront\CheckoutPage;
+use App\Livewire\Storefront\CmsPage;
 use App\Livewire\Storefront\Home;
 use App\Livewire\Storefront\OrderConfirmationPage;
 use App\Livewire\Storefront\OrderLookupPage;
 use App\Livewire\Storefront\ProductPage;
+use App\Livewire\Storefront\SearchResultsPage;
 use App\Livewire\Storefront\VendorStorefrontPage;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Modules\Cms\Livewire\PageEditor;
+use Modules\Cms\Livewire\PageManager;
+use Modules\Reviews\Livewire\ReviewModerationManager;
 
 // ── Health check (Minimal Public Liveness) ────────────────────────────────────
 Route::get('/up', function () {
@@ -50,10 +61,29 @@ Route::get('/up', function () {
 });
 
 // ── Authentication (minimal first-party web session entry) ─────────────────────
-Route::middleware(['web', SetLocaleAndDirectionMiddleware::class])->group(function (): void {
+Route::middleware(['web', SetLocaleAndDirectionMiddleware::class, ResolveContextMiddleware::class])->group(function (): void {
     Route::get('/login', [AuthenticatedSessionController::class, 'create'])->name('login');
     Route::post('/login', [AuthenticatedSessionController::class, 'store'])->name('login.store');
     Route::post('/logout', [AuthenticatedSessionController::class, 'destroy'])->middleware('auth')->name('logout');
+
+    // Storefront customer self-registration / password reset / email verification (Phase-17).
+    Route::get('/register', [RegisteredUserController::class, 'create'])->name('register');
+    Route::post('/register', [RegisteredUserController::class, 'store'])->name('register.store');
+
+    Route::get('/forgot-password', [PasswordResetLinkController::class, 'create'])->name('password.request');
+    Route::post('/forgot-password', [PasswordResetLinkController::class, 'store'])->name('password.email');
+    Route::get('/reset-password/{token}', [NewPasswordController::class, 'create'])->name('password.reset');
+    Route::post('/reset-password', [NewPasswordController::class, 'store'])->name('password.store');
+
+    Route::middleware('auth')->group(function (): void {
+        Route::get('/verify-email', EmailVerificationPromptController::class)->name('verification.notice');
+        Route::get('/verify-email/{id}/{hash}', VerifyEmailController::class)
+            ->middleware(['signed', 'throttle:6,1'])
+            ->name('verification.verify');
+        Route::post('/email/verification-notification', [EmailVerificationNotificationController::class, 'store'])
+            ->middleware('throttle:6,1')
+            ->name('verification.send');
+    });
 });
 
 // ── Storefront (public, theme-rendered) ────────────────────────────────────────
@@ -67,6 +97,8 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class, ResolveStorefrontThem
         Route::get('/order/confirmation/{orderNumber}', OrderConfirmationPage::class)->name('storefront.order-confirmation');
         Route::get('/order/lookup', OrderLookupPage::class)->name('storefront.order-lookup');
         Route::get('/vendor/{slug}', VendorStorefrontPage::class)->name('storefront.vendor');
+        Route::get('/search', SearchResultsPage::class)->name('storefront.search');
+        Route::get('/pages/{slug}', CmsPage::class)->name('storefront.cms-page');
     });
 
 // ── Control Center · Platform Admin Screens (Stores, Markets, Channels, Settings, Users) ──
@@ -83,6 +115,13 @@ Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, Resolv
         Route::prefix('plugins')->name('plugins.')->group(function () {
             Route::get('/', PluginList::class)->name('index');
             Route::get('/{pluginId}', PluginDetail::class)->name('show');
+        });
+
+        Route::get('/reviews', ReviewModerationManager::class)->name('reviews.index');
+
+        Route::prefix('cms/pages')->name('cms.pages.')->group(function () {
+            Route::get('/', PageManager::class)->name('index');
+            Route::get('/{page}', PageEditor::class)->name('edit');
         });
     });
 

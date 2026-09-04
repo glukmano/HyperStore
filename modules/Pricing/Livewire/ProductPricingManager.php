@@ -11,6 +11,7 @@ use Livewire\Component;
 use Modules\Catalog\Models\Product;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
+use Modules\Pricing\Services\PriceWriteService;
 
 class ProductPricingManager extends Component
 {
@@ -28,7 +29,7 @@ class ProductPricingManager extends Component
 
     public ?int $confirmToggleId = null;
 
-    public function savePrice(): void
+    public function savePrice(PriceWriteService $priceWriteService): void
     {
         if (! auth()->user()?->can('pricing.manage') && ! auth()->user()?->is_super_admin) {
             abort(403, 'Permission denied.');
@@ -41,26 +42,19 @@ class ProductPricingManager extends Component
         ]);
 
         $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
-        $priceBook = PriceBook::findOrFail($this->selectedPriceBookId);
 
         $minorAmount = (int) round(((float) $this->amount) * 100);
         $minorCompare = $this->compareAt !== '' ? (int) round(((float) $this->compareAt) * 100) : null;
         $minorCost = $this->cost !== '' ? (int) round(((float) $this->cost) * 100) : null;
 
-        Price::updateOrCreate(
-            [
-                'tenant_id' => $tenantId,
-                'price_book_id' => $this->selectedPriceBookId,
-                'product_id' => $this->selectedProductId,
-                'product_variant_id' => null,
-            ],
-            [
-                'amount_minor' => $minorAmount,
-                'compare_at_minor' => $minorCompare,
-                'cost_minor' => $minorCost,
-                'currency' => $priceBook->currency,
-                'status' => 'active',
-            ]
+        $priceWriteService->setPrice(
+            tenantId: $tenantId,
+            priceBookId: (int) $this->selectedPriceBookId,
+            productId: (int) $this->selectedProductId,
+            variantId: null,
+            amountMinor: $minorAmount,
+            compareAtMinor: $minorCompare,
+            costMinor: $minorCost,
         );
 
         $this->reset(['amount', 'compareAt', 'cost', 'selectedProductId', 'selectedPriceBookId', 'editingPriceId']);

@@ -11,6 +11,7 @@ use Modules\Inventory\Events\InventoryAdjusted;
 use Modules\Inventory\Events\InventoryReceived;
 use Modules\Inventory\Events\LowStockDetected;
 use Modules\Inventory\Events\OutOfStockDetected;
+use Modules\Inventory\Events\StockReplenished;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventorySource;
 use Modules\Inventory\Models\StockItem;
@@ -60,6 +61,8 @@ class InventoryAdjustmentService implements InventoryAdjustmentServiceInterface
                         WarehouseVendorAuthorizationGuard::assertWarehouseOperable($warehouse);
                     }
 
+                    $previousAts = $locked->getAvailableToSellQuantity();
+
                     $currentOnHand = Quantity::fromString((string) $locked->on_hand);
                     $newOnHand = $currentOnHand->add($delta);
 
@@ -89,6 +92,17 @@ class InventoryAdjustmentService implements InventoryAdjustmentServiceInterface
                         if ($newAts->isLessThanOrEqual($thresh)) {
                             LowStockDetected::dispatch($locked, $newAts);
                         }
+                    }
+
+                    if (! $previousAts->isPositive() && $newAts->isPositive()) {
+                        StockReplenished::dispatch(
+                            $locked->tenant_id,
+                            $locked->inventory_source_id,
+                            $locked->product_id,
+                            $locked->product_variant_id,
+                            $previousAts->toString(),
+                            $newAts->toString(),
+                        );
                     }
 
                     InventoryAdjusted::dispatch($locked, $movement);

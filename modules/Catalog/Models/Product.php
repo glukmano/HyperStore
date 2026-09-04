@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Laravel\Scout\Searchable;
 use Modules\Catalog\Contracts\ProductTypeInterface;
 use Modules\Catalog\Contracts\ProductTypeRegistryInterface;
 use Spatie\MediaLibrary\HasMedia;
@@ -29,7 +30,7 @@ use Spatie\MediaLibrary\InteractsWithMedia;
  */
 class Product extends Model implements HasMedia
 {
-    use BelongsToTenant, InteractsWithMedia;
+    use BelongsToTenant, InteractsWithMedia, Searchable;
 
     protected $fillable = [
         'tenant_id',
@@ -191,5 +192,51 @@ class Product extends Model implements HasMedia
     {
         $this->addMediaCollection('product_thumbnail')->singleFile();
         $this->addMediaCollection('product_gallery');
+    }
+
+    /**
+     * Only ever searchable when at least one store listing is published +
+     * visible — an unpublished/draft product is never written to the
+     * index at all (belt-and-suspenders with query-time filtering, per
+     * ADR/Master §26: search index is not source of truth).
+     */
+    public function shouldBeSearchable(): bool
+    {
+        return $this->storeListings()->where('status', 'published')->where('visibility', 'visible')->exists();
+    }
+
+    public function searchableAs(): string
+    {
+        return 'products';
+    }
+
+    /**
+     * One document per product carries every locale's translated content
+     * as locale-suffixed fields (name_en, name_ar, ...) rather than one
+     * index per locale — a pragmatic Phase-17 simplification that still
+     * supports genuinely multilingual full-text search without Scout's
+     * single-index-per-model constraint forcing N indices for N locales.
+     *
+     * @return array<string, mixed>
+     */
+    public function toSearchableArray(): array
+    {
+        $document = [
+            'id' => $this->id,
+            'tenant_id' => $this->tenant_id,
+            'sku' => $this->sku,
+            'product_type' => $this->product_type,
+            'brand_id' => $this->brand_id,
+            'category_ids' => $this->categories()->pluck('categories.id')->all(),
+            'store_ids' => $this->storeListings()->where('status', 'published')->where('visibility', 'visible')->pluck('store_id')->all(),
+            'is_featured' => $this->storeListings()->where('is_featured', true)->exists(),
+        ];
+
+        foreach ($this->translations as $translation) {
+            $document['name_'.$translation->locale] = $translation->name;
+            $document['description_'.$translation->locale] = $translation->short_description;
+        }
+
+        return $document;
     }
 }

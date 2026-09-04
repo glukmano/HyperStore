@@ -43,8 +43,39 @@ class ControlCenterAuthenticationEntryTest extends TestCase
         $response->assertSee('Password');
     }
 
-    public function test_valid_credentials_authenticate_and_redirect_to_the_dashboard(): void
+    public function test_valid_credentials_authenticate_and_redirect_a_plain_customer_to_the_storefront(): void
     {
+        // Phase-17: a user with no staff/vendor membership and no super-admin
+        // flag is a plain storefront customer — they land on the storefront,
+        // not an empty Control Center shell they have no navigation for.
+        $response = $this->post(route('login.store'), [
+            'email' => 'login-test@hyperstore.test',
+            'password' => 'correct-password',
+        ]);
+
+        $response->assertRedirect(route('storefront.home'));
+        $this->assertAuthenticatedAs($this->user);
+    }
+
+    public function test_valid_credentials_redirect_an_active_tenant_staff_member_to_the_dashboard(): void
+    {
+        $tenant = Tenant::create(['name' => 'Redirect Test Tenant', 'slug' => 'redirect-test-'.uniqid(), 'status' => 'active']);
+        $tenant->users()->attach($this->user->id, ['role' => 'admin', 'is_active' => true]);
+
+        $response = $this->post(route('login.store'), [
+            'email' => 'login-test@hyperstore.test',
+            'password' => 'correct-password',
+        ]);
+
+        $response->assertRedirect(route('control-center.dashboard'));
+        $this->assertAuthenticatedAs($this->user);
+    }
+
+    public function test_valid_credentials_redirect_a_super_admin_to_the_dashboard(): void
+    {
+        $this->user->is_super_admin = true;
+        $this->user->save();
+
         $response = $this->post(route('login.store'), [
             'email' => 'login-test@hyperstore.test',
             'password' => 'correct-password',

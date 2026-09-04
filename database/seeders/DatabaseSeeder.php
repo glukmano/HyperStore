@@ -23,6 +23,7 @@ class DatabaseSeeder extends Seeder
             DropshippingPermissionSeeder::class,
             PaymentPermissionSeeder::class,
             PluginPermissionSeeder::class,
+            Phase17PermissionSeeder::class,
         ]);
 
         User::firstOrCreate(

@@ -4,46 +4,11 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\ValueObjects;
 
+use App\Core\Support\ReservedSlugs;
 use Modules\Marketplace\Exceptions\InvalidVendorSlugException;
 
 final readonly class VendorSlug
 {
-    private const array RESERVED_SLUGS = [
-        'admin',
-        'api',
-        'app',
-        'assets',
-        'auth',
-        'billing',
-        'cart',
-        'checkout',
-        'control',
-        'dashboard',
-        'docs',
-        'help',
-        'login',
-        'logout',
-        'mail',
-        'marketplace',
-        'orders',
-        'payments',
-        'platform',
-        'portal',
-        'root',
-        'settings',
-        'static',
-        'status',
-        'store',
-        'stores',
-        'support',
-        'system',
-        'vendor',
-        'vendors',
-        'webhook',
-        'webhooks',
-        'www',
-    ];
-
     private string $value;
 
     public function __construct(string $rawSlug)
@@ -58,7 +23,7 @@ final readonly class VendorSlug
             throw InvalidVendorSlugException::invalidFormat($rawSlug);
         }
 
-        if (in_array($normalized, self::RESERVED_SLUGS, true)) {
+        if (in_array($normalized, ReservedSlugs::LIST, true)) {
             throw InvalidVendorSlugException::reservedSlug($rawSlug);
         }
 

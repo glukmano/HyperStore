@@ -8,6 +8,7 @@ use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Core\Tenancy\Models\TenantUser;
 use Database\Factories\UserFactory;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -25,7 +26,7 @@ use Spatie\Permission\Traits\HasRoles;
  * @property bool $is_super_admin
  * @property string $default_locale
  */
-class User extends Authenticatable
+class User extends Authenticatable implements MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, HasRoles, Notifiable;

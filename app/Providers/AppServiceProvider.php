@@ -40,13 +40,37 @@ use App\Core\Plugin\Services\PluginRenameCodeSwapper;
 use App\Core\Plugin\Services\PluginSignatureVerifier;
 use App\Core\Plugin\Services\PluginZipInstaller;
 use App\Core\Routing\DomainAddressingService;
+use App\Core\Support\ContentSanitizer;
+use App\Core\Support\Contracts\ContentSanitizerInterface;
 use App\Core\Theme\Contracts\ThemeRegistryInterface;
 use App\Core\Theme\Contracts\ThemeResolverInterface;
 use App\Core\Theme\DTOs\ThemeManifest;
 use App\Core\Theme\ThemeRegistry;
 use App\Core\Theme\ThemeResolver;
+use Illuminate\Auth\Events\Registered;
+use Illuminate\Auth\Listeners\SendEmailVerificationNotification;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
+use Modules\Cms\BlockTypeRegistry;
+use Modules\Cms\Contracts\BlockTypeRegistryInterface;
+use Modules\Cms\DTOs\BlockTypeDefinition;
+use Modules\Customers\Listeners\CheckBackInStockSubscriptions;
+use Modules\Customers\Listeners\CheckPriceDropSubscriptions;
+use Modules\Customers\Listeners\RecordGiftRegistryPurchasesOnOrderCompletion;
+use Modules\Inventory\Events\StockReplenished;
+use Modules\Order\Events\OrderStatusChanged;
+use Modules\Pricing\Events\PriceChanged;
+use Modules\Reviews\Contracts\RatingAggregateReaderInterface;
+use Modules\Reviews\Events\ProductReviewApproved;
+use Modules\Reviews\Events\ProductReviewRetracted;
+use Modules\Reviews\Events\VendorReviewApproved;
+use Modules\Reviews\Events\VendorReviewRetracted;
+use Modules\Reviews\Listeners\RecomputeProductRatingAggregate;
+use Modules\Reviews\Listeners\RecomputeVendorRatingAggregate;
+use Modules\Reviews\Services\RatingAggregateService;
+use Modules\Search\Contracts\SearchServiceInterface;
+use Modules\Search\Services\ScoutSearchService;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -69,6 +93,10 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(AuditManagerInterface::class, AuditManager::class);
         $this->app->singleton(DomainAddressingService::class);
         $this->app->singleton(CustomerScopeService::class);
+        $this->app->singleton(ContentSanitizerInterface::class, ContentSanitizer::class);
+        $this->app->singleton(RatingAggregateReaderInterface::class, RatingAggregateService::class);
+        $this->app->singleton(BlockTypeRegistryInterface::class, BlockTypeRegistry::class);
+        $this->app->singleton(SearchServiceInterface::class, ScoutSearchService::class);
         $this->app->singleton(NavigationRegistryInterface::class, NavigationRegistry::class);
         $this->app->singleton(ThemeRegistryInterface::class, ThemeRegistry::class);
         $this->app->singleton(ThemeResolverInterface::class, ThemeResolver::class);
@@ -91,6 +119,17 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        Event::listen(Registered::class, SendEmailVerificationNotification::class);
+        Event::listen(OrderStatusChanged::class, RecordGiftRegistryPurchasesOnOrderCompletion::class);
+        Event::listen(PriceChanged::class, CheckPriceDropSubscriptions::class);
+        Event::listen(StockReplenished::class, CheckBackInStockSubscriptions::class);
+        Event::listen(ProductReviewApproved::class, RecomputeProductRatingAggregate::class);
+        Event::listen(ProductReviewRetracted::class, RecomputeProductRatingAggregate::class);
+        Event::listen(VendorReviewApproved::class, RecomputeVendorRatingAggregate::class);
+        Event::listen(VendorReviewRetracted::class, RecomputeVendorRatingAggregate::class);
+
+        $this->registerFirstPartyBlockTypes();
+
         if ($this->app->runningInConsole()) {
             $this->commands([
                 ModuleListCommand::class,
@@ -182,6 +221,28 @@ class AppServiceProvider extends ServiceProvider
             order: 60,
         ));
 
+        $navigation->register(new NavigationItem(
+            key: 'platform-reviews',
+            label: 'Reviews',
+            routeName: 'control-center.platform.reviews.index',
+            group: 'Platform',
+            permission: 'reviews.view',
+            context: 'tenant',
+            icon: '⭐',
+            order: 70,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-cms-pages',
+            label: 'CMS Pages',
+            routeName: 'control-center.platform.cms.pages.index',
+            group: 'Platform',
+            permission: 'cms.view',
+            context: 'tenant',
+            icon: '📄',
+            order: 80,
+        ));
+
         $this->app->make(ThemeRegistryInterface::class)->register(
             ThemeManifest::fromJsonFile(base_path('themes/default/theme.json'))
         );
@@ -200,5 +261,61 @@ class AppServiceProvider extends ServiceProvider
         $pluginKernel->discover();
         $pluginKernel->registerPlugins();
         $pluginKernel->bootPlugins();
+    }
+
+    /**
+     * Five first-party block types only (ADR-0137) — deliberately minimal.
+     * Plugins may register additional block types the same way, via
+     * BlockTypeRegistryInterface::register() inside their own
+     * PluginServiceProvider::boot().
+     */
+    private function registerFirstPartyBlockTypes(): void
+    {
+        $registry = $this->app->make(BlockTypeRegistryInterface::class);
+
+        $registry->register(new BlockTypeDefinition(
+            key: 'rich_text',
+            label: 'Rich Text',
+            configSchema: ['html' => ['nullable', 'string']],
+            viewPath: 'cms.blocks.rich-text',
+            icon: '📝',
+        ));
+
+        $registry->register(new BlockTypeDefinition(
+            key: 'hero',
+            label: 'Hero',
+            configSchema: [
+                'heading' => ['nullable', 'string', 'max:255'],
+                'subheading' => ['nullable', 'string', 'max:500'],
+                'cta_text' => ['nullable', 'string', 'max:100'],
+                'cta_url' => ['nullable', 'string', 'max:500'],
+            ],
+            viewPath: 'cms.blocks.hero',
+            icon: '🖼️',
+        ));
+
+        $registry->register(new BlockTypeDefinition(
+            key: 'image_gallery',
+            label: 'Image Gallery',
+            configSchema: ['image_urls' => ['nullable', 'array'], 'image_urls.*' => ['string']],
+            viewPath: 'cms.blocks.image-gallery',
+            icon: '🖼️',
+        ));
+
+        $registry->register(new BlockTypeDefinition(
+            key: 'product_grid',
+            label: 'Product Grid',
+            configSchema: ['category_id' => ['nullable', 'integer'], 'limit' => ['nullable', 'integer', 'min:1', 'max:24']],
+            viewPath: 'cms.blocks.product-grid',
+            icon: '🛍️',
+        ));
+
+        $registry->register(new BlockTypeDefinition(
+            key: 'html',
+            label: 'Custom HTML',
+            configSchema: ['html' => ['nullable', 'string']],
+            viewPath: 'cms.blocks.html',
+            icon: '⚠️',
+        ));
     }
 }

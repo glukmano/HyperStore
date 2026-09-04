@@ -28,11 +28,12 @@ Every dependency added via Composer, NPM, or external services MUST be documente
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | `laravel/framework` | `^13.0` | Runtime | Core | Core framework | MIT | N/A (Core foundation) |
 | `laravel/sanctum` | `*` | Runtime | Core / API | Token-based API authentication | MIT | Laravel Passport if full OAuth2 required |
-| `laravel/reverb` | `*` | Runtime | Realtime / Messaging | First-party WebSocket server for Buyer-Seller chat | MIT | Pusher / Soketi |
+| `laravel/reverb` | `^1.11` (installed) | Runtime | Realtime / Messaging | First-party WebSocket server for Buyer-Seller chat (Phase-17) | MIT | Pusher / Soketi |
 | `laravel/horizon` | `*` | Runtime | Ops / Queues | Redis queue dashboard and worker management | MIT | Native worker supervisor |
 | `laravel/pulse` | `*` | Runtime | Ops / Monitoring | Real-time application performance metrics | MIT | Dedicated APM (Datadog/NewRelic) |
 | `laravel/pennant` | `*` | Runtime | Core / Features | Feature flag management | MIT | Custom DB feature flag driver |
-| `laravel/scout` | `*` | Runtime | Search | Search driver abstraction | MIT | Direct driver integrations |
+| `laravel/scout` | `^11.6` (installed) | Runtime | Search | Search driver abstraction (Phase-17, `SearchServiceInterface` wraps this — application code never touches Scout directly outside `modules/Search/`) | MIT | Direct driver integrations |
+| `meilisearch/meilisearch-php` | `^1.17` (installed) | Runtime | Search | Meilisearch PHP client, Scout's `meilisearch` driver dependency (Phase-17) | MIT | Algolia / Typesense Scout driver |
 | `laravel/socialite` | `*` | Runtime | Auth / Customers | Third-party social authentication | MIT | Custom OAuth client |
 | `laravel/ai` | `*` | Runtime | Ai | Laravel AI SDK integration layer | MIT | Custom LLM client abstraction |
 | `laravel/mcp` | `*` | Runtime | Ai / MCP | First-party Model Context Protocol server | MIT | Custom JSON-RPC MCP adapter |
@@ -44,6 +45,7 @@ Every dependency added via Composer, NPM, or external services MUST be documente
 | `spatie/laravel-data` | `*` | Runtime | Core / DTO | Strongly-typed Data Transfer Objects | MIT | Native PHP 8.4 readonly DTOs |
 | `spatie/laravel-query-builder` | `*` | Runtime | API / Catalog | Filtering and sorting REST API queries | MIT | Custom query scopes |
 | `brick/money` | `*` | Runtime | Money / Ledger | Strict arbitrary-precision monetary calculations | MIT | `ext-bcmath` custom money value objects |
+| `stevebauman/purify` (wraps `ezyang/htmlpurifier`) | `^6.3` (installed) | Runtime | CMS / Reviews | HTML sanitization for CMS page/blog body content and review text (Phase-17) — no HTML sanitizer existed prior to Phase-17 | MIT | `mews/purifier`, hand-rolled allowlist stripper |
 | `pestphp/pest` | `*` | Dev | Testing | Modern testing framework | MIT | PHPUnit |
 | `laravel/pint` | `*` | Dev | Tooling | Automated code formatting and style enforcement | MIT | PHP-CS-Fixer |
 | `larastan/larastan` | `*` | Dev | Tooling | Static analysis for PHP and Laravel | MIT | PHPStan |
@@ -58,6 +60,8 @@ Every dependency added via Composer, NPM, or external services MUST be documente
 | `daisyui` | `^5.0` | Dev / Runtime | UI / Themes | Semantic component classes for Tailwind | MIT | Custom UI component design tokens |
 | `vite` | `^6.0` | Dev | Build | Modern frontend asset bundler | MIT | Webpack / Rollup |
 | `alpinejs` | `*` | Runtime | UI / Storefront | Lightweight client reactivity for Livewire | MIT | Vanilla JavaScript |
+| `laravel-echo` | `^2` (installed, dev) | Runtime | Messaging | WebSocket client, Reverb private-channel subscription for Buyer-Seller conversation UI (Phase-17) | MIT | Native WebSocket client |
+| `pusher-js` | `^8` (installed, dev) | Runtime | Messaging | Reverb's Pusher-protocol-compatible transport, used internally by `laravel-echo` (Phase-17) | MIT | N/A — required transport for Reverb |
 
 ---
 
