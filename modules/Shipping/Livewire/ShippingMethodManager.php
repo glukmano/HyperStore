@@ -65,6 +65,7 @@ class ShippingMethodManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $methods = $tenantId ? ShippingMethod::where('tenant_id', $tenantId)->with('methodZones')->get() : collect();
 
-        return view('shipping::livewire.shipping-method-manager', ['methods' => $methods]);
+        return view('shipping::livewire.shipping-method-manager', ['methods' => $methods])
+            ->layout('layouts.control-center', ['title' => 'Shipping Methods']);
     }
 }

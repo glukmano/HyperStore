@@ -12,7 +12,7 @@ use Modules\Catalog\Livewire\ProductForm;
 use Modules\Catalog\Livewire\ProductList;
 
 Route::prefix('control-center/catalog')
-    ->middleware(['web', ResolveContextMiddleware::class])
+    ->middleware(['web', 'auth', ResolveContextMiddleware::class])
     ->group(function (): void {
         Route::get('products', ProductList::class)->name('control-center.catalog.products.index');
         Route::get('products/create', ProductForm::class)->name('control-center.catalog.products.create');

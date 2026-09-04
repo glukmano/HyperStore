@@ -16,6 +16,7 @@ class ShippingClassManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $classes = $tenantId ? ShippingClass::where('tenant_id', $tenantId)->get() : collect();
 
-        return view('shipping::livewire.shipping-class-manager', ['classes' => $classes]);
+        return view('shipping::livewire.shipping-class-manager', ['classes' => $classes])
+            ->layout('layouts.control-center', ['title' => 'Shipping Classes']);
     }
 }

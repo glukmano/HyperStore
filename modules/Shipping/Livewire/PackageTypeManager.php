@@ -16,6 +16,7 @@ class PackageTypeManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $types = $tenantId ? PackageType::where('tenant_id', $tenantId)->get() : collect();
 
-        return view('shipping::livewire.package-type-manager', ['packageTypes' => $types]);
+        return view('shipping::livewire.package-type-manager', ['packageTypes' => $types])
+            ->layout('layouts.control-center', ['title' => 'Package Types']);
     }
 }

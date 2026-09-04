@@ -16,6 +16,7 @@ class FulfillmentStrategyManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $strategies = $tenantId ? FulfillmentStrategy::where('tenant_id', $tenantId)->get() : collect();
 
-        return view('fulfillment::livewire.strategy-manager', ['strategies' => $strategies]);
+        return view('fulfillment::livewire.strategy-manager', ['strategies' => $strategies])
+            ->layout('layouts.control-center', ['title' => 'Fulfillment Strategies']);
     }
 }

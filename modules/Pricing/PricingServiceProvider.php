@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Modules\Pricing;
 
 use App\Core\Modular\ModuleServiceProvider;
+use App\Core\Navigation\Contracts\NavigationRegistryInterface;
+use App\Core\Navigation\DTOs\NavigationItem;
 use Livewire\Livewire;
 use Modules\Pricing\Contracts\CurrencyConversionInterface;
 use Modules\Pricing\Contracts\PriceResolverInterface;
@@ -38,6 +40,16 @@ class PricingServiceProvider extends ModuleServiceProvider
         $this->loadViewsFrom(__DIR__.'/Resources/views', 'pricing');
 
         $this->registerLivewireComponents();
+        $this->registerNavigation();
+    }
+
+    private function registerNavigation(): void
+    {
+        $nav = $this->app->make(NavigationRegistryInterface::class);
+        $nav->register(new NavigationItem('pricing.price-books', 'Price Books', 'control-center.pricing.price-books', 'Pricing', 'pricing.view', 'tenant', '💰', 10));
+        $nav->register(new NavigationItem('pricing.products', 'Product Pricing', 'control-center.pricing.products', 'Pricing', 'pricing.view', 'tenant', '🏷️', 20));
+        $nav->register(new NavigationItem('pricing.exchange-rates', 'Exchange Rates', 'control-center.pricing.exchange-rates', 'Pricing', 'exchange_rates.view', 'tenant', '💱', 30));
+        $nav->register(new NavigationItem('pricing.taxes', 'Taxes', 'control-center.pricing.taxes', 'Pricing', 'tax.view', 'tenant', '🧾', 40));
     }
 
     protected function registerLivewireComponents(): void

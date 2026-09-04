@@ -11,6 +11,7 @@ class FulfillmentPreviewTool extends Component
 {
     public function render(): View
     {
-        return view('fulfillment::livewire.preview-tool');
+        return view('fulfillment::livewire.preview-tool')
+            ->layout('layouts.control-center', ['title' => 'Fulfillment Plan Preview']);
     }
 }

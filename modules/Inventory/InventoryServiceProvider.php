@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Modules\Inventory;
 
 use App\Core\Modular\ModuleServiceProvider;
+use App\Core\Navigation\Contracts\NavigationRegistryInterface;
+use App\Core\Navigation\DTOs\NavigationItem;
 use Livewire\Livewire;
 use Modules\Inventory\Commands\ExpireReservationsCommand;
 use Modules\Inventory\Commands\ReconcileInventoryCommand;
@@ -62,6 +64,21 @@ class InventoryServiceProvider extends ModuleServiceProvider
         }
 
         $this->registerLivewireComponents();
+        $this->registerNavigation();
+    }
+
+    private function registerNavigation(): void
+    {
+        $nav = $this->app->make(NavigationRegistryInterface::class);
+        $nav->register(new NavigationItem('inventory.warehouses', 'Warehouses', 'control-center.inventory.warehouses', 'Inventory', 'warehouses.view', 'tenant', '🏭', 10));
+        $nav->register(new NavigationItem('inventory.sources', 'Inventory Sources', 'control-center.inventory.sources', 'Inventory', 'inventory.view', 'tenant', '📍', 20));
+        $nav->register(new NavigationItem('inventory.stock', 'Stock', 'control-center.inventory.stock', 'Inventory', 'inventory.view', 'tenant', '📊', 30));
+        $nav->register(new NavigationItem('inventory.transfers', 'Transfers', 'control-center.inventory.transfers', 'Inventory', 'inventory.transfer', 'tenant', '🔁', 40));
+        $nav->register(new NavigationItem('inventory.adjustments', 'Adjustments', 'control-center.inventory.adjustments', 'Inventory', 'inventory.adjust', 'tenant', '⚖️', 50));
+        $nav->register(new NavigationItem('inventory.receive', 'Receiving', 'control-center.inventory.receive', 'Inventory', 'inventory.manage', 'tenant', '📥', 60));
+        $nav->register(new NavigationItem('inventory.reconcile', 'Reconciliation', 'control-center.inventory.reconcile', 'Inventory', 'inventory.reconcile', 'tenant', '🧮', 70));
+        $nav->register(new NavigationItem('inventory.movements', 'Movement History', 'control-center.inventory.movements', 'Inventory', 'inventory.movements.view', 'tenant', '📜', 80));
+        $nav->register(new NavigationItem('inventory.reservations', 'Reservations', 'control-center.inventory.reservations', 'Inventory', 'inventory.reservations.view', 'tenant', '🔒', 90));
     }
 
     protected function registerLivewireComponents(): void

@@ -16,6 +16,7 @@ class FulfillmentSourceManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $configs = $tenantId ? FulfillmentSourceConfiguration::where('tenant_id', $tenantId)->get() : collect();
 
-        return view('fulfillment::livewire.source-manager', ['configs' => $configs]);
+        return view('fulfillment::livewire.source-manager', ['configs' => $configs])
+            ->layout('layouts.control-center', ['title' => 'Fulfillment Sources']);
     }
 }

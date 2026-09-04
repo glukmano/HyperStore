@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Modules\Order;
 
 use App\Core\Modular\ModuleServiceProvider;
+use App\Core\Navigation\Contracts\NavigationRegistryInterface;
+use App\Core\Navigation\DTOs\NavigationItem;
+use Livewire\Livewire;
 use Modules\Order\Contracts\BusinessTimezoneResolverInterface;
 use Modules\Order\Contracts\MasterOrderSplitServiceInterface;
 use Modules\Order\Contracts\OrderCancellationServiceInterface;
@@ -20,6 +23,9 @@ use Modules\Order\Contracts\ReturnRefundOrchestratorInterface;
 use Modules\Order\Contracts\ReturnRequestServiceInterface;
 use Modules\Order\Contracts\SellerOrderOwnershipServiceInterface;
 use Modules\Order\Contracts\ShippingRefundPolicyInterface;
+use Modules\Order\Livewire\OrderDetail;
+use Modules\Order\Livewire\OrderList;
+use Modules\Order\Livewire\ReturnManager;
 use Modules\Order\Services\BusinessTimezoneResolver;
 use Modules\Order\Services\DecimalReturnAllocationService;
 use Modules\Order\Services\JointShippingAllocationService;
@@ -76,5 +82,34 @@ class OrderServiceProvider extends ModuleServiceProvider
         parent::boot();
 
         $this->loadRoutesFrom(__DIR__.'/Routes/api.php');
+
+        $webRoutes = __DIR__.'/Routes/web.php';
+        if (file_exists($webRoutes)) {
+            $this->loadRoutesFrom($webRoutes);
+        }
+
+        $viewsDir = __DIR__.'/Resources/views';
+        if (is_dir($viewsDir)) {
+            $this->loadViewsFrom($viewsDir, 'order');
+        }
+
+        $this->registerLivewireComponents();
+        $this->registerNavigation();
+    }
+
+    protected function registerLivewireComponents(): void
+    {
+        if (class_exists(Livewire::class)) {
+            Livewire::component('order.order-list', OrderList::class);
+            Livewire::component('order.order-detail', OrderDetail::class);
+            Livewire::component('order.return-manager', ReturnManager::class);
+        }
+    }
+
+    private function registerNavigation(): void
+    {
+        $nav = $this->app->make(NavigationRegistryInterface::class);
+        $nav->register(new NavigationItem('orders.orders', 'Orders', 'control-center.orders.orders.index', 'Orders', 'orders.view', 'tenant', '🧾', 10));
+        $nav->register(new NavigationItem('orders.returns', 'Returns / RMA', 'control-center.orders.returns.index', 'Orders', 'returns.view', 'tenant', '↩️', 20));
     }
 }

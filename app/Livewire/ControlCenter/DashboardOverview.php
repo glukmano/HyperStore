@@ -7,6 +7,7 @@ namespace App\Livewire\ControlCenter;
 use App\Core\Context\ContextManager;
 use App\Core\Localization\Contracts\LocaleManagerInterface;
 use App\Core\Modular\Contracts\ModuleKernelInterface;
+use App\Core\Navigation\Contracts\NavigationRegistryInterface;
 use Illuminate\Contracts\View\View;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -42,9 +43,12 @@ class DashboardOverview extends Component
         $this->disabledModules = count($kernel->getRegistry()->disabled());
     }
 
-    public function render(): View
+    public function render(NavigationRegistryInterface $navigation): View
     {
-        return view('livewire.control-center.dashboard-overview')
-            ->layout('layouts.control-center', ['title' => 'Dashboard']);
+        $navContext = app(ContextManager::class)->hasVendor() ? 'vendor' : 'tenant';
+
+        return view('livewire.control-center.dashboard-overview', [
+            'navGroups' => $navigation->visibleGrouped(auth()->user(), $navContext),
+        ])->layout('layouts.control-center', ['title' => 'Dashboard']);
     }
 }

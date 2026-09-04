@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Modules\Promotions;
 
 use App\Core\Modular\ModuleServiceProvider;
+use App\Core\Navigation\Contracts\NavigationRegistryInterface;
+use App\Core\Navigation\DTOs\NavigationItem;
 use Livewire\Livewire;
 use Modules\Pricing\Contracts\CurrencyConversionInterface;
 use Modules\Promotions\Actions\BuyXGetYAction;
@@ -86,6 +88,14 @@ class PromotionsServiceProvider extends ModuleServiceProvider
         $this->loadViewsFrom(__DIR__.'/Resources/views', 'promotions');
 
         $this->registerLivewireComponents();
+        $this->registerNavigation();
+    }
+
+    private function registerNavigation(): void
+    {
+        $nav = $this->app->make(NavigationRegistryInterface::class);
+        $nav->register(new NavigationItem('promotions.index', 'Promotions', 'control-center.promotions.index', 'Promotions', 'promotions.view', 'tenant', '🎯', 10));
+        $nav->register(new NavigationItem('promotions.coupons', 'Coupons', 'control-center.promotions.coupons', 'Promotions', 'coupons.view', 'tenant', '🎟️', 20));
     }
 
     protected function registerLivewireComponents(): void

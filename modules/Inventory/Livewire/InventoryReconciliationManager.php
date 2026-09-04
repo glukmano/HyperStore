@@ -17,6 +17,10 @@ class InventoryReconciliationManager extends Component
 
     public function runReconciliation(InventoryReconciliationService $service): void
     {
+        if (! auth()->user()?->can('inventory.reconcile') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
         $tenant = app(ContextManager::class)->getTenant();
         $tenantId = $tenant->getId();
         if ($tenantId === null) {

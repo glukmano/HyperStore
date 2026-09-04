@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Core\Context\Middleware\ResolveContextMiddleware;
 use App\Core\Localization\Middleware\SetLocaleAndDirectionMiddleware;
 use App\Core\Stores\Contracts\StoreCreationServiceInterface;
 use App\Core\SuperAdmin\Contracts\ControlCenterMutationExecutorInterface;
@@ -18,7 +19,21 @@ use App\Core\SuperAdmin\Http\Middleware\EnsureSuperAdminMiddleware;
 use App\Core\SuperAdmin\Models\OfficialExtension;
 use App\Core\SuperAdmin\Models\PlatformSaasPlan;
 use App\Core\Tenancy\Models\Tenant;
+use App\Core\Theme\Http\Middleware\ResolveStorefrontThemeMiddleware;
+use App\Livewire\ControlCenter\ChannelManager;
 use App\Livewire\ControlCenter\DashboardOverview;
+use App\Livewire\ControlCenter\MarketManager;
+use App\Livewire\ControlCenter\StoreManager;
+use App\Livewire\ControlCenter\TenantSettingsManager;
+use App\Livewire\ControlCenter\UserRoleManager;
+use App\Livewire\Storefront\CartPage;
+use App\Livewire\Storefront\CategoryPage;
+use App\Livewire\Storefront\CheckoutPage;
+use App\Livewire\Storefront\Home;
+use App\Livewire\Storefront\OrderConfirmationPage;
+use App\Livewire\Storefront\OrderLookupPage;
+use App\Livewire\Storefront\ProductPage;
+use App\Livewire\Storefront\VendorStorefrontPage;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -30,6 +45,31 @@ Route::get('/up', function () {
         'timestamp' => now()->toIso8601String(),
     ]);
 });
+
+// ── Storefront (public, theme-rendered) ────────────────────────────────────────
+Route::middleware([SetLocaleAndDirectionMiddleware::class, ResolveStorefrontThemeMiddleware::class])
+    ->group(function (): void {
+        Route::get('/', Home::class)->name('storefront.home');
+        Route::get('/c/{code}', CategoryPage::class)->name('storefront.category');
+        Route::get('/p/{sku}', ProductPage::class)->name('storefront.product');
+        Route::get('/cart', CartPage::class)->name('storefront.cart');
+        Route::get('/checkout', CheckoutPage::class)->name('storefront.checkout');
+        Route::get('/order/confirmation/{orderNumber}', OrderConfirmationPage::class)->name('storefront.order-confirmation');
+        Route::get('/order/lookup', OrderLookupPage::class)->name('storefront.order-lookup');
+        Route::get('/vendor/{slug}', VendorStorefrontPage::class)->name('storefront.vendor');
+    });
+
+// ── Control Center · Platform Admin Screens (Stores, Markets, Channels, Settings, Users) ──
+Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, ResolveContextMiddleware::class])
+    ->prefix('control-center/platform')
+    ->name('control-center.platform.')
+    ->group(function () {
+        Route::get('/stores', StoreManager::class)->name('stores');
+        Route::get('/markets', MarketManager::class)->name('markets');
+        Route::get('/channels', ChannelManager::class)->name('channels');
+        Route::get('/settings', TenantSettingsManager::class)->name('settings');
+        Route::get('/users', UserRoleManager::class)->name('users');
+    });
 
 // ── Control Center ────────────────────────────────────────────────────────────
 Route::middleware([SetLocaleAndDirectionMiddleware::class])

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Modules\Catalog;
 
 use App\Core\Modular\ModuleServiceProvider;
+use App\Core\Navigation\Contracts\NavigationRegistryInterface;
+use App\Core\Navigation\DTOs\NavigationItem;
 use Livewire\Livewire;
 use Modules\Catalog\Contracts\CategoryHierarchyValidatorInterface;
 use Modules\Catalog\Contracts\ProductShippingCapabilityResolverInterface;
@@ -106,6 +108,17 @@ class CatalogServiceProvider extends ModuleServiceProvider
         }
 
         $this->registerLivewireComponents();
+        $this->registerNavigation();
+    }
+
+    private function registerNavigation(): void
+    {
+        $nav = $this->app->make(NavigationRegistryInterface::class);
+        $nav->register(new NavigationItem('catalog.products', 'Products', 'control-center.catalog.products.index', 'Catalog', 'products.view', 'tenant', '📦', 10));
+        $nav->register(new NavigationItem('catalog.categories', 'Categories', 'control-center.catalog.categories', 'Catalog', 'categories.view', 'tenant', '🗂️', 20));
+        $nav->register(new NavigationItem('catalog.attributes', 'Attributes', 'control-center.catalog.attributes', 'Catalog', 'attributes.view', 'tenant', '🏷️', 30));
+        $nav->register(new NavigationItem('catalog.attribute-sets', 'Attribute Sets', 'control-center.catalog.attribute-sets', 'Catalog', 'attribute_sets.view', 'tenant', '🧩', 40));
+        $nav->register(new NavigationItem('catalog.brands', 'Brands', 'control-center.catalog.brands', 'Catalog', 'brands.view', 'tenant', '🏢', 50));
     }
 
     protected function registerLivewireComponents(): void

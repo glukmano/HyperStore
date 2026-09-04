@@ -8,10 +8,13 @@ use App\Core\Context\ContextManager;
 use Illuminate\Contracts\View\Factory;
 use Illuminate\Contracts\View\View;
 use Livewire\Component;
+use Livewire\WithPagination;
 use Modules\Inventory\Models\StockItem;
 
 class StockItemManager extends Component
 {
+    use WithPagination;
+
     public function render(): View|Factory
     {
         $tenant = app(ContextManager::class)->getTenant();
@@ -22,7 +25,7 @@ class StockItemManager extends Component
         $tenantId = (int) $tenantId;
 
         return view('inventory::livewire.stock-item-manager', [
-            'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product', 'productVariant', 'inventorySource'])->paginate(25),
+            'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product.translations', 'productVariant', 'inventorySource'])->paginate(25),
         ])->layout('layouts.control-center', ['title' => 'Stock Items']);
     }
 }

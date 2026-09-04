@@ -51,6 +51,7 @@ class ShippingZoneManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $zones = $tenantId ? ShippingZone::where('tenant_id', $tenantId)->with('rules')->get() : collect();
 
-        return view('shipping::livewire.shipping-zone-manager', ['zones' => $zones]);
+        return view('shipping::livewire.shipping-zone-manager', ['zones' => $zones])
+            ->layout('layouts.control-center', ['title' => 'Shipping Zones']);
     }
 }

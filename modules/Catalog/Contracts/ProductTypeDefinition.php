@@ -61,6 +61,11 @@ abstract class ProductTypeDefinition implements ProductTypeInterface
         return false;
     }
 
+    public function getStorefrontTemplate(): string
+    {
+        return 'default';
+    }
+
     /**
      * @return array<string, bool>
      */

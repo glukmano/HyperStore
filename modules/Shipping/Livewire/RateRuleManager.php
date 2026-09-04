@@ -13,9 +13,12 @@ class RateRuleManager extends Component
 {
     public function render(): View
     {
-        $tenantId = app(ContextManager::class)->getTenant()?->getId();
-        $rules = $tenantId ? ShippingRateRule::where('tenant_id', $tenantId)->get() : collect();
+        $tenantId = app(ContextManager::class)->getTenant()->getId();
+        $rules = $tenantId
+            ? ShippingRateRule::query()->whereHas('method', fn ($q) => $q->where('tenant_id', $tenantId))->get()
+            : collect();
 
-        return view('shipping::livewire.rate-rule-manager', ['rules' => $rules]);
+        return view('shipping::livewire.rate-rule-manager', ['rules' => $rules])
+            ->layout('layouts.control-center', ['title' => 'Rate Rules']);
     }
 }

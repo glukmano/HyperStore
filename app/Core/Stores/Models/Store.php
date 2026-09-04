@@ -23,6 +23,7 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
  * @property string $status
  * @property string $customer_account_scope_override
  * @property ?array<string, mixed> $settings
+ * @property string $active_theme
  */
 class Store extends Model
 {
@@ -35,6 +36,7 @@ class Store extends Model
         'status',
         'customer_account_scope_override',
         'settings',
+        'active_theme',
     ];
 
     /**

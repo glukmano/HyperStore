@@ -8,10 +8,13 @@ use App\Core\Context\ContextManager;
 use Illuminate\Contracts\View\Factory;
 use Illuminate\Contracts\View\View;
 use Livewire\Component;
+use Livewire\WithPagination;
 use Modules\Inventory\Models\InventoryReservation;
 
 class ReservationManager extends Component
 {
+    use WithPagination;
+
     public function render(): View|Factory
     {
         $tenant = app(ContextManager::class)->getTenant();

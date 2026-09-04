@@ -25,6 +25,10 @@ class InventorySourceManager extends Component
 
     public function createSource(): void
     {
+        if (! auth()->user()?->can('inventory.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
         $this->validate([
             'code' => ['required', 'string', 'max:100'],
             'name' => ['required', 'string', 'max:255'],

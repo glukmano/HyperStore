@@ -26,6 +26,10 @@ class WarehouseManager extends Component
 
     public function createWarehouse(): void
     {
+        if (! auth()->user()?->can('warehouses.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
         $this->validate([
             'code' => ['required', 'string', 'max:100'],
             'name' => ['required', 'string', 'max:255'],

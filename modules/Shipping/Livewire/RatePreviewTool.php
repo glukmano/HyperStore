@@ -11,6 +11,7 @@ class RatePreviewTool extends Component
 {
     public function render(): View
     {
-        return view('shipping::livewire.rate-preview-tool');
+        return view('shipping::livewire.rate-preview-tool')
+            ->layout('layouts.control-center', ['title' => 'Shipping Rate Preview']);
     }
 }

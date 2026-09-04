@@ -16,6 +16,7 @@ class PickupLocationManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $locations = $tenantId ? PickupLocation::where('tenant_id', $tenantId)->get() : collect();
 
-        return view('shipping::livewire.pickup-location-manager', ['locations' => $locations]);
+        return view('shipping::livewire.pickup-location-manager', ['locations' => $locations])
+            ->layout('layouts.control-center', ['title' => 'Pickup Locations']);
     }
 }

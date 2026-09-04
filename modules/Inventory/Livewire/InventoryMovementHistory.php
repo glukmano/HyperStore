@@ -8,10 +8,13 @@ use App\Core\Context\ContextManager;
 use Illuminate\Contracts\View\Factory;
 use Illuminate\Contracts\View\View;
 use Livewire\Component;
+use Livewire\WithPagination;
 use Modules\Inventory\Models\InventoryMovement;
 
 class InventoryMovementHistory extends Component
 {
+    use WithPagination;
+
     public function render(): View|Factory
     {
         $tenant = app(ContextManager::class)->getTenant();
@@ -22,7 +25,7 @@ class InventoryMovementHistory extends Component
         $tenantId = (int) $tenantId;
 
         return view('inventory::livewire.inventory-movement-history', [
-            'movements' => InventoryMovement::where('tenant_id', $tenantId)->latest('created_at')->paginate(25),
+            'movements' => InventoryMovement::where('tenant_id', $tenantId)->with(['product.translations', 'inventorySource'])->latest('created_at')->paginate(25),
         ])->layout('layouts.control-center', ['title' => 'Stock Movement History']);
     }
 }

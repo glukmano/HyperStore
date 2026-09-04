@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Modules\Marketplace;
 
 use App\Core\Modular\ModuleServiceProvider;
+use App\Core\Navigation\Contracts\NavigationRegistryInterface;
+use App\Core\Navigation\DTOs\NavigationItem;
 use Illuminate\Support\Facades\Event;
+use Livewire\Livewire;
 use Modules\Marketplace\Contracts\DomainVerificationResolverInterface;
 use Modules\Marketplace\Contracts\MarketplaceCommercialPolicyInterface;
 use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
@@ -23,6 +26,8 @@ use Modules\Marketplace\Contracts\VendorPlanSubscriptionEntitlementServiceInterf
 use Modules\Marketplace\Contracts\VendorStorefrontResolverInterface;
 use Modules\Marketplace\Contracts\VendorStoreParticipationServiceInterface;
 use Modules\Marketplace\Listeners\OrderPaidAccrueVendorPayableListener;
+use Modules\Marketplace\Livewire\VendorDetail;
+use Modules\Marketplace\Livewire\VendorList;
 use Modules\Marketplace\Services\DnsTxtDomainVerificationResolver;
 use Modules\Marketplace\Services\MarketplaceCommercialPolicy;
 use Modules\Marketplace\Services\NoOpMarketplaceConcurrencyBarrier;
@@ -50,6 +55,20 @@ class MarketplaceServiceProvider extends ModuleServiceProvider
     public function getPath(): string
     {
         return __DIR__;
+    }
+
+    private function registerNavigation(): void
+    {
+        $nav = $this->app->make(NavigationRegistryInterface::class);
+        $nav->register(new NavigationItem('marketplace.vendors', 'Vendors', 'control-center.vendors.index', 'Marketplace', 'vendors.view', 'tenant', '🏪', 10));
+    }
+
+    private function registerLivewireComponents(): void
+    {
+        if (class_exists(Livewire::class)) {
+            Livewire::component('marketplace.vendor-list', VendorList::class);
+            Livewire::component('marketplace.vendor-detail', VendorDetail::class);
+        }
     }
 
     public function register(): void
@@ -81,11 +100,24 @@ class MarketplaceServiceProvider extends ModuleServiceProvider
     {
         parent::boot();
 
-        $routesPath = __DIR__.'/Routes/api.php';
-        if (file_exists($routesPath)) {
-            $this->loadRoutesFrom($routesPath);
+        $apiRoutesPath = __DIR__.'/Routes/api.php';
+        if (file_exists($apiRoutesPath)) {
+            $this->loadRoutesFrom($apiRoutesPath);
+        }
+
+        $webRoutesPath = __DIR__.'/Routes/web.php';
+        if (file_exists($webRoutesPath)) {
+            $this->loadRoutesFrom($webRoutesPath);
+        }
+
+        $viewsDir = __DIR__.'/Resources/views';
+        if (is_dir($viewsDir)) {
+            $this->loadViewsFrom($viewsDir, 'marketplace');
         }
 
         Event::listen(OrderStatusChanged::class, OrderPaidAccrueVendorPayableListener::class);
+
+        $this->registerLivewireComponents();
+        $this->registerNavigation();
     }
 }

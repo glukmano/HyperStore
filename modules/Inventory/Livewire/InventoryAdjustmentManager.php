@@ -24,6 +24,10 @@ class InventoryAdjustmentManager extends Component
 
     public function applyAdjustment(InventoryAdjustmentServiceInterface $adjustmentService): void
     {
+        if (! auth()->user()?->can('inventory.adjust') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
         $this->validate([
             'selectedStockItemId' => ['required', 'integer'],
             'delta' => ['required', 'numeric'],
@@ -54,7 +58,7 @@ class InventoryAdjustmentManager extends Component
         $tenantId = (int) $tenantId;
 
         return view('inventory::livewire.inventory-adjustment-manager', [
-            'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product', 'inventorySource'])->get(),
+            'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product.translations', 'inventorySource'])->get(),
         ])->layout('layouts.control-center', ['title' => 'Stock Adjustments']);
     }
 }

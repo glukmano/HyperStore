@@ -22,6 +22,10 @@ class InventoryReceivingManager extends Component
 
     public function receiveStock(InventoryAdjustmentServiceInterface $adjustmentService): void
     {
+        if (! auth()->user()?->can('inventory.restock.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
         $this->validate([
             'selectedStockItemId' => ['required', 'integer'],
             'quantity' => ['required', 'numeric', 'gt:0'],
@@ -51,7 +55,7 @@ class InventoryReceivingManager extends Component
         $tenantId = (int) $tenantId;
 
         return view('inventory::livewire.inventory-receiving-manager', [
-            'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product', 'inventorySource'])->get(),
+            'stockItems' => StockItem::where('tenant_id', $tenantId)->with(['product.translations', 'inventorySource'])->get(),
         ])->layout('layouts.control-center', ['title' => 'Receive Stock']);
     }
 }

@@ -51,6 +51,7 @@ class CarrierManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $carriers = $tenantId ? Carrier::where('tenant_id', $tenantId)->with('services')->get() : collect();
 
-        return view('shipping::livewire.carrier-manager', ['carriers' => $carriers]);
+        return view('shipping::livewire.carrier-manager', ['carriers' => $carriers])
+            ->layout('layouts.control-center', ['title' => 'Carriers']);
     }
 }

@@ -1,5 +1,8 @@
 <?php
 
+declare(strict_types=1);
+
+use App\Core\Context\Middleware\ResolveContextMiddleware;
 use Illuminate\Support\Facades\Route;
 use Modules\Inventory\Livewire\InventoryAdjustmentManager;
 use Modules\Inventory\Livewire\InventoryMovementHistory;
@@ -11,7 +14,7 @@ use Modules\Inventory\Livewire\StockItemManager;
 use Modules\Inventory\Livewire\TransferManager;
 use Modules\Inventory\Livewire\WarehouseManager;
 
-Route::middleware(['web', 'auth'])->prefix('control-center/inventory')->name('control-center.inventory.')->group(function () {
+Route::middleware(['web', 'auth', ResolveContextMiddleware::class])->prefix('control-center/inventory')->name('control-center.inventory.')->group(function () {
     Route::get('warehouses', WarehouseManager::class)->name('warehouses');
     Route::get('sources', InventorySourceManager::class)->name('sources');
     Route::get('stock', StockItemManager::class)->name('stock');

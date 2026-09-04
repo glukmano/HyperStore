@@ -16,6 +16,7 @@ class ShippingRestrictionManager extends Component
         $tenantId = app(ContextManager::class)->getTenant()?->getId();
         $restrictions = $tenantId ? ShippingRestriction::where('tenant_id', $tenantId)->get() : collect();
 
-        return view('shipping::livewire.shipping-restriction-manager', ['restrictions' => $restrictions]);
+        return view('shipping::livewire.shipping-restriction-manager', ['restrictions' => $restrictions])
+            ->layout('layouts.control-center', ['title' => 'Shipping Restrictions']);
     }
 }
