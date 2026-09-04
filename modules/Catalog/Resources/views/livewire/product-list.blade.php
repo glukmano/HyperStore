@@ -52,8 +52,11 @@
                             <td><x-ui.badge variant="ghost">{{ $prod->product_type }}</x-ui.badge></td>
                             <td>{{ $prod->brand?->translation()?->name ?? '—' }}</td>
                             <td><x-ui.badge variant="{{ $prod->status === 'active' ? 'success' : 'warning' }}">{{ $prod->status }}</x-ui.badge></td>
-                            <td>
+                            <td class="flex gap-2">
                                 <a href="{{ route('control-center.catalog.products.edit', $prod->id) }}" class="btn btn-sm btn-ghost">Edit</a>
+                                @if ($prod->status !== 'archived')
+                                    <button type="button" class="btn btn-sm btn-ghost text-error" wire:click="openArchiveConfirm({{ $prod->id }})">Archive</button>
+                                @endif
                             </td>
                         </tr>
                     @empty
@@ -69,4 +72,14 @@
             {{ $products->links() }}
         </div>
     </x-ui.card>
+
+    <x-ui.confirm-dialog
+        :show="$confirmArchiveId !== null"
+        title="Archive Product"
+        message="This will archive the product and hide it from all active store listings. This can be reversed by editing the product later."
+        confirmAction="archiveProduct"
+        cancelAction="cancelArchiveConfirm"
+        confirmLabel="Archive"
+        variant="danger"
+    />
 </div>

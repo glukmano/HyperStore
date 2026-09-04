@@ -9,6 +9,7 @@ use Illuminate\Contracts\View\Factory;
 use Illuminate\Contracts\View\View;
 use Livewire\Component;
 use Livewire\WithPagination;
+use Modules\Catalog\Actions\ArchiveProductAction;
 use Modules\Catalog\Models\Product;
 
 class ProductList extends Component
@@ -20,6 +21,41 @@ class ProductList extends Component
     public string $selectedType = '';
 
     public string $selectedStatus = '';
+
+    public ?int $confirmArchiveId = null;
+
+    public function openArchiveConfirm(int $id): void
+    {
+        $this->confirmArchiveId = $id;
+    }
+
+    public function cancelArchiveConfirm(): void
+    {
+        $this->confirmArchiveId = null;
+    }
+
+    public function archiveProduct(): void
+    {
+        if (! auth()->user()?->can('products.archive') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
+        if ($this->confirmArchiveId === null) {
+            return;
+        }
+
+        $contextManager = app(ContextManager::class);
+        $tenantId = $contextManager->getTenant()->getId();
+
+        $product = Product::query()
+            ->when($tenantId !== null, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->findOrFail($this->confirmArchiveId);
+
+        app(ArchiveProductAction::class)->execute($product);
+
+        $this->confirmArchiveId = null;
+        session()->flash('success', 'Product archived successfully.');
+    }
 
     public function render(): View|Factory
     {

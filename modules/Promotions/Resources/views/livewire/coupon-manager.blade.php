@@ -29,21 +29,41 @@
                         <th>Promotion</th>
                         <th>Usage Limit</th>
                         <th>Times Used</th>
+                        <th>Status</th>
+                        <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     @forelse ($coupons as $c)
-                        <tr>
+                        <tr wire:key="coupon-{{ $c->id }}">
                             <td class="font-mono font-bold">{{ $c->code }}</td>
                             <td>{{ $c->promotion->name }}</td>
                             <td>{{ $c->usage_limit ?? 'Unlimited' }}</td>
                             <td>{{ $c->times_used }}</td>
+                            <td><x-ui.badge variant="{{ $c->status === 'active' ? 'success' : 'ghost' }}">{{ $c->status }}</x-ui.badge></td>
+                            <td class="text-end">
+                                <button type="button" class="btn btn-xs btn-ghost" wire:click="editCoupon({{ $c->id }})">Edit</button>
+                                <button type="button" class="btn btn-xs btn-ghost" wire:click="toggleStatus({{ $c->id }})">
+                                    {{ $c->status === 'active' ? 'Deactivate' : 'Activate' }}
+                                </button>
+                            </td>
                         </tr>
                     @empty
-                        <tr><td colspan="4" class="text-center py-4 text-base-content/50">No coupons found.</td></tr>
+                        <tr><td colspan="6" class="text-center py-4 text-base-content/50">No coupons found.</td></tr>
                     @endforelse
                 </tbody>
             </table>
         </x-ui.card>
     </div>
+
+    <x-ui.modal :show="$editingId !== null" title="Edit Coupon" wireClose="cancelEdit">
+        <form wire:submit.prevent="updateCoupon" class="space-y-4">
+            <x-ui.input label="Coupon Code" wire:model="editCode" required />
+            <x-ui.input label="Usage Limit (Optional)" type="number" wire:model="editUsageLimit" />
+            <div class="flex justify-end gap-2">
+                <x-ui.button variant="ghost" type="button" wire:click="cancelEdit">Cancel</x-ui.button>
+                <x-ui.button type="submit">Save Changes</x-ui.button>
+            </div>
+        </form>
+    </x-ui.modal>
 </div>

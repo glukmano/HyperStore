@@ -91,3 +91,75 @@ test('Promotions API evaluates cart discounts via POST /api/v1/promotions/evalua
         ->assertJsonPath('data.total_discount_minor', 1500)
         ->assertJsonPath('data.final_total_minor', 8500);
 });
+
+test('PromotionManager edits and deactivates a promotion via the existing status field', function (): void {
+    $promo = Promotion::create([
+        'tenant_id' => $this->tenant->id, 'name' => 'Spring Sale', 'code' => 'spring-sale', 'priority' => 1, 'status' => 'active',
+    ]);
+
+    Livewire::test(PromotionManager::class)
+        ->call('editPromotion', $promo->id)
+        ->set('editName', 'Spring Mega Sale')
+        ->set('editPriority', 10)
+        ->call('updatePromotion')
+        ->assertHasNoErrors();
+
+    $this->assertDatabaseHas('promotions', ['id' => $promo->id, 'name' => 'Spring Mega Sale', 'priority' => 10]);
+
+    Livewire::test(PromotionManager::class)
+        ->call('toggleStatus', $promo->id)
+        ->assertHasNoErrors();
+
+    $this->assertDatabaseHas('promotions', ['id' => $promo->id, 'status' => 'inactive']);
+});
+
+test('unauthorized user cannot edit a promotion', function (): void {
+    $promo = Promotion::create([
+        'tenant_id' => $this->tenant->id, 'name' => 'Locked Promo', 'code' => 'locked-promo', 'priority' => 1, 'status' => 'active',
+    ]);
+
+    $unauthorized = User::create(['name' => 'No Perms Promo', 'email' => 'noperm-promo@hyperstore.test', 'password' => bcrypt('password')]);
+    $this->actingAs($unauthorized);
+
+    Livewire::test(PromotionManager::class)
+        ->call('editPromotion', $promo->id)
+        ->assertForbidden();
+});
+
+test('CouponManager edits and deactivates a coupon via the existing status field', function (): void {
+    $promo = Promotion::create([
+        'tenant_id' => $this->tenant->id, 'name' => 'Coupon Promo', 'code' => 'coupon-promo', 'priority' => 1, 'status' => 'active',
+    ]);
+    $coupon = $promo->coupons()->create([
+        'tenant_id' => $this->tenant->id, 'code' => 'SAVE10', 'status' => 'active',
+    ]);
+
+    Livewire::test(CouponManager::class)
+        ->call('editCoupon', $coupon->id)
+        ->set('editCode', 'SAVE15')
+        ->set('editUsageLimit', 100)
+        ->call('updateCoupon')
+        ->assertHasNoErrors();
+
+    $this->assertDatabaseHas('coupons', ['id' => $coupon->id, 'code' => 'SAVE15', 'usage_limit' => 100]);
+
+    Livewire::test(CouponManager::class)
+        ->call('toggleStatus', $coupon->id)
+        ->assertHasNoErrors();
+
+    $this->assertDatabaseHas('coupons', ['id' => $coupon->id, 'status' => 'inactive']);
+});
+
+test('unauthorized user cannot edit a coupon', function (): void {
+    $promo = Promotion::create([
+        'tenant_id' => $this->tenant->id, 'name' => 'Coupon Promo 2', 'code' => 'coupon-promo-2', 'priority' => 1, 'status' => 'active',
+    ]);
+    $coupon = $promo->coupons()->create(['tenant_id' => $this->tenant->id, 'code' => 'LOCKED10', 'status' => 'active']);
+
+    $unauthorized = User::create(['name' => 'No Perms Coupon', 'email' => 'noperm-coupon@hyperstore.test', 'password' => bcrypt('password')]);
+    $this->actingAs($unauthorized);
+
+    Livewire::test(CouponManager::class)
+        ->call('editCoupon', $coupon->id)
+        ->assertForbidden();
+});

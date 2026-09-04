@@ -20,6 +20,8 @@ class DatabaseSeeder extends Seeder
             PlatformAdminPermissionSeeder::class,
             MarketplacePermissionSeeder::class,
             OrderPermissionSeeder::class,
+            DropshippingPermissionSeeder::class,
+            PaymentPermissionSeeder::class,
         ]);
 
         User::firstOrCreate(

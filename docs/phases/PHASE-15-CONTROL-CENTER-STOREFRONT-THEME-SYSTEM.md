@@ -1,8 +1,19 @@
 # PHASE-15: Control Center & Storefront Theme System
 
 > **Authority**: [PROJECT_MASTER_PLAN.md](file:///Volumes/Lukman/dev/Projects/HyperStore/PROJECT_MASTER_PLAN.md) — Section 12 (Control Center / Super Admin), Section 22 (Theme System)
-> **Status**: COMPLETED — ACCEPTANCE CANDIDATE (implementation finished, all gates green; owner acceptance pending — not self-marked owner-accepted)
+> **Status**: COMPLETED — ACCEPTANCE CANDIDATE (implementation + completion delta finished, all gates green; owner acceptance pending — not self-marked owner-accepted)
 > **Active Dates**: 2026-09-04 to 2026-09-04
+
+## Completion Delta (2026-09-04)
+
+Per explicit owner instruction ("PHASE-15 COMPLETION DELTA — IMPLEMENT NOW"), four items previously deferred in §4 were completed as part of this same phase (not a new phase, no new ADRs required — all four reuse the Theme SDK / Navigation Registry / Storefront Core boundary already documented in ADR-0130–0132):
+
+1. **Suppliers/Dropshipping/Purchase Order admin UI** — `modules/Dropshipping/Livewire/{SupplierList,SupplierDetail,PurchaseOrderList,PurchaseOrderDetail}.php`, `modules/Dropshipping/Routes/web.php`. Dropship POs only; zero warehouse-bound receiving functionality added (confirmed by source grep).
+2. **Payments read-only Control Center viewer** — `modules/Payment/Livewire/{PaymentList,PaymentDetail}.php`, `modules/Payment/Routes/web.php`. View-only; field exposure mirrors the existing `PaymentResource`/`PaymentTransactionResource` boundary exactly (no `provider_response_code`/`provider_idempotency_key`).
+3. **Catalog/Pricing/Promotions edit + lifecycle completion** — edit added to Products (existing `ArchiveProductAction` reused for archive), Categories, Attributes, Attribute Sets, Price Books, Product Pricing, Exchange Rates (upsert), Tax Classes/Zones, Promotions, Coupons. No hard delete was invented anywhere — every "remove" action uses the aggregate's real existing lifecycle mechanism (an Action class where one exists, or the `status` field already read by `PromotionRuleEngine`/`CouponValidationService` where no dedicated Action exists).
+4. **Checkout payment UI** — `app/Livewire/Storefront/CheckoutPage.php` gained a `payment` step calling the existing `Modules\Payment\Services\PaymentInitiationService::initiatePayment()` against the just-created Order, branching only on the fields that service already returns (`status`, `action_type`, `normalized_error_code`) — no new payment semantics invented; an unrecognized status never resolves to success.
+
+Test count grew from 751 to 780 (29 new tests, one Pest run, zero regressions). See the final acceptance report for exact gate results.
 
 ---
 

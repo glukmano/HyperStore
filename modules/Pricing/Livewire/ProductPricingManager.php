@@ -24,8 +24,16 @@ class ProductPricingManager extends Component
 
     public string $cost = '';
 
+    public ?int $editingPriceId = null;
+
+    public ?int $confirmToggleId = null;
+
     public function savePrice(): void
     {
+        if (! auth()->user()?->can('pricing.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
         $this->validate([
             'selectedProductId' => ['required', 'integer'],
             'selectedPriceBookId' => ['required', 'integer'],
@@ -55,8 +63,60 @@ class ProductPricingManager extends Component
             ]
         );
 
-        $this->reset(['amount', 'compareAt', 'cost']);
+        $this->reset(['amount', 'compareAt', 'cost', 'selectedProductId', 'selectedPriceBookId', 'editingPriceId']);
         session()->flash('success', 'Product price updated.');
+    }
+
+    public function editPrice(int $id): void
+    {
+        if (! auth()->user()?->can('pricing.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
+        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+
+        $price = Price::where('tenant_id', $tenantId)->findOrFail($id);
+
+        $this->editingPriceId = $price->id;
+        $this->selectedProductId = $price->product_id;
+        $this->selectedPriceBookId = $price->price_book_id;
+        $this->amount = number_format($price->amount_minor / 100, 2, '.', '');
+        $this->compareAt = $price->compare_at_minor !== null ? number_format($price->compare_at_minor / 100, 2, '.', '') : '';
+        $this->cost = $price->cost_minor !== null ? number_format($price->cost_minor / 100, 2, '.', '') : '';
+    }
+
+    public function cancelEdit(): void
+    {
+        $this->reset(['editingPriceId', 'selectedProductId', 'selectedPriceBookId', 'amount', 'compareAt', 'cost']);
+    }
+
+    public function openToggleConfirm(int $id): void
+    {
+        $this->confirmToggleId = $id;
+    }
+
+    public function cancelToggleConfirm(): void
+    {
+        $this->confirmToggleId = null;
+    }
+
+    public function togglePriceStatus(): void
+    {
+        if (! auth()->user()?->can('pricing.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
+        if ($this->confirmToggleId === null) {
+            return;
+        }
+
+        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+
+        $price = Price::where('tenant_id', $tenantId)->findOrFail($this->confirmToggleId);
+        $price->update(['status' => $price->status === 'active' ? 'inactive' : 'active']);
+
+        $this->confirmToggleId = null;
+        session()->flash('success', $price->status === 'active' ? 'Price reactivated.' : 'Price deactivated.');
     }
 
     public function render(): View|Factory

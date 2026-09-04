@@ -26,22 +26,45 @@
                         <th>Priority</th>
                         <th>Exclusive</th>
                         <th>Status</th>
+                        <th class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     @forelse ($promotions as $p)
-                        <tr>
+                        <tr wire:key="promotion-{{ $p->id }}">
                             <td class="font-mono text-xs">{{ $p->code }}</td>
                             <td>{{ $p->name }}</td>
                             <td>{{ $p->priority }}</td>
                             <td>{{ $p->is_exclusive ? 'Yes' : 'No' }}</td>
-                            <td><x-ui.badge variant="success">{{ $p->status }}</x-ui.badge></td>
+                            <td><x-ui.badge variant="{{ $p->status === 'active' ? 'success' : 'ghost' }}">{{ $p->status }}</x-ui.badge></td>
+                            <td class="text-end">
+                                <button type="button" class="btn btn-xs btn-ghost" wire:click="editPromotion({{ $p->id }})">Edit</button>
+                                <button type="button" class="btn btn-xs btn-ghost" wire:click="toggleStatus({{ $p->id }})">
+                                    {{ $p->status === 'active' ? 'Deactivate' : 'Activate' }}
+                                </button>
+                            </td>
                         </tr>
                     @empty
-                        <tr><td colspan="5" class="text-center py-4 text-base-content/50">No promotions configured.</td></tr>
+                        <tr><td colspan="6" class="text-center py-4 text-base-content/50">No promotions configured.</td></tr>
                     @endforelse
                 </tbody>
             </table>
         </x-ui.card>
     </div>
+
+    <x-ui.modal :show="$editingId !== null" title="Edit Promotion" wireClose="cancelEdit">
+        <form wire:submit.prevent="updatePromotion" class="space-y-4">
+            <x-ui.input label="Name" wire:model="editName" required />
+            <x-ui.input label="Code" wire:model="editCode" required />
+            <x-ui.input label="Priority" type="number" wire:model="editPriority" />
+            <label class="flex items-center gap-2 cursor-pointer text-sm">
+                <input type="checkbox" wire:model="editIsExclusive" class="checkbox checkbox-sm checkbox-primary" />
+                <span>Exclusive (stops other discounts)</span>
+            </label>
+            <div class="flex justify-end gap-2">
+                <x-ui.button variant="ghost" type="button" wire:click="cancelEdit">Cancel</x-ui.button>
+                <x-ui.button type="submit">Save Changes</x-ui.button>
+            </div>
+        </form>
+    </x-ui.modal>
 </div>

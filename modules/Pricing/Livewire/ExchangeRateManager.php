@@ -18,8 +18,14 @@ class ExchangeRateManager extends Component
 
     public string $rate = '0.92000000';
 
+    public ?int $editingId = null;
+
     public function setRate(): void
     {
+        if (! auth()->user()?->can('exchange_rates.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
         $this->validate([
             'baseCurrency' => ['required', 'string', 'size:3'],
             'targetCurrency' => ['required', 'string', 'size:3'],
@@ -42,7 +48,29 @@ class ExchangeRateManager extends Component
             ]
         );
 
+        $this->reset(['editingId']);
         session()->flash('success', 'Exchange rate updated.');
+    }
+
+    public function editRate(int $id): void
+    {
+        if (! auth()->user()?->can('exchange_rates.manage') && ! auth()->user()?->is_super_admin) {
+            abort(403, 'Permission denied.');
+        }
+
+        $tenantId = (int) (app(ContextManager::class)->getTenant()->getId() ?? 1);
+
+        $rate = ExchangeRate::where('tenant_id', $tenantId)->findOrFail($id);
+
+        $this->editingId = $rate->id;
+        $this->baseCurrency = $rate->base_currency;
+        $this->targetCurrency = $rate->target_currency;
+        $this->rate = (string) $rate->rate;
+    }
+
+    public function cancelEdit(): void
+    {
+        $this->reset(['editingId', 'baseCurrency', 'targetCurrency', 'rate']);
     }
 
     public function render(): View|Factory
