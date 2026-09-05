@@ -74,6 +74,7 @@ use Modules\Reviews\Events\VendorReviewRetracted;
 use Modules\Reviews\Listeners\RecomputeProductRatingAggregate;
 use Modules\Reviews\Listeners\RecomputeVendorRatingAggregate;
 use Modules\Reviews\Services\RatingAggregateService;
+use Modules\Search\Console\Commands\SyncSearchIndexSettingsCommand;
 use Modules\Search\Contracts\SearchServiceInterface;
 use Modules\Search\Services\ScoutSearchService;
 
@@ -158,6 +159,7 @@ class AppServiceProvider extends ServiceProvider
                 PluginUpdateCommand::class,
                 PluginUninstallCommand::class,
                 PluginDoctorCommand::class,
+                SyncSearchIndexSettingsCommand::class,
             ]);
         }
 

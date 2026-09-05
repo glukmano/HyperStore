@@ -32,7 +32,8 @@ class MenuManager extends Component
         ]);
 
         $menu = $service->findOrCreate($this->tenantId(), $this->menuKey);
-        $service->addItem($menu, $this->routeType, $this->routeTarget, $this->label);
+        // Phase-18 §3: active-Locale-driven, never hardcoded.
+        $service->addItem($menu, $this->routeType, $this->routeTarget, $this->label, app()->getLocale());
 
         $this->reset(['label', 'routeTarget']);
         session()->flash('success', 'Menu item added.');

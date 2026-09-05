@@ -26,6 +26,7 @@
         </div>
 
         <div class="navbar-end gap-2 pe-4">
+            <livewire:storefront.regional-switcher />
             <a href="{{ route('storefront.compare') }}" wire:navigate class="btn btn-ghost btn-sm">{{ __('Compare') }}</a>
             <a href="{{ route('account.wishlist') }}" wire:navigate class="btn btn-ghost btn-sm">{{ __('Wishlist') }}</a>
             @auth

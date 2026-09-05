@@ -71,7 +71,7 @@ class ContextBeforeThemeOrderingTest extends TestCase
     {
         $contents = file_get_contents(base_path('routes/web.php'));
 
-        $pos = strpos($contents, "Route::middleware([ResolveContextMiddleware::class, ResolveStorefrontThemeMiddleware::class])\n    ->group(\$storefrontRoutes);");
+        $pos = strpos($contents, "Route::middleware([ResolveContextMiddleware::class, ResolveStorefrontThemeMiddleware::class])\n    ->group(fn () => \$storefrontRoutes());");
 
         $this->assertNotFalse($pos, 'Storefront group must apply ResolveContextMiddleware before ResolveStorefrontThemeMiddleware, in that exact order.');
     }

@@ -42,7 +42,11 @@ class BlogManager extends Component
         $post = $service->create($tenantId, $author);
 
         try {
-            $service->setTranslation($post, 'en', $this->title, $this->slug, $this->body, $this->excerpt ?: null);
+            // Phase-18 §3: driven by the editor's own active Control Center
+            // Locale (switched via the existing ?lang= toggle) — never
+            // hardcoded — so a newly-added active Locale is editable here
+            // with zero code change.
+            $service->setTranslation($post, app()->getLocale(), $this->title, $this->slug, $this->body, $this->excerpt ?: null);
             $this->reset(['title', 'slug', 'excerpt', 'body']);
             session()->flash('success', 'Blog post created.');
         } catch (ReservedSlugException $e) {

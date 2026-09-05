@@ -20,6 +20,14 @@
 
     <x-ui.card :title="__('Content')">
         <div class="space-y-4">
+            <div class="form-control max-w-xs">
+                <label class="label"><span class="label-text">{{ __('Editing Locale') }}</span></label>
+                <select wire:model.live="locale" class="select select-bordered">
+                    @foreach($activeLocales as $activeLocale)
+                        <option value="{{ $activeLocale->code }}">{{ $activeLocale->native_name }} ({{ $activeLocale->code }})</option>
+                    @endforeach
+                </select>
+            </div>
             <x-ui.input wire:model="title" label="{{ __('Title') }}" />
             <x-ui.input wire:model="slug" label="{{ __('Slug') }}" />
             @if ($slugError)

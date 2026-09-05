@@ -101,6 +101,63 @@ class Phase18ArchitectureTest extends TestCase
         $this->assertStringNotContainsStringIgnoringCase('"next"', $contents);
     }
 
+    /**
+     * Phase-18 Final Completion Delta §2: Control Center RTL/LTR audit —
+     * physical-direction Tailwind classes must never appear in Control
+     * Center views, shared UI components, layouts, or auth views. Uses
+     * the same class patterns as the earlier storefront-theme audit.
+     */
+    public function test_control_center_and_shared_components_never_use_physical_direction_classes(): void
+    {
+        $pattern = '/\b(ml|mr|pl|pr)-[0-9]|border-(l|r)(-|")|rounded-(l|r)(-|")|float-(left|right)|text-(left|right)|(^|[^a-z-])(left|right)-(0|1|2|3|4|full|auto)/';
+
+        $hits = [];
+        foreach ($this->bladeFiles([
+            'resources/views/livewire/control-center',
+            'resources/views/components',
+            'resources/views/layouts',
+            'resources/views/auth',
+        ]) as $file) {
+            $contents = file_get_contents($file);
+            if (preg_match($pattern, $contents)) {
+                $hits[] = $file;
+            }
+        }
+
+        $this->assertSame([], $hits, 'Physical-direction Tailwind classes found — use logical utilities (ms/me/ps/pe/start/end) instead.');
+    }
+
+    public function test_control_center_layout_derives_dir_from_the_resolved_locale(): void
+    {
+        $contents = file_get_contents(base_path('resources/views/layouts/control-center.blade.php'));
+
+        $this->assertStringContainsString('LocaleManagerInterface', $contents);
+        $this->assertStringContainsString('isRtl()', $contents);
+        $this->assertMatchesRegularExpression('/dir="\{\{.*isRtl\(\).*\}\}"/', $contents);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function bladeFiles(array $dirs): array
+    {
+        $files = [];
+        foreach ($dirs as $dir) {
+            $path = base_path($dir);
+            if (! is_dir($path)) {
+                continue;
+            }
+            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS));
+            foreach ($iterator as $file) {
+                if ($file->getExtension() === 'php' && str_ends_with($file->getFilename(), '.blade.php')) {
+                    $files[] = $file->getPathname();
+                }
+            }
+        }
+
+        return $files;
+    }
+
     public function test_market_is_not_hard_deletable_from_the_market_manager_screen(): void
     {
         $contents = file_get_contents(base_path('app/Livewire/ControlCenter/MarketManager.php'));

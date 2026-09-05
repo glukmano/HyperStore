@@ -30,7 +30,8 @@ class FaqManager extends Component
 
         $tenantId = (int) app(ContextManager::class)->getTenant()->getId();
         $faq = $service->create($tenantId, $this->category ?: null);
-        $service->setTranslation($faq, 'en', $this->question, $this->answer);
+        // Phase-18 §3: active-Locale-driven, never hardcoded.
+        $service->setTranslation($faq, app()->getLocale(), $this->question, $this->answer);
 
         $this->reset(['question', 'answer', 'category']);
         session()->flash('success', 'FAQ entry created.');

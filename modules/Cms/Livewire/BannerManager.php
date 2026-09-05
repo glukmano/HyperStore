@@ -45,7 +45,8 @@ class BannerManager extends Component
         ]);
 
         $banner->translations()->create([
-            'locale' => 'en',
+            // Phase-18 §3: active-Locale-driven, never hardcoded.
+            'locale' => app()->getLocale(),
             'headline' => $this->headline,
             'cta_text' => $this->ctaText,
             'link_url' => $this->linkUrl,

@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Core\Context\Contracts\RegionalPreferenceProviderInterface;
 use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Core\Tenancy\Models\TenantUser;
 use Database\Factories\UserFactory;
 use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Contracts\Translation\HasLocalePreference;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -26,7 +28,7 @@ use Spatie\Permission\Traits\HasRoles;
  * @property bool $is_super_admin
  * @property string $default_locale
  */
-class User extends Authenticatable implements MustVerifyEmail
+class User extends Authenticatable implements HasLocalePreference, MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, HasRoles, Notifiable;
@@ -112,5 +114,28 @@ class User extends Authenticatable implements MustVerifyEmail
             ->first();
 
         return $membership !== null && $membership->isAdmin();
+    }
+
+    /**
+     * Phase-18 Final Completion Delta §6(D): Laravel's own notification
+     * pipeline (NotificationSender::preferredLocale()) checks this
+     * interface and wraps rendering in App::setLocale($locale) for BOTH
+     * immediate and queued sends — so a queued notification renders in
+     * the RECIPIENT's own resolved locale, never whatever locale happens
+     * to be ambient in the queue worker process. CustomerProfile's
+     * synced preferred_locale (kept current by the storefront switcher)
+     * takes priority over the plain default_locale column, since it's
+     * the one actively maintained by user action; default_locale (also
+     * meaningful for non-customer staff, who never get a CustomerProfile)
+     * is the fallback.
+     */
+    public function preferredLocale(): ?string
+    {
+        $preferred = app(RegionalPreferenceProviderInterface::class)->getPreferredLocale($this->id);
+        if ($preferred !== null) {
+            return $preferred;
+        }
+
+        return $this->default_locale !== '' ? $this->default_locale : null;
     }
 }

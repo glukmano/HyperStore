@@ -97,6 +97,18 @@ class ThemeTranslationResolverTest extends TestCase
         $this->assertSame('أضف إلى السلة', $result);
     }
 
+    public function test_a_locale_never_used_anywhere_else_in_the_codebase_still_resolves_through_the_full_chain(): void
+    {
+        // Owner Delta §6(F): proves the fallback chain is genuinely
+        // Locale-agnostic, not secretly special-cased to en/ar — a
+        // brand-new Theme-level override for "sr-Latn-RS" wins.
+        $this->makeLangFile('child', 'sr-Latn-RS', ['welcome' => 'Добродошли']);
+
+        $result = $this->resolver->resolve('welcome', $this->chainOf(['child', 'default']), 'sr-Latn-RS');
+
+        $this->assertSame('Добродошли', $result);
+    }
+
     public function test_a_theme_with_no_lang_directory_at_all_safely_falls_through(): void
     {
         // 'child' has no resources/lang directory whatsoever.

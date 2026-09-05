@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Cms\Livewire;
 
+use App\Core\ReferenceData\Models\Language;
 use App\Models\User;
 use Illuminate\Contracts\View\Factory;
 use Illuminate\Contracts\View\View;
@@ -18,7 +19,7 @@ class PageEditor extends Component
 {
     public Page $page;
 
-    public string $locale = 'en';
+    public string $locale = '';
 
     public string $title = '';
 
@@ -36,8 +37,23 @@ class PageEditor extends Component
     {
         $this->authorizeManage();
         $this->page = $page;
+        // Phase-18 §3: defaults to the editor's own active Control Center
+        // Locale — a locale-switch dropdown (populated from active
+        // Language rows) lets the same screen edit any other active
+        // Locale's translation without leaving the page.
+        $this->locale = app()->getLocale();
 
-        $translation = $page->translation($this->locale);
+        $this->loadTranslationFor($this->locale);
+    }
+
+    public function updatedLocale(string $value): void
+    {
+        $this->loadTranslationFor($value);
+    }
+
+    private function loadTranslationFor(string $locale): void
+    {
+        $translation = $this->page->translation($locale);
         $this->title = $translation->title ?? '';
         $this->slug = $translation->slug ?? '';
     }
@@ -119,6 +135,7 @@ class PageEditor extends Component
         return view('livewire.control-center.cms.page-editor', [
             'blocks' => $this->page->blocks()->orderBy('position')->get(),
             'availableBlockTypes' => app(BlockTypeRegistryInterface::class)->all(),
+            'activeLocales' => Language::query()->where('is_active', true)->orderBy('sort_order')->get(),
         ])->layout('layouts.control-center', ['title' => 'Edit Page']);
     }
 
