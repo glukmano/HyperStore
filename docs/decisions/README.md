@@ -106,3 +106,7 @@ Use [docs/templates/ADR-TEMPLATE.md](../templates/ADR-TEMPLATE.md) for new ADRs.
 - [ADR-0115: Multi-Tier RBAC Architecture and Context-Scoped Permission Matrix](ADR-0115-multi-tier-rbac-and-context-scoped-permission-matrix.md)
 - [ADR-0116: Audited Context Switching, Cryptographic Impersonation Safety Boundaries, and Append-Only Audit Logging](ADR-0116-cryptographic-impersonation-safety-boundaries-and-immutable-audit-logging.md)
 - [ADR-0117: Super Admin Boundaries, Tenant Licensing, SaaS Plans, Release Governance, and Platform Health Diagnostics](ADR-0117-super-admin-boundaries-tenant-licensing-and-platform-health-diagnostics.md)
+
+### Phase 19: Affiliate, Referral, Loyalty & Marketing
+- [ADR-0142: Shared Payout Orchestrator Across Payable Beneficiary Types](ADR-0142-shared-payout-orchestrator.md)
+- [ADR-0143: Affiliate Attribution Freeze Boundary and Customer Referral Separation](ADR-0143-affiliate-attribution-freeze-boundary.md)

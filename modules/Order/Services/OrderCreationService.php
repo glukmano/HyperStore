@@ -8,6 +8,7 @@ use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Modules\Affiliate\Contracts\AffiliateAttributionServiceInterface;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Enums\ReservationOwnerType;
@@ -314,6 +315,27 @@ class OrderCreationService implements OrderCreationServiceInterface
                 );
             } catch (Throwable $e) {
                 throw ReservationAdoptionFailedException::forKey($resKey, $e->getMessage());
+            }
+        }
+
+        // 9. Freeze Affiliate attribution (Phase-19 Owner Delta correction §2)
+        // at THIS Order-creation boundary — strictly before any payment
+        // event can fire. A failure here must never block a real order.
+        if (app()->bound(AffiliateAttributionServiceInterface::class)) {
+            try {
+                $visitorToken = request()->cookie('hs_aff_token');
+                $visitorTokenHash = is_string($visitorToken) && $visitorToken !== ''
+                    ? hash('sha256', $visitorToken)
+                    : null;
+
+                $promotionSnapshot = $validatedSnapshot['promotion_snapshot'] ?? null;
+                $couponCode = is_array($promotionSnapshot) && isset($promotionSnapshot['coupon_code']) && is_string($promotionSnapshot['coupon_code'])
+                    ? $promotionSnapshot['coupon_code']
+                    : null;
+
+                app(AffiliateAttributionServiceInterface::class)->freezeAttributionForOrder($order, $visitorTokenHash, $couponCode);
+            } catch (Throwable $e) {
+                report($e);
             }
         }
 

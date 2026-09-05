@@ -56,16 +56,23 @@ use Illuminate\Auth\Listeners\SendEmailVerificationNotification;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\View;
 use Illuminate\Support\ServiceProvider;
+use Modules\Cart\Console\Commands\SendAbandonedCartRemindersCommand;
 use Modules\Cms\BlockTypeRegistry;
 use Modules\Cms\Contracts\BlockTypeRegistryInterface;
 use Modules\Cms\DTOs\BlockTypeDefinition;
+use Modules\Customers\Listeners\CaptureReferralSignupListener;
 use Modules\Customers\Listeners\CheckBackInStockSubscriptions;
 use Modules\Customers\Listeners\CheckPriceDropSubscriptions;
+use Modules\Customers\Listeners\QualifyCustomerReferralOnOrderPaidListener;
 use Modules\Customers\Listeners\RecordGiftRegistryPurchasesOnOrderCompletion;
 use Modules\Customers\Services\CustomerRegionalPreferenceProvider;
 use Modules\Inventory\Events\StockReplenished;
 use Modules\Order\Events\OrderStatusChanged;
+use Modules\Payment\Events\PaymentPartiallyRefunded;
+use Modules\Payment\Events\PaymentRefunded;
 use Modules\Pricing\Events\PriceChanged;
+use Modules\Promotions\Listeners\EarnLoyaltyPointsOnOrderPaidListener;
+use Modules\Promotions\Listeners\ReverseLoyaltyPointsOnRefundListener;
 use Modules\Reviews\Contracts\RatingAggregateReaderInterface;
 use Modules\Reviews\Events\ProductReviewApproved;
 use Modules\Reviews\Events\ProductReviewRetracted;
@@ -138,7 +145,12 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Event::listen(Registered::class, SendEmailVerificationNotification::class);
+        Event::listen(Registered::class, CaptureReferralSignupListener::class);
         Event::listen(OrderStatusChanged::class, RecordGiftRegistryPurchasesOnOrderCompletion::class);
+        Event::listen(OrderStatusChanged::class, QualifyCustomerReferralOnOrderPaidListener::class);
+        Event::listen(OrderStatusChanged::class, EarnLoyaltyPointsOnOrderPaidListener::class);
+        Event::listen(PaymentRefunded::class, ReverseLoyaltyPointsOnRefundListener::class);
+        Event::listen(PaymentPartiallyRefunded::class, ReverseLoyaltyPointsOnRefundListener::class);
         Event::listen(PriceChanged::class, CheckPriceDropSubscriptions::class);
         Event::listen(StockReplenished::class, CheckBackInStockSubscriptions::class);
         Event::listen(ProductReviewApproved::class, RecomputeProductRatingAggregate::class);
@@ -160,6 +172,7 @@ class AppServiceProvider extends ServiceProvider
                 PluginUninstallCommand::class,
                 PluginDoctorCommand::class,
                 SyncSearchIndexSettingsCommand::class,
+                SendAbandonedCartRemindersCommand::class,
             ]);
         }
 

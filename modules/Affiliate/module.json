@@ -1,0 +1,14 @@
+{
+    "name": "Affiliate",
+    "namespace": "Modules\\Affiliate",
+    "description": "Phase-19: Affiliate profiles, referral links/clicks, campaigns, attribution, commissions, payable subledger, payouts, and fraud flags.",
+    "version": "1.0.0",
+    "enabled": true,
+    "order": 190,
+    "dependencies": [
+        "Order",
+        "Promotions",
+        "Marketplace"
+    ],
+    "provider": "Modules\\Affiliate\\AffiliateServiceProvider"
+}

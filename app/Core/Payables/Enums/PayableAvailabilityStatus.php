@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Modules\Marketplace\Enums;
+namespace App\Core\Payables\Enums;
 
-enum VendorPayableAvailabilityStatus: string
+enum PayableAvailabilityStatus: string
 {
     case Pending = 'pending';
     case Available = 'available';

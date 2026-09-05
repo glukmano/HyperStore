@@ -6,6 +6,8 @@ namespace Tests\Concurrency;
 
 use App\Core\Channels\Models\Channel;
 use App\Core\Markets\Models\Market;
+use App\Core\Payables\Enums\PayableAvailabilityStatus;
+use App\Core\Payables\Enums\PayableEntryType;
 use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use Database\Seeders\ReferenceDataSeeder;
@@ -22,8 +24,6 @@ use Modules\Fulfillment\Enums\FulfillmentMode;
 use Modules\Ledger\Contracts\LedgerAccountRegistryInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
-use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorPayableEntry;
 use Modules\Marketplace\Models\VendorPlan;
@@ -926,14 +926,14 @@ try {
         VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'race9_seed',
             'source_uuid' => 'race9-'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $order = $this->makeOrder();

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Models;
 
+use App\Core\Payables\Enums\PayableAvailabilityStatus;
+use App\Core\Payables\Enums\PayableEntryType;
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
@@ -11,8 +13,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
-use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Exceptions\MarketplaceException;
 use Modules\Order\Models\OrderItem;
 
@@ -22,14 +22,14 @@ use Modules\Order\Models\OrderItem;
  * @property int $tenant_id
  * @property int $vendor_id
  * @property int|null $order_item_id
- * @property VendorPayableEntryType $entry_type
+ * @property PayableEntryType $entry_type
  * @property string $source_type
  * @property string $source_uuid
  * @property string $currency
  * @property int $amount_minor
  * @property int $commission_amount_minor
  * @property int $net_amount_minor
- * @property VendorPayableAvailabilityStatus $availability_status
+ * @property PayableAvailabilityStatus $availability_status
  * @property CarbonImmutable|null $available_at
  * @property string|null $held_reason
  * @property CarbonImmutable $created_at
@@ -62,8 +62,8 @@ class VendorPayableEntry extends Model
     ];
 
     protected $casts = [
-        'entry_type' => VendorPayableEntryType::class,
-        'availability_status' => VendorPayableAvailabilityStatus::class,
+        'entry_type' => PayableEntryType::class,
+        'availability_status' => PayableAvailabilityStatus::class,
         'amount_minor' => 'integer',
         'commission_amount_minor' => 'integer',
         'net_amount_minor' => 'integer',

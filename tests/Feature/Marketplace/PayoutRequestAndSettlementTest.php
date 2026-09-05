@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Marketplace;
 
+use App\Core\Payables\Enums\PayableAvailabilityStatus;
+use App\Core\Payables\Enums\PayableEntryType;
+use App\Core\Payables\Enums\PayoutAllocationStatus;
+use App\Core\Payables\Enums\PayoutRequestStatus;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
 use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Modules\Marketplace\Contracts\PayoutServiceInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
-use Modules\Marketplace\Enums\PayoutAllocationStatus;
-use Modules\Marketplace\Enums\PayoutRequestStatus;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
-use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Exceptions\InsufficientPayableBalanceException;
 use Modules\Marketplace\Exceptions\PayoutFinalizationException;
 use Modules\Marketplace\Models\Vendor;
@@ -76,14 +76,14 @@ class PayoutRequestAndSettlementTest extends TestCase
         VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'oi_100',
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         // 2. Request 4,000 EUR payout
@@ -134,7 +134,7 @@ class PayoutRequestAndSettlementTest extends TestCase
         $this->assertDatabaseHas('vendor_payable_entries', [
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::PayoutDisbursement->value,
+            'entry_type' => PayableEntryType::PayoutDisbursement->value,
             'source_type' => 'payout_request',
             'source_uuid' => $request->uuid,
             'net_amount_minor' => 4000,
@@ -161,14 +161,14 @@ class PayoutRequestAndSettlementTest extends TestCase
         VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'oi_direct',
             'currency' => 'EUR',
             'amount_minor' => 5000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 5000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $request = $this->payoutService->requestPayout($this->tenant->id, $this->vendor->id, 2000, 'EUR');
@@ -186,14 +186,14 @@ class PayoutRequestAndSettlementTest extends TestCase
         VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'oi_101',
             'currency' => 'EUR',
             'amount_minor' => 5000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 5000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $this->expectException(InsufficientPayableBalanceException::class);
@@ -220,7 +220,7 @@ class PayoutRequestAndSettlementTest extends TestCase
         );
 
         $this->assertNotNull($earning);
-        $this->assertSame(VendorPayableAvailabilityStatus::Pending, $earning->availability_status);
+        $this->assertSame(PayableAvailabilityStatus::Pending, $earning->availability_status);
         $this->assertSame(8500, $earning->net_amount_minor);
         $this->assertNotNull($earning->available_at);
 
@@ -246,7 +246,7 @@ class PayoutRequestAndSettlementTest extends TestCase
         $futureCutoff = CarbonImmutable::now()->addDays(15);
         $matured = $this->subledger->maturePendingPayables($this->tenant->id, $futureCutoff);
         $this->assertSame(1, $matured);
-        $this->assertSame(VendorPayableAvailabilityStatus::Available, $earning->fresh()->availability_status);
+        $this->assertSame(PayableAvailabilityStatus::Available, $earning->fresh()->availability_status);
 
         // Withdrawable balance now equals 8,500
         $balAfterMaturity = $this->subledger->getBalances($this->tenant->id, $this->vendor->id, 'EUR');
@@ -265,10 +265,10 @@ class PayoutRequestAndSettlementTest extends TestCase
             commissionMinor: 0
         );
         $this->subledger->holdEntry($entry2->id, 'KYC review hold');
-        $this->assertSame(VendorPayableAvailabilityStatus::Held, $entry2->fresh()->availability_status);
+        $this->assertSame(PayableAvailabilityStatus::Held, $entry2->fresh()->availability_status);
 
         // Even with future maturity run, held entry remains held!
         $this->subledger->maturePendingPayables($this->tenant->id, $futureCutoff);
-        $this->assertSame(VendorPayableAvailabilityStatus::Held, $entry2->fresh()->availability_status);
+        $this->assertSame(PayableAvailabilityStatus::Held, $entry2->fresh()->availability_status);
     }
 }

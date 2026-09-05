@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Marketplace;
 
-use Modules\Marketplace\Enums\PayoutRequestStatus;
+use App\Core\Payables\Enums\PayableEntryType;
+use App\Core\Payables\Enums\PayoutRequestStatus;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Enums\VendorVerificationStatus;
 use PHPUnit\Framework\TestCase;
 
@@ -54,17 +54,17 @@ class VendorStatusMachinesTest extends TestCase
 
     public function test_vendor_payable_entry_type_polarity(): void
     {
-        $this->assertTrue(VendorPayableEntryType::Earning->isCredit());
-        $this->assertFalse(VendorPayableEntryType::Earning->isDebit());
-        $this->assertSame(1, VendorPayableEntryType::Earning->polarityMultiplier());
+        $this->assertTrue(PayableEntryType::Earning->isCredit());
+        $this->assertFalse(PayableEntryType::Earning->isDebit());
+        $this->assertSame(1, PayableEntryType::Earning->polarityMultiplier());
 
-        $this->assertTrue(VendorPayableEntryType::RefundAdjustment->isDebit());
-        $this->assertFalse(VendorPayableEntryType::RefundAdjustment->isCredit());
-        $this->assertSame(-1, VendorPayableEntryType::RefundAdjustment->polarityMultiplier());
+        $this->assertTrue(PayableEntryType::RefundAdjustment->isDebit());
+        $this->assertFalse(PayableEntryType::RefundAdjustment->isCredit());
+        $this->assertSame(-1, PayableEntryType::RefundAdjustment->polarityMultiplier());
 
-        $this->assertTrue(VendorPayableEntryType::PayoutDisbursement->isDebit());
-        $this->assertFalse(VendorPayableEntryType::PayoutDisbursement->isCredit());
-        $this->assertSame(-1, VendorPayableEntryType::PayoutDisbursement->polarityMultiplier());
+        $this->assertTrue(PayableEntryType::PayoutDisbursement->isDebit());
+        $this->assertFalse(PayableEntryType::PayoutDisbursement->isCredit());
+        $this->assertSame(-1, PayableEntryType::PayoutDisbursement->polarityMultiplier());
     }
 
     public function test_payout_request_status_transitions(): void

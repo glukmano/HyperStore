@@ -2,9 +2,15 @@
 
 declare(strict_types=1);
 
-namespace Modules\Marketplace\Enums;
+namespace App\Core\Payables\Enums;
 
-enum VendorPayableEntryType: string
+/**
+ * Beneficiary-agnostic payable-subledger entry type. Renamed from
+ * Modules\Marketplace\Enums\VendorPayableEntryType on generalization — the
+ * "Vendor" prefix no longer applied once Affiliate payables adopted the
+ * identical entry-type vocabulary.
+ */
+enum PayableEntryType: string
 {
     case Earning = 'earning';
     case ManualAdjustmentCredit = 'manual_adjustment_credit';

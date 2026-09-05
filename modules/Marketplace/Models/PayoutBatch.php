@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Models;
 
+use App\Core\Payables\Enums\PayoutBatchStatus;
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
-use Modules\Marketplace\Enums\PayoutBatchStatus;
 
 /**
  * @property int $id

@@ -2,8 +2,14 @@
 
 declare(strict_types=1);
 
-namespace Modules\Marketplace\Enums;
+namespace App\Core\Payables\Enums;
 
+/**
+ * Beneficiary-agnostic payout-request lifecycle. Shared by every payable
+ * beneficiary type (Vendor, Affiliate, ...) via AbstractPayoutOrchestrator —
+ * moved out of Modules\Marketplace because nothing about this state machine
+ * is Vendor-specific.
+ */
 enum PayoutRequestStatus: string
 {
     case Requested = 'requested';

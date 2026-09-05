@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Marketplace;
 
+use App\Core\Payables\Enums\PayableAvailabilityStatus;
+use App\Core\Payables\Enums\PayableEntryType;
 use App\Core\Routing\Exceptions\HostnameAlreadyClaimedException;
 use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
@@ -13,8 +15,6 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Modules\Catalog\Models\Product;
 use Modules\Catalog\Models\ProductVariant;
-use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorCommissionRule;
 use Modules\Marketplace\Models\VendorDomain;
@@ -352,14 +352,14 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         $entry = VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'oi_nodelete_'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 5000,
             'commission_amount_minor' => 500,
             'net_amount_minor' => 4500,
-            'availability_status' => VendorPayableAvailabilityStatus::Pending,
+            'availability_status' => PayableAvailabilityStatus::Pending,
         ]);
 
         $this->expectException(QueryException::class);
@@ -374,14 +374,14 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         $entry = VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'oi_noupdate_'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 5000,
             'commission_amount_minor' => 500,
             'net_amount_minor' => 4500,
-            'availability_status' => VendorPayableAvailabilityStatus::Pending,
+            'availability_status' => PayableAvailabilityStatus::Pending,
         ]);
 
         $this->expectException(QueryException::class);
@@ -398,14 +398,14 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
         $entry = VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendorA->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'oi_legal_'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 5000,
             'commission_amount_minor' => 500,
             'net_amount_minor' => 4500,
-            'availability_status' => VendorPayableAvailabilityStatus::Pending,
+            'availability_status' => PayableAvailabilityStatus::Pending,
         ]);
 
         // Updating availability_status, available_at, or held_reason is permitted

@@ -6,6 +6,7 @@ namespace Tests\Feature\Marketplace;
 
 use App\Core\Channels\Models\Channel;
 use App\Core\Markets\Models\Market;
+use App\Core\Payables\Enums\PayableEntryType;
 use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use Carbon\CarbonImmutable;
@@ -18,7 +19,6 @@ use Modules\Catalog\Models\Product;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Checkout\Services\CheckoutOrchestrator;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorCommissionRule;
 use Modules\Marketplace\Models\VendorListing;
@@ -342,7 +342,7 @@ class CheckoutMarketplaceIntegrationTest extends TestCase
         $this->assertDatabaseHas('vendor_payable_entries', [
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendorB->id,
-            'entry_type' => VendorPayableEntryType::Earning->value,
+            'entry_type' => PayableEntryType::Earning->value,
             'amount_minor' => 10000,
             'commission_amount_minor' => 2200,
             'net_amount_minor' => 7800,

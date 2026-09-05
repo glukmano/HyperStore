@@ -7,6 +7,9 @@ namespace Tests\Concurrency;
 use App\Core\Channels\Models\Channel;
 use App\Core\Channels\Models\StoreChannel;
 use App\Core\Markets\Models\Market;
+use App\Core\Payables\Enums\PayableAvailabilityStatus;
+use App\Core\Payables\Enums\PayableEntryType;
+use App\Core\Payables\Enums\PayoutAllocationStatus;
 use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
@@ -24,10 +27,7 @@ use Modules\Marketplace\Contracts\VendorListingCreationServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
 use Modules\Marketplace\Contracts\VendorStoreParticipationServiceInterface;
-use Modules\Marketplace\Enums\PayoutAllocationStatus;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
-use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Enums\VendorRole;
 use Modules\Marketplace\Models\Vendor;
 use Modules\Marketplace\Models\VendorCommissionRule;
@@ -340,14 +340,14 @@ try {
         VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'test_order',
             'source_uuid' => 'race-k-'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $bootstrap = $this->getBootstrapScript();
@@ -396,14 +396,14 @@ try {
         $earning = VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'test_order',
             'source_uuid' => 'race-l-'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $payoutService = app(PayoutServiceInterface::class);
@@ -650,14 +650,14 @@ try {
         VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'race-7k-'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $bootstrap = $this->getBootstrapScript();
@@ -713,14 +713,14 @@ try {
         $earning = VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'race-partial-'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $payoutService = app(PayoutServiceInterface::class);
@@ -774,14 +774,14 @@ try {
     \$entry = \\Modules\\Marketplace\\Models\\VendorPayableEntry::create([
         'tenant_id' => {$tenantId},
         'vendor_id' => {$vendorId},
-        'entry_type' => \\Modules\\Marketplace\\Enums\\VendorPayableEntryType::Earning,
+        'entry_type' => \\App\\Core\\Payables\\Enums\\PayableEntryType::Earning,
         'source_type' => 'order_item',
         'source_uuid' => '{$sourceUuid}',
         'currency' => 'EUR',
         'amount_minor' => 5000,
         'commission_amount_minor' => 500,
         'net_amount_minor' => 4500,
-        'availability_status' => \\Modules\\Marketplace\\Enums\\VendorPayableAvailabilityStatus::Available,
+        'availability_status' => \\App\\Core\\Payables\\Enums\\PayableAvailabilityStatus::Available,
     ]);
     echo 'SUCCESS:' . \$entry->id;
     exit(0);
@@ -829,14 +829,14 @@ try {
         VendorPayableEntry::create([
             'tenant_id' => $this->tenantA->id,
             'vendor_id' => $vendorForSuspension->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'order_item',
             'source_uuid' => 'race-susp-'.uniqid(),
             'currency' => 'EUR',
             'amount_minor' => 5000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 5000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $bootstrap = $this->getBootstrapScript();

@@ -4,11 +4,17 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Contracts;
 
+use App\Core\Payables\Contracts\PayableBalanceProviderInterface;
 use Carbon\CarbonImmutable;
 use Modules\Marketplace\DTOs\VendorBalanceDTO;
 use Modules\Marketplace\Models\VendorPayableEntry;
 
-interface VendorPayableSubledgerServiceInterface
+/**
+ * Extends the Core PayableBalanceProviderInterface (additive — adds
+ * getWithdrawableBalanceMinor()) so this service can be passed directly into
+ * AbstractPayoutOrchestrator without a second, parallel balance-query surface.
+ */
+interface VendorPayableSubledgerServiceInterface extends PayableBalanceProviderInterface
 {
     public function accrueEarning(
         int $tenantId,

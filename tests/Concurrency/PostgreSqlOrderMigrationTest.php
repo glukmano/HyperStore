@@ -40,6 +40,18 @@ class PostgreSqlOrderMigrationTest extends TestCase
      * later migration FK-depends on order_items). None of these paths touch
      * anything created before order_tables.
      *
+     * Phase-19 Owner Delta added two more FK-dependents: the Affiliate module
+     * (fk_aff_attr_order, fk_aff_conv_order, fk_aff_conv_items_order_item) and
+     * Customer referrals (qualifying_order_id -> orders) — both added here for
+     * the same reason as every prior entry.
+     *
+     * Also backfilled (pre-existing gap, unrelated to Phase-19): three Phase-17
+     * migrations FK-depend on `vendors` (vendor_follows, vendor_reviews,
+     * vendor_rating_aggregates, conversations) and were never added here,
+     * which broke this test's rollback step the same way — via `vendors`
+     * instead of `orders`/`order_items` — the moment any real run exercised
+     * this path after Phase-17 shipped.
+     *
      * @var list<string>
      */
     private const array TARGET_MIGRATION_PATHS = [
@@ -51,6 +63,11 @@ class PostgreSqlOrderMigrationTest extends TestCase
         'database/migrations/2026_09_03_000040_create_control_center_and_super_admin_tables.php',
         'database/migrations/2026_09_03_000050_create_phase_13_orders_fulfillment_dropshipping_tables.php',
         'database/migrations/2026_09_04_000060_create_phase_14_inventory_operations_extension_tables.php',
+        'database/migrations/2026_09_05_000011_create_customer_engagement_tables.php',
+        'database/migrations/2026_09_05_000020_create_reviews_and_qa_tables.php',
+        'database/migrations/2026_09_05_000030_create_messaging_tables.php',
+        'database/migrations/2026_09_06_000110_create_affiliate_tables.php',
+        'database/migrations/2026_09_06_000111_create_customer_referral_tables.php',
     ];
 
     private string $testDb;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Models;
 
+use App\Core\Payables\Enums\PayoutRequestStatus;
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use App\Models\User;
 use Carbon\CarbonImmutable;
@@ -12,7 +13,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Str;
-use Modules\Marketplace\Enums\PayoutRequestStatus;
 
 /**
  * @property int $id

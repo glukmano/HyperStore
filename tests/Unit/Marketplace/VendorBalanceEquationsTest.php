@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Marketplace;
 
+use App\Core\Payables\Enums\PayableAvailabilityStatus;
+use App\Core\Payables\Enums\PayableEntryType;
+use App\Core\Payables\Enums\PayoutAllocationStatus;
+use App\Core\Payables\Enums\PayoutRequestStatus;
 use App\Core\Tenancy\Models\Tenant;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Modules\Marketplace\Contracts\VendorPayableSubledgerServiceInterface;
-use Modules\Marketplace\Enums\PayoutAllocationStatus;
-use Modules\Marketplace\Enums\PayoutRequestStatus;
-use Modules\Marketplace\Enums\VendorPayableAvailabilityStatus;
-use Modules\Marketplace\Enums\VendorPayableEntryType;
 use Modules\Marketplace\Models\PayoutRequest;
 use Modules\Marketplace\Models\PayoutRequestAllocation;
 use Modules\Marketplace\Models\Vendor;
@@ -67,14 +67,14 @@ class VendorBalanceEquationsTest extends TestCase
         $earning = VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'test_order',
             'source_uuid' => 'order-item-1',
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $bal1 = $this->subledger->getBalances($this->tenant->id, $this->vendor->id, 'EUR');
@@ -115,14 +115,14 @@ class VendorBalanceEquationsTest extends TestCase
         VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::PayoutDisbursement,
+            'entry_type' => PayableEntryType::PayoutDisbursement,
             'source_type' => 'payout_request',
             'source_uuid' => $reqA->uuid,
             'currency' => 'EUR',
             'amount_minor' => 4000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 4000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         // Assert: NO double subtraction! Economic balance is 6,000, NOT 2,000!
@@ -164,14 +164,14 @@ class VendorBalanceEquationsTest extends TestCase
         VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::PayoutDisbursement,
+            'entry_type' => PayableEntryType::PayoutDisbursement,
             'source_type' => 'payout_request',
             'source_uuid' => $reqB->uuid,
             'currency' => 'EUR',
             'amount_minor' => 6000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 6000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         // Final balance is exactly zero
@@ -187,14 +187,14 @@ class VendorBalanceEquationsTest extends TestCase
         $earning = VendorPayableEntry::create([
             'tenant_id' => $this->tenant->id,
             'vendor_id' => $this->vendor->id,
-            'entry_type' => VendorPayableEntryType::Earning,
+            'entry_type' => PayableEntryType::Earning,
             'source_type' => 'test_order',
             'source_uuid' => 'order-item-2',
             'currency' => 'EUR',
             'amount_minor' => 10000,
             'commission_amount_minor' => 0,
             'net_amount_minor' => 10000,
-            'availability_status' => VendorPayableAvailabilityStatus::Available,
+            'availability_status' => PayableAvailabilityStatus::Available,
         ]);
 
         $req = PayoutRequest::create([

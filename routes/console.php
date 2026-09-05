@@ -12,3 +12,4 @@ Artisan::command('inspire', function () {
 
 Schedule::job(new PruneGuestRecentlyViewedItemsJob)->daily();
 Schedule::job(new RecomputeAllRatingAggregatesJob)->daily();
+Schedule::command('marketing:send-abandoned-cart-reminders')->hourly();

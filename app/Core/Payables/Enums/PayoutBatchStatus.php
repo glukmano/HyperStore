@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Modules\Marketplace\Enums;
+namespace App\Core\Payables\Enums;
 
 enum PayoutBatchStatus: string
 {

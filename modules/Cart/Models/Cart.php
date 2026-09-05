@@ -98,6 +98,14 @@ class Cart extends Model
     }
 
     /**
+     * @return HasMany<AbandonedCartReminderLog, $this>
+     */
+    public function abandonedReminders(): HasMany
+    {
+        return $this->hasMany(AbandonedCartReminderLog::class, 'cart_id');
+    }
+
+    /**
      * @return BelongsTo<Store, $this>
      */
     public function store(): BelongsTo
