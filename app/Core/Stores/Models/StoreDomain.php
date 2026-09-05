@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Core\Stores\Models;
 
+use App\Core\Routing\HostnameClaimService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
@@ -37,6 +38,17 @@ class StoreDomain extends Model
             'is_verified' => 'boolean',
             'canonical' => 'boolean',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::creating(function (self $model): void {
+            app(HostnameClaimService::class)->claim($model->domain, 'store', (int) $model->store_id);
+        });
+
+        static::deleted(function (self $model): void {
+            app(HostnameClaimService::class)->release($model->domain);
+        });
     }
 
     /**

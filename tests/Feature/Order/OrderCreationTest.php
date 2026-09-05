@@ -278,7 +278,10 @@ test('ready checkout produces Order with placed, pending, unfulfilled statuses a
         ->and($result->order->fulfillment_status)->toBe(FulfillmentStatus::UNFULFILLED->value)
         ->and($result->order->grand_total_minor)->toBe(5000)
         ->and($result->order->currency)->toBe('EUR')
-        ->and($result->order->checkout_id)->toBe($checkout->id);
+        ->and($result->order->checkout_id)->toBe($checkout->id)
+        // Owner Delta §10: the effective business timezone is frozen onto
+        // the Order at creation time (Market's timezone here is Europe/Berlin).
+        ->and($result->order->timezone_snapshot)->toBe('Europe/Berlin');
 
     // Items
     expect($result->order->items)->toHaveCount(1);
@@ -304,6 +307,30 @@ test('ready checkout produces Order with placed, pending, unfulfilled statuses a
         return $event->order->id === $result->order->id
             && ! property_exists($event, 'guestAccessToken');
     });
+});
+
+test('changing the Market timezone after Order creation does not change the historical Order timezone (Owner Delta §10)', function (): void {
+    $resKey = 'chk-res-tz-'.uniqid();
+    $this->invService->reserve($this->tenant->id, $resKey, $this->product->id, null, Quantity::fromString('1.0000'), $this->invContext, 60);
+    $checkout = createReadyCheckoutSession($this, userId: $this->user->id, reservationKeys: [$resKey]);
+
+    $result = $this->creationService->createFromCheckout(new OrderCreationDTO(
+        tenantId: $this->tenant->id,
+        checkoutId: $checkout->id,
+        actorType: OrderActorType::CUSTOMER,
+        actorId: $this->user->id
+    ));
+
+    expect($result->order->timezone_snapshot)->toBe('Europe/Berlin');
+    expect($result->order->displayTimezone()->getName())->toBe('Europe/Berlin');
+
+    // The Market is never hard-deleted (Owner Delta §9) — it can still
+    // have its timezone reconfigured while remaining active.
+    $this->market->update(['timezone' => 'Asia/Tokyo']);
+
+    $result->order->refresh();
+    expect($result->order->timezone_snapshot)->toBe('Europe/Berlin');
+    expect($result->order->displayTimezone()->getName())->toBe('Europe/Berlin');
 });
 
 // ---------------------------------------------------------------------------

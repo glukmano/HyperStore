@@ -69,7 +69,12 @@ final class ScoutSearchService implements SearchServiceInterface
      */
     private function searchProducts(SearchQuery $query): array
     {
-        $builder = Product::search($query->term)->where('tenant_id', $query->tenantId);
+        $builder = Product::search($query->term)
+            ->where('tenant_id', $query->tenantId)
+            ->options(['attributesToSearchOn' => [
+                'sku',
+                ...$this->localeScopedAttributes($query->locale, ['name', 'description']),
+            ]]);
 
         $paginator = $builder->paginate($query->perPage, 'page', $query->page);
         $products = collect($paginator->items());
@@ -116,7 +121,10 @@ final class ScoutSearchService implements SearchServiceInterface
      */
     private function searchCategories(SearchQuery $query): array
     {
-        $paginator = Category::search($query->term)->where('tenant_id', $query->tenantId)->paginate($query->perPage, 'page', $query->page);
+        $paginator = Category::search($query->term)
+            ->where('tenant_id', $query->tenantId)
+            ->options(['attributesToSearchOn' => $this->localeScopedAttributes($query->locale, ['name'])])
+            ->paginate($query->perPage, 'page', $query->page);
         $categories = collect($paginator->items());
 
         if ($categories->isEmpty()) {
@@ -181,7 +189,10 @@ final class ScoutSearchService implements SearchServiceInterface
      */
     private function searchPages(SearchQuery $query): array
     {
-        $paginator = Page::search($query->term)->where('tenant_id', $query->tenantId)->paginate($query->perPage, 'page', $query->page);
+        $paginator = Page::search($query->term)
+            ->where('tenant_id', $query->tenantId)
+            ->options(['attributesToSearchOn' => $this->localeScopedAttributes($query->locale, ['title', 'slug'])])
+            ->paginate($query->perPage, 'page', $query->page);
         $pages = collect($paginator->items());
 
         if ($pages->isEmpty()) {
@@ -215,7 +226,10 @@ final class ScoutSearchService implements SearchServiceInterface
      */
     private function searchBlogPosts(SearchQuery $query): array
     {
-        $paginator = BlogPost::search($query->term)->where('tenant_id', $query->tenantId)->paginate($query->perPage, 'page', $query->page);
+        $paginator = BlogPost::search($query->term)
+            ->where('tenant_id', $query->tenantId)
+            ->options(['attributesToSearchOn' => $this->localeScopedAttributes($query->locale, ['title', 'excerpt', 'slug'])])
+            ->paginate($query->perPage, 'page', $query->page);
         $posts = collect($paginator->items());
 
         if ($posts->isEmpty()) {
@@ -265,6 +279,35 @@ final class ScoutSearchService implements SearchServiceInterface
             })
             ->orderBy('pin_position')
             ->pluck('product_id');
+    }
+
+    /**
+     * Phase-18 Owner Delta §12: a search in one Locale must only rank on
+     * that Locale's own fields (plus the requested-locale prefix always
+     * takes priority over the fallback prefix, in deterministic order) —
+     * never every registered Locale's fields equally, which would let an
+     * unrelated-language translation leak relevance/outrank the correct
+     * one. The active-locale sync service (Meilisearch attribute
+     * registration) still declares every existing Locale's fields on the
+     * index; this is what scopes any single QUERY EXECUTION down to just
+     * the ones that matter for that request.
+     *
+     * @param  list<string>  $fieldPrefixes
+     * @return list<string>
+     */
+    private function localeScopedAttributes(string $locale, array $fieldPrefixes): array
+    {
+        $fallback = (string) config('app.fallback_locale', 'en');
+        $locales = $locale === $fallback ? [$locale] : [$locale, $fallback];
+
+        $attributes = [];
+        foreach ($locales as $localeCode) {
+            foreach ($fieldPrefixes as $prefix) {
+                $attributes[] = $prefix.'_'.$localeCode;
+            }
+        }
+
+        return $attributes;
     }
 
     private function recordAnalytics(SearchQuery $query, int $resultCount): ?int

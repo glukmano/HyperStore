@@ -217,6 +217,11 @@ class OrderCreationService implements OrderCreationServiceInterface
             'guest_token_hash' => $guestTokenHash,
             'currency' => $validatedSnapshot['context']['currency'],
             'locale' => $validatedSnapshot['context']['locale'],
+            // Owner Delta §10: freeze the effective business timezone at
+            // Order creation — a Market's timezone can change later while
+            // staying "alive" (never deleted), so historical Order display
+            // must prefer this snapshot, never re-resolve a mutable Market.
+            'timezone_snapshot' => $businessTz->getName(),
             'order_status' => OrderStatus::PLACED->value,
             'payment_status' => PaymentStatus::PENDING->value,
             'fulfillment_status' => FulfillmentStatus::UNFULFILLED->value,

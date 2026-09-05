@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Marketplace\Models;
 
+use App\Core\Routing\HostnameClaimService;
 use App\Core\Tenancy\Traits\BelongsToTenant;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Model;
@@ -55,6 +56,15 @@ class VendorDomain extends Model
             if (empty($model->uuid)) {
                 $model->uuid = (string) Str::uuid();
             }
+
+            // Phase-18 Owner Delta §5: same global hostname-claim registry
+            // Store/Market domains use — prevents this domain from also
+            // being claimed as a Store or Market hostname.
+            app(HostnameClaimService::class)->claim($model->domain, 'vendor', (int) $model->vendor_id);
+        });
+
+        static::deleted(function (self $model): void {
+            app(HostnameClaimService::class)->release($model->domain);
         });
     }
 

@@ -9,6 +9,7 @@ use App\Core\Context\Contracts\MarketResolverInterface;
 use App\Core\Context\Contracts\StoreContextInterface;
 use App\Core\Context\DTOs\MarketContext;
 use App\Core\Markets\Models\Market;
+use App\Core\Routing\DomainAddressingService;
 use App\Core\Stores\Models\Store;
 use Illuminate\Http\Request;
 
@@ -17,12 +18,23 @@ class MarketResolver implements MarketResolverInterface
     public function __construct(
         private readonly ?Request $request = null,
         private readonly ?StoreContextInterface $storeContext = null,
+        private readonly ?DomainAddressingService $domainAddressingService = null,
     ) {}
 
     public function resolve(): MarketContextInterface
     {
         if ($this->request === null) {
             return MarketContext::unresolved();
+        }
+
+        // Tier 0 — explicit hostname/domain mapping (Owner Delta §4/§15):
+        // a regional Market domain unambiguously identifies its Market,
+        // ranking above any query/header override.
+        if ($this->domainAddressingService !== null) {
+            $hostContext = $this->domainAddressingService->resolveHostContext($this->request->getHost());
+            if ($hostContext->market !== null && $hostContext->market->is_active) {
+                return MarketContext::from($hostContext->market->id, $hostContext->market->code);
+            }
         }
 
         $code = $this->request->header('X-Market-Code') ?? $this->request->query('market');

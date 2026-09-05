@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Marketplace;
 
+use App\Core\Routing\Exceptions\HostnameAlreadyClaimedException;
 use App\Core\Stores\Models\Store;
 use App\Core\Tenancy\Models\Tenant;
 use App\Models\User;
@@ -289,7 +290,13 @@ class PostgreSqlMarketplaceEngineIntegrityTest extends TestCase
             'verification_token' => 'tok_1',
         ]);
 
-        $this->expectException(QueryException::class);
+        // Phase-18 Owner Delta §5: the global hostname_claims registry now
+        // rejects the collision before the row-level UNIQUE(domain) on
+        // vendor_domains itself is even reached, via
+        // HostnameAlreadyClaimedException — the underlying per-table
+        // UNIQUE constraint this test originally proved still exists as a
+        // second line of defense, it's just no longer the first one hit.
+        $this->expectException(HostnameAlreadyClaimedException::class);
         VendorDomain::create([
             'tenant_id' => $this->tenantB->id,
             'vendor_id' => $this->vendorA->id,

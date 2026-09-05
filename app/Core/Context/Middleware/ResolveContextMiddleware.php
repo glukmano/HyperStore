@@ -40,7 +40,7 @@ class ResolveContextMiddleware
         $channelContext = $channelResolver->resolve();
         $this->contextManager->setChannel($channelContext);
 
-        $marketResolver = new MarketResolver($request, $storeContext);
+        $marketResolver = new MarketResolver($request, $storeContext, $this->domainService);
         $marketContext = $marketResolver->resolve();
         $this->contextManager->setMarket($marketContext);
 

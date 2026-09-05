@@ -22,6 +22,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property bool $marketing_opt_in
  * @property ?string $birthday
  * @property ?array<string, mixed> $notification_preferences
+ * @property ?string $preferred_locale
+ * @property ?string $preferred_currency
+ * @property ?string $preferred_timezone
  */
 class CustomerProfile extends Model
 {
@@ -33,6 +36,9 @@ class CustomerProfile extends Model
         'marketing_opt_in',
         'birthday',
         'notification_preferences',
+        'preferred_locale',
+        'preferred_currency',
+        'preferred_timezone',
     ];
 
     /**

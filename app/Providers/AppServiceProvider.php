@@ -9,6 +9,10 @@ use App\Core\Audit\Contracts\AuditManagerInterface;
 use App\Core\Channels\Contracts\StoreChannelEligibilityInterface;
 use App\Core\Channels\Services\StoreChannelEligibilityService;
 use App\Core\Context\ContextManager;
+use App\Core\Context\Contracts\GeoProviderInterface;
+use App\Core\Context\Contracts\RegionalPreferenceProviderInterface;
+use App\Core\Context\Services\NullGeoProvider;
+use App\Core\Context\Services\TrustedHeaderGeoProvider;
 use App\Core\Customers\CustomerScopeService;
 use App\Core\Features\Contracts\FeatureManagerInterface;
 use App\Core\Features\FeatureManager;
@@ -58,6 +62,7 @@ use Modules\Cms\DTOs\BlockTypeDefinition;
 use Modules\Customers\Listeners\CheckBackInStockSubscriptions;
 use Modules\Customers\Listeners\CheckPriceDropSubscriptions;
 use Modules\Customers\Listeners\RecordGiftRegistryPurchasesOnOrderCompletion;
+use Modules\Customers\Services\CustomerRegionalPreferenceProvider;
 use Modules\Inventory\Events\StockReplenished;
 use Modules\Order\Events\OrderStatusChanged;
 use Modules\Pricing\Events\PriceChanged;
@@ -89,6 +94,18 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->scoped(ContextManager::class);
         $this->app->singleton(LocaleManagerInterface::class, LocaleManager::class);
+        $this->app->bind(
+            RegionalPreferenceProviderInterface::class,
+            CustomerRegionalPreferenceProvider::class
+        );
+        $this->app->singleton(GeoProviderInterface::class, function () {
+            $configured = (array) config('platform.trusted_geo_proxies', []);
+            $header = config('platform.geo_country_header');
+
+            return ($configured !== [] && is_string($header) && $header !== '')
+                ? new TrustedHeaderGeoProvider
+                : new NullGeoProvider;
+        });
         $this->app->singleton(FeatureManagerInterface::class, FeatureManager::class);
         $this->app->singleton(AuditManagerInterface::class, AuditManager::class);
         $this->app->singleton(DomainAddressingService::class);
@@ -186,6 +203,50 @@ class AppServiceProvider extends ServiceProvider
             context: 'tenant',
             icon: '📡',
             order: 30,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-languages',
+            label: 'Languages',
+            routeName: 'control-center.platform.languages',
+            group: 'Platform',
+            permission: 'locales.view',
+            context: 'tenant',
+            icon: '🈯',
+            order: 32,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-countries',
+            label: 'Countries',
+            routeName: 'control-center.platform.countries',
+            group: 'Platform',
+            permission: 'countries.view',
+            context: 'tenant',
+            icon: '🗺️',
+            order: 34,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-currencies',
+            label: 'Currencies',
+            routeName: 'control-center.platform.currencies',
+            group: 'Platform',
+            permission: 'currencies.view',
+            context: 'tenant',
+            icon: '💱',
+            order: 36,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-domains',
+            label: 'Domains',
+            routeName: 'control-center.platform.domains',
+            group: 'Platform',
+            permission: 'domains.view',
+            context: 'tenant',
+            icon: '🔗',
+            order: 38,
         ));
 
         $navigation->register(new NavigationItem(

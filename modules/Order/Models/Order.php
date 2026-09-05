@@ -86,6 +86,7 @@ class Order extends Model
         'checkout_id',
         'currency',
         'locale',
+        'timezone_snapshot',
         'order_status',
         'payment_status',
         'fulfillment_status',
@@ -259,5 +260,23 @@ class Order extends Model
     public function isFulfilled(): bool
     {
         return $this->fulfillment_status === FulfillmentStatus::FULFILLED->value;
+    }
+
+    /**
+     * Owner Delta §10: historical Order display must prefer the frozen
+     * timezone_snapshot, never re-resolve a mutable Market/Store timezone
+     * — a Market can change its timezone while remaining "alive" (Markets
+     * are never hard-deleted), and that must not silently reinterpret an
+     * already-placed Order's timestamps.
+     */
+    public function displayTimezone(): \DateTimeZone
+    {
+        $identifier = $this->timezone_snapshot ?? 'UTC';
+
+        try {
+            return new \DateTimeZone($identifier);
+        } catch (\Throwable) {
+            return new \DateTimeZone('UTC');
+        }
     }
 }

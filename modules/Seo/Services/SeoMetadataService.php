@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Modules\Seo\Services;
 
+use App\Core\Markets\Models\Market;
+use App\Core\ReferenceData\Models\Language;
 use Modules\Catalog\Models\Product;
 use Modules\Catalog\Models\ProductStoreListing;
 use Modules\Cms\Models\BlogPost;
@@ -108,6 +110,56 @@ final class SeoMetadataService
         }
 
         $urls['x-default'] = $urlForLocale(config('app.fallback_locale', 'en'));
+
+        return $urls;
+    }
+
+    /**
+     * Phase-18 Owner Delta §7/§20: closes the seam above using the real
+     * Market/Locale model instead of the static config array. Only emits
+     * an entry for a Locale that is BOTH an active member of the resolved
+     * Market AND genuinely has a translation for this exact resource —
+     * $urlForLocale must return null for the latter case (it holds the
+     * resource, this service does not), never a fabricated/guessed URL.
+     * x-default points at the Market's own default Locale, a real
+     * resolvable URL, never a global config guess.
+     *
+     * @param  callable(string): ?string  $urlForLocale
+     * @return array<string, string>
+     */
+    public function resolveAlternateLocaleUrlsForMarket(?Market $market, callable $urlForLocale): array
+    {
+        if ($market === null) {
+            return $this->resolveAlternateLocaleUrls($urlForLocale);
+        }
+
+        $memberLocaleCodes = $market->marketLanguages()->pluck('locale_code');
+
+        $urls = [];
+        foreach ($memberLocaleCodes as $localeCode) {
+            $isActive = Language::query()->where('code', $localeCode)->where('is_active', true)->exists();
+            if (! $isActive) {
+                continue;
+            }
+
+            $url = $urlForLocale($localeCode);
+            if ($url === null) {
+                continue;
+            }
+
+            $urls[$localeCode] = $url;
+        }
+
+        if ($urls === []) {
+            return [];
+        }
+
+        $defaultLocale = $market->marketLanguages()->where('is_default', true)->value('locale_code') ?? $market->default_locale_code;
+        $defaultUrl = $urlForLocale($defaultLocale);
+
+        if ($defaultUrl !== null) {
+            $urls['x-default'] = $defaultUrl;
+        }
 
         return $urls;
     }

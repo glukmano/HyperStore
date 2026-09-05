@@ -22,7 +22,7 @@
     </x-ui.card>
 
     <x-ui.card title="Existing Markets">
-        <x-ui.table :headers="['Name', 'Code', 'Currency', 'Locale', 'Timezone', 'Status']" :empty="$markets->isEmpty()" emptyMessage="No markets yet.">
+        <x-ui.table :headers="['Name', 'Code', 'Currency', 'Locale', 'Timezone', 'Status', '']" :empty="$markets->isEmpty()" emptyMessage="No markets yet.">
             @foreach ($markets as $market)
                 <tr wire:key="market-{{ $market->id }}">
                     <td>{{ $market->name }}</td>
@@ -31,6 +31,11 @@
                     <td>{{ $market->default_locale_code }}</td>
                     <td>{{ $market->timezone }}</td>
                     <td><x-ui.badge variant="{{ $market->is_active ? 'success' : 'ghost' }}">{{ $market->is_active ? 'Active' : 'Inactive' }}</x-ui.badge></td>
+                    <td>
+                        @if($market->is_active)
+                            <x-ui.button wire:click="deactivateMarket({{ $market->id }})" variant="ghost" size="sm">Deactivate</x-ui.button>
+                        @endif
+                    </td>
                 </tr>
             @endforeach
         </x-ui.table>

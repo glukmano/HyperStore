@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Core\Context\Middleware\ResolveContextMiddleware;
 use App\Core\Localization\Middleware\SetLocaleAndDirectionMiddleware;
+use App\Core\Localization\ValueObjects\LocaleCode;
 use App\Core\Plugin\Livewire\PluginDetail;
 use App\Core\Plugin\Livewire\PluginList;
 use App\Core\Stores\Contracts\StoreCreationServiceInterface;
@@ -31,7 +32,11 @@ use App\Http\Controllers\Auth\RegisteredUserController;
 use App\Http\Controllers\Auth\VerifyEmailController;
 use App\Http\Controllers\Storefront\MessageAttachmentController;
 use App\Livewire\ControlCenter\ChannelManager;
+use App\Livewire\ControlCenter\CountryManager;
+use App\Livewire\ControlCenter\CurrencyManager;
 use App\Livewire\ControlCenter\DashboardOverview;
+use App\Livewire\ControlCenter\DomainManager;
+use App\Livewire\ControlCenter\LanguageManager;
 use App\Livewire\ControlCenter\MarketManager;
 use App\Livewire\ControlCenter\StoreManager;
 use App\Livewire\ControlCenter\TenantSettingsManager;
@@ -110,38 +115,59 @@ Route::middleware(['web', SetLocaleAndDirectionMiddleware::class, ResolveContext
 });
 
 // ── Storefront (public, theme-rendered) ────────────────────────────────────────
-Route::middleware([SetLocaleAndDirectionMiddleware::class, ResolveStorefrontThemeMiddleware::class])
-    ->group(function (): void {
-        Route::get('/', Home::class)->name('storefront.home');
-        Route::get('/c/{code}', CategoryPage::class)->name('storefront.category');
-        Route::get('/p/{sku}', ProductPage::class)->name('storefront.product');
-        Route::get('/cart', CartPage::class)->name('storefront.cart');
-        Route::get('/checkout', CheckoutPage::class)->name('storefront.checkout');
-        Route::get('/order/confirmation/{orderNumber}', OrderConfirmationPage::class)->name('storefront.order-confirmation');
-        Route::get('/order/lookup', OrderLookupPage::class)->name('storefront.order-lookup');
-        Route::get('/vendor/{slug}', VendorStorefrontPage::class)->name('storefront.vendor');
-        Route::get('/search', SearchResultsPage::class)->name('storefront.search');
-        Route::get('/pages/{slug}', CmsPage::class)->name('storefront.cms-page');
+// Phase-18 Owner Delta §3: Context resolves before Theme — ResolveContextMiddleware
+// (Tenant→Store→Channel→Market→Locale→Currency→User) now runs first on the
+// storefront path too, and ResolveStorefrontThemeMiddleware only ever consumes
+// the already-resolved Store; SetLocaleAndDirectionMiddleware's basic
+// query/Accept-Language-only resolution is redundant here now that
+// ResolveContextMiddleware's LocaleResolver (Market-aware, DB-driven
+// direction) covers this route group.
+$storefrontRoutes = function (): void {
+    Route::get('/', Home::class)->name('storefront.home');
+    Route::get('/c/{code}', CategoryPage::class)->name('storefront.category');
+    Route::get('/p/{sku}', ProductPage::class)->name('storefront.product');
+    Route::get('/cart', CartPage::class)->name('storefront.cart');
+    Route::get('/checkout', CheckoutPage::class)->name('storefront.checkout');
+    Route::get('/order/confirmation/{orderNumber}', OrderConfirmationPage::class)->name('storefront.order-confirmation');
+    Route::get('/order/lookup', OrderLookupPage::class)->name('storefront.order-lookup');
+    Route::get('/vendor/{slug}', VendorStorefrontPage::class)->name('storefront.vendor');
+    Route::get('/search', SearchResultsPage::class)->name('storefront.search');
+    Route::get('/pages/{slug}', CmsPage::class)->name('storefront.cms-page');
 
-        // Guest-or-authenticated Customer Engagement surfaces (Phase-17 delta).
-        Route::get('/compare', ComparePage::class)->name('storefront.compare');
-        Route::get('/registry/{shareToken}', GiftRegistryPublicPage::class)->name('registry.public');
-        Route::get('/message-attachments/{attachment}', [MessageAttachmentController::class, 'show'])
-            ->middleware('auth')
-            ->name('storefront.message-attachments.show');
+    // Guest-or-authenticated Customer Engagement surfaces (Phase-17 delta).
+    Route::get('/compare', ComparePage::class)->name('storefront.compare');
+    Route::get('/registry/{shareToken}', GiftRegistryPublicPage::class)->name('registry.public');
+    Route::get('/message-attachments/{attachment}', [MessageAttachmentController::class, 'show'])
+        ->middleware('auth')
+        ->name('storefront.message-attachments.show');
 
-        Route::get('/account/wishlist', WishlistPage::class)->name('account.wishlist');
-        Route::get('/account/wishlist/shared/{shareToken}', WishlistPage::class)->name('account.wishlist.shared');
-        Route::get('/account/recently-viewed', RecentlyViewedPage::class)->name('account.recently-viewed');
+    Route::get('/account/wishlist', WishlistPage::class)->name('account.wishlist');
+    Route::get('/account/wishlist/shared/{shareToken}', WishlistPage::class)->name('account.wishlist.shared');
+    Route::get('/account/recently-viewed', RecentlyViewedPage::class)->name('account.recently-viewed');
 
-        Route::middleware('auth')->prefix('account')->name('account.')->group(function (): void {
-            Route::get('/gift-registries', GiftRegistriesPage::class)->name('gift-registries.index');
-            Route::get('/gift-registries/{registry}', GiftRegistryEditor::class)->name('gift-registries.show');
-            Route::get('/messages', MessagesInbox::class)->name('messages.index');
-            Route::get('/messages/{conversation}', ConversationThread::class)->name('messages.show');
-            Route::get('/notifications', NotificationPreferencesPage::class)->name('notifications');
-        });
+    Route::middleware('auth')->prefix('account')->name('account.')->group(function (): void {
+        Route::get('/gift-registries', GiftRegistriesPage::class)->name('gift-registries.index');
+        Route::get('/gift-registries/{registry}', GiftRegistryEditor::class)->name('gift-registries.show');
+        Route::get('/messages', MessagesInbox::class)->name('messages.index');
+        Route::get('/messages/{conversation}', ConversationThread::class)->name('messages.show');
+        Route::get('/notifications', NotificationPreferencesPage::class)->name('notifications');
     });
+};
+
+Route::middleware([ResolveContextMiddleware::class, ResolveStorefrontThemeMiddleware::class])
+    ->group($storefrontRoutes);
+
+// Phase-18 Owner Delta §7: a real, distinct, crawlable URL per Locale when
+// multiple Locales share one hostname (a Market-domain host that already
+// uniquely resolves one Locale keeps using the bare URL above — this
+// prefixed mirror is the "second legitimate strategy" the localized-URL
+// seam supports, never a cookie-only/same-URL illusion of a canonical
+// per-locale page).
+Route::middleware([ResolveContextMiddleware::class, ResolveStorefrontThemeMiddleware::class])
+    ->prefix('{locale}')
+    ->where(['locale' => LocaleCode::routePattern()])
+    ->name('localized.')
+    ->group($storefrontRoutes);
 
 // ── Control Center · Platform Admin Screens (Stores, Markets, Channels, Settings, Users) ──
 Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, ResolveContextMiddleware::class])
@@ -151,6 +177,10 @@ Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, Resolv
         Route::get('/stores', StoreManager::class)->name('stores');
         Route::get('/markets', MarketManager::class)->name('markets');
         Route::get('/channels', ChannelManager::class)->name('channels');
+        Route::get('/languages', LanguageManager::class)->name('languages');
+        Route::get('/countries', CountryManager::class)->name('countries');
+        Route::get('/currencies', CurrencyManager::class)->name('currencies');
+        Route::get('/domains', DomainManager::class)->name('domains');
         Route::get('/settings', TenantSettingsManager::class)->name('settings');
         Route::get('/users', UserRoleManager::class)->name('users');
 
