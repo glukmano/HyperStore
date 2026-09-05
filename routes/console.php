@@ -13,3 +13,6 @@ Artisan::command('inspire', function () {
 Schedule::job(new PruneGuestRecentlyViewedItemsJob)->daily();
 Schedule::job(new RecomputeAllRatingAggregatesJob)->daily();
 Schedule::command('marketing:send-abandoned-cart-reminders')->hourly();
+Schedule::command('auctions:process-lifecycle')->everyMinute();
+Schedule::command('bookings:expire-holds')->everyMinute();
+Schedule::command('bookings:generate-slots')->daily();

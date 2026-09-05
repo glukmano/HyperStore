@@ -7,6 +7,8 @@ namespace Modules\Checkout\Services;
 use App\Core\SuperAdmin\Contracts\TenantLicenseServiceInterface;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Modules\B2B\Exceptions\QuoteCheckoutCouponNotAllowedException;
+use Modules\Booking\Contracts\BookingHoldHookInterface;
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
@@ -289,18 +291,37 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                     }
                     $this->assertFreshCart($lockedSession);
 
-                    $this->assertValidShippingQuote($lockedSession);
+                    // Owner Delta §7: a system-generated Auction winner
+                    // Checkout never reserves inventory a second time — the
+                    // lot was already reserved at Auction ACTIVATION and
+                    // handed off into this session's own
+                    // reservation_references at winner-Checkout-creation
+                    // time. Reserving again here for the same already-fully-
+                    // reserved quantity would simply fail (no additional
+                    // stock available) or double-reserve.
+                    if ($lockedSession->auction_id === null) {
+                        $this->assertValidShippingQuote($lockedSession);
 
-                    $dest = $lockedSession->shipping_address !== null
-                        ? CheckoutAddress::fromArray($lockedSession->shipping_address)
-                        : new CheckoutAddress(recipient: 'Customer', streetLines: ['Main St'], city: 'Zurich', countryCode: 'CH');
+                        $dest = $lockedSession->shipping_address !== null
+                            ? CheckoutAddress::fromArray($lockedSession->shipping_address)
+                            : new CheckoutAddress(recipient: 'Customer', streetLines: ['Main St'], city: 'Zurich', countryCode: 'CH');
 
-                    $quoteRes = $this->shippingOrchestrator->quote($lockedSession->cart, $dest);
-                    $plan = $quoteRes['fulfillment_plan'];
+                        $quoteRes = $this->shippingOrchestrator->quote($lockedSession->cart, $dest);
+                        $plan = $quoteRes['fulfillment_plan'];
 
-                    $acquiredRefs = $this->reservationOrchestrator->reserve($lockedSession, $plan);
+                        $acquiredRefs = $this->reservationOrchestrator->reserve($lockedSession, $plan);
 
-                    $lockedSession->reservation_references = $acquiredRefs;
+                        $lockedSession->reservation_references = $acquiredRefs;
+                    }
+
+                    // Phase-20 Booking Owner Delta §5: holds are created at
+                    // this EXACT same reservation step, for any Cart line
+                    // carrying a booking_slot_id — never a separate ad-hoc
+                    // moment. Non-invasive: zero hard dependency on the
+                    // optional Booking module.
+                    if (app()->bound(BookingHoldHookInterface::class)) {
+                        app(BookingHoldHookInterface::class)->createHoldsForCheckout($lockedSession);
+                    }
 
                     if (in_array($lockedSession->state, ['shipping_ready', 'fulfillment_ready', 'address_ready', 'customer_info_ready'], true)) {
                         $this->stateMachine->assertCanTransition($lockedSession, 'inventory_reserved');
@@ -397,6 +418,17 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 $this->assertFreshCart($lockedSession);
 
                 $cart = $lockedSession->cart;
+
+                // Owner Delta §4/§20: an accepted-Quote checkout does not
+                // stack additional marketing/Loyalty coupon discount on top
+                // of an already-negotiated price, by default. Checked via
+                // the cart_lines.quote_line_id column directly — no hard
+                // dependency on the optional B2B module's models.
+                $cart->loadMissing('lines');
+                if ($cart->lines->contains(fn ($l) => $l->quote_line_id !== null)) {
+                    throw QuoteCheckoutCouponNotAllowedException::forCart($cart->id);
+                }
+
                 $this->cartService->applyCoupon($cart, $couponCode);
                 $cart->refresh();
                 $lockedSession->evaluated_cart_version = $cart->version;
@@ -760,6 +792,14 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 if (app()->bound(LoyaltyCheckoutRedemptionServiceInterface::class)) {
                     try {
                         app(LoyaltyCheckoutRedemptionServiceInterface::class)->cancelForCheckout($lockedSession->uuid, $lockedSession->tenant_id);
+                    } catch (\Throwable $e) {
+                        report($e);
+                    }
+                }
+
+                if (app()->bound(BookingHoldHookInterface::class)) {
+                    try {
+                        app(BookingHoldHookInterface::class)->cancelHoldsForCheckout($lockedSession);
                     } catch (\Throwable $e) {
                         report($e);
                     }

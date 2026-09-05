@@ -25,6 +25,7 @@ class DatabaseSeeder extends Seeder
             PluginPermissionSeeder::class,
             Phase17PermissionSeeder::class,
             Phase19PermissionSeeder::class,
+            Phase20PermissionSeeder::class,
         ]);
 
         User::firstOrCreate(

@@ -9,6 +9,10 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Modules\Affiliate\Contracts\AffiliateAttributionServiceInterface;
+use Modules\Auctions\Contracts\AuctionOrderSettlementHookInterface;
+use Modules\B2B\Contracts\CompanyOrderCreditHookInterface;
+use Modules\Booking\Contracts\BookingOrderConfirmationHookInterface;
+use Modules\Cart\Models\CartLine;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Inventory\Contracts\InventoryReservationServiceInterface;
 use Modules\Inventory\Enums\ReservationOwnerType;
@@ -245,14 +249,40 @@ class OrderCreationService implements OrderCreationServiceInterface
             'placed_at' => now(),
         ]);
 
+        // 5.5. Phase-20 B2B Owner Delta §2: the EXACT credit-reservation
+        // boundary — inside THIS transaction, after the Order's uuid/
+        // grand_total_minor exist, before it commits. Unlike Affiliate's
+        // attribution hook, an InsufficientCompanyCreditException here is
+        // NEVER caught — it must propagate and roll back the entire
+        // Order-creation transaction.
+        if (app()->bound(CompanyOrderCreditHookInterface::class)) {
+            app(CompanyOrderCreditHookInterface::class)->applyCompanyContextAndReserveCredit($order);
+        }
+
         // 6. Create Order Items from validated lines
         foreach ($validatedSnapshot['lines'] as $line) {
+            // Phase-20 Owner Delta: freezes which QuoteLine (B2B §3) and/or
+            // Auction (§7) this historical OrderItem traces back to —
+            // resolved from the originating CartLine's own plain
+            // quote_line_id column / metadata json, never a client input.
+            $originatingCartLine = CartLine::find($line['cart_line_id']);
+            $lineMetadata = $originatingCartLine !== null ? ($originatingCartLine->metadata ?? []) : [];
+
             OrderItem::create([
                 'uuid' => (string) Str::uuid(),
                 'tenant_id' => $dto->tenantId,
                 'order_id' => $order->id,
                 'product_id' => $line['product_id'],
                 'variant_id' => $line['variant_id'],
+                'quote_line_id' => $originatingCartLine?->quote_line_id,
+                'auction_id' => $lineMetadata['auction_id'] ?? null,
+                'winning_bid_id' => $lineMetadata['winning_bid_id'] ?? null,
+                'winning_bid_amount_minor' => $lineMetadata['winning_bid_amount_minor'] ?? null,
+                'auction_currency_snapshot' => $lineMetadata['auction_currency_snapshot'] ?? null,
+                'reserve_met' => $lineMetadata['reserve_met'] ?? null,
+                'booking_id' => $lineMetadata['booking_id'] ?? null,
+                'booking_slot_starts_at_snapshot' => $lineMetadata['booking_slot_starts_at_snapshot'] ?? null,
+                'booking_timezone_snapshot' => $lineMetadata['booking_timezone_snapshot'] ?? null,
                 'sku_snapshot' => $line['sku_snapshot'],
                 'name_snapshot' => $line['name_snapshot'],
                 'product_type_snapshot' => $line['product_type_snapshot'],
@@ -334,6 +364,28 @@ class OrderCreationService implements OrderCreationServiceInterface
                     : null;
 
                 app(AffiliateAttributionServiceInterface::class)->freezeAttributionForOrder($order, $visitorTokenHash, $couponCode);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
+
+        // 10. Phase-20 Auctions: transition the Auction to settled now that
+        // its winner's Order really exists. Non-blocking — the historical
+        // OrderItem snapshot fields were already frozen above regardless of
+        // whether this status transition succeeds.
+        if (app()->bound(AuctionOrderSettlementHookInterface::class)) {
+            try {
+                app(AuctionOrderSettlementHookInterface::class)->settleFromOrder($order);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
+
+        // 11. Phase-20 Booking: transitions any held Booking(s) for this
+        // Checkout to confirmed, now that a real paying Order exists.
+        if (app()->bound(BookingOrderConfirmationHookInterface::class)) {
+            try {
+                app(BookingOrderConfirmationHookInterface::class)->confirmFromOrder($order);
             } catch (Throwable $e) {
                 report($e);
             }

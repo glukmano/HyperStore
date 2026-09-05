@@ -23,6 +23,7 @@ use Modules\Catalog\Models\ProductVariant;
  * @property array<string, mixed>|null $customizations
  * @property bool $is_price_stale
  * @property array<string, mixed>|null $metadata
+ * @property int|null $quote_line_id
  * @property-read Cart $cart
  * @property-read Product $product
  * @property-read ProductVariant|null $variant
@@ -42,6 +43,7 @@ class CartLine extends Model
         'options',
         'customizations',
         'metadata',
+        'quote_line_id',
     ];
 
     protected $casts = [

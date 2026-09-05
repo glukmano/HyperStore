@@ -35,6 +35,7 @@ use Modules\Cart\Models\Cart;
  * @property array<string, mixed>|null $pricing_snapshot
  * @property array<string, mixed>|null $tax_snapshot
  * @property array<string, mixed>|null $promotion_snapshot
+ * @property int|null $auction_id
  * @property array<int, array<string, mixed>>|null $reservation_references
  * @property array<string, mixed>|null $fulfillment_snapshot
  * @property array<string, mixed>|null $ready_snapshot
@@ -79,6 +80,7 @@ class CheckoutSession extends Model
         'evaluated_cart_version',
         'version',
         'expires_at',
+        'auction_id',
     ];
 
     protected $casts = [

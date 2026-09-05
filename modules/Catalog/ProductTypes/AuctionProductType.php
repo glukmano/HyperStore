@@ -32,4 +32,14 @@ class AuctionProductType extends ProductTypeDefinition
     {
         return true;
     }
+
+    public function requiresShipping(): bool
+    {
+        return true;
+    }
+
+    public function getStorefrontTemplate(): string
+    {
+        return 'auction';
+    }
 }

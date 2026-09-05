@@ -13,8 +13,10 @@ use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Checkout\Services\CheckoutOwnershipService;
 use Modules\Order\Contracts\OrderCreationServiceInterface;
 use Modules\Order\DTOs\OrderCreationDTO;
+use Modules\Order\Enums\PaymentStatus as OrderPaymentStatus;
 use Modules\Payment\DTOs\InitiatePaymentDTO;
 use Modules\Payment\Enums\PaymentActionType;
 use Modules\Payment\Enums\PaymentStatus;
@@ -67,6 +69,31 @@ class CheckoutPage extends Component
     public ?array $paymentResult = null;
 
     public ?string $paymentErrorMessage = null;
+
+    /**
+     * Phase-20 Auctions Owner Delta §7: resumes a system-generated winner
+     * Checkout session (created by AuctionSettlementService, already
+     * bound to auction_id + a handed-off Inventory reservation) rather
+     * than starting a fresh one from the active Cart. Ownership-verified
+     * exactly like every other session access — any Customer other than
+     * the winning bidder is rejected.
+     */
+    public function mount(?int $resumeCheckoutSessionId = null): void
+    {
+        if ($resumeCheckoutSessionId === null) {
+            return;
+        }
+
+        $session = CheckoutSession::find($resumeCheckoutSessionId);
+        if ($session === null) {
+            abort(404);
+        }
+
+        app(CheckoutOwnershipService::class)->verifyOwnership($session);
+
+        $this->checkoutSessionId = $session->id;
+        $this->step = 'customer';
+    }
 
     public function startCheckout(CartServiceInterface $cartService, CheckoutOrchestratorInterface $orchestrator): void
     {
@@ -191,6 +218,15 @@ class CheckoutPage extends Component
             $this->placedOrderNumber = $order->order_number;
             $this->placedOrderAmountMinor = $order->grand_total_minor;
             $this->placedOrderCurrency = $order->currency;
+
+            // Phase-20 B2B: an Order placed on Company payment terms is
+            // invoiced, not paid at Checkout — never initiate a gateway
+            // payment for it.
+            if ($order->payment_status === OrderPaymentStatus::INVOICED->value) {
+                $this->redirect(route('storefront.order-confirmation', ['orderNumber' => $this->placedOrderNumber]), navigate: true);
+
+                return;
+            }
         }
 
         $this->initiatePaymentForPlacedOrder($paymentInitiation);

@@ -3,5 +3,5 @@
     "version": "1.0.0",
     "extends": null,
     "description": "Built-in fallback storefront theme. Simple, functional, professional, responsive. Tailwind/daisyUI defaults only.",
-    "supported_product_type_templates": []
+    "supported_product_type_templates": ["auction", "booking"]
 }

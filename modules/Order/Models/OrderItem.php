@@ -88,6 +88,15 @@ class OrderItem extends Model
         'commission_rule_ref',
         'selected_options_snapshot',
         'customization_metadata_snapshot',
+        'quote_line_id',
+        'auction_id',
+        'winning_bid_id',
+        'winning_bid_amount_minor',
+        'auction_currency_snapshot',
+        'reserve_met',
+        'booking_id',
+        'booking_slot_starts_at_snapshot',
+        'booking_timezone_snapshot',
     ];
 
     protected $casts = [
@@ -95,6 +104,9 @@ class OrderItem extends Model
         'unit_price_minor' => 'integer',
         'subtotal_minor' => 'integer',
         'line_discount_minor' => 'integer',
+        'winning_bid_amount_minor' => 'integer',
+        'reserve_met' => 'boolean',
+        'booking_slot_starts_at_snapshot' => 'immutable_datetime',
         'allocated_cart_discount_minor' => 'integer',
         'discount_minor' => 'integer',
         'taxable_amount_minor' => 'integer',

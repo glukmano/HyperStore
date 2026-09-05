@@ -10,6 +10,7 @@ use Carbon\Carbon;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
+use Modules\Auctions\Contracts\AuctionEligibilityGateInterface;
 use Modules\Cart\Contracts\CartServiceInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
@@ -156,6 +157,17 @@ class CartService implements CartServiceInterface
 
         if ($product->status !== 'active') {
             throw new InvalidArgumentException("Product [{$product->id}] is not purchasable (status: {$product->status}).");
+        }
+
+        // Phase-20 Auctions Owner Delta §7: an actively-auctioned Product
+        // cannot be added through the ordinary path. The ONE exception is
+        // the line the Auction module's own AuctionSettlementService
+        // constructs for the winning bidder's system-generated Checkout —
+        // identifiable ONLY by its own server-authored (never
+        // client-suppliable) `metadata.auction_id`. Guarded so Cart has
+        // zero hard dependency on the optional Auctions module.
+        if (! isset($itemData->metadata['auction_id']) && app()->bound(AuctionEligibilityGateInterface::class)) {
+            app(AuctionEligibilityGateInterface::class)->assertEligibleForCart($cart->tenant_id, $itemData->productId);
         }
 
         if ($itemData->variantId !== null) {

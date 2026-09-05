@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Modules\Checkout\Services;
 
+use Modules\B2B\Contracts\CustomerGroupResolverInterface;
+use Modules\B2B\Contracts\QuoteLinePriceResolverInterface;
 use Modules\Cart\Models\Cart;
 use Modules\Cart\Models\CartLine;
 use Modules\Checkout\DTOs\CheckoutAddress;
@@ -48,13 +50,28 @@ class CheckoutPricingOrchestrator
         $cart->loadMissing('lines.product');
         $currency = $cart->currency;
 
+        // Owner Delta / B.8: a B2B Company's assigned CustomerGroup is the
+        // only way negotiated wholesale/tier pricing reaches the live
+        // Checkout pricing pass — resolved from CompanyUser (the sole
+        // membership source of truth), guarded so Checkout has zero hard
+        // dependency on the optional B2B module. A non-B2B cart resolves
+        // null, exactly as before this wiring existed.
+        $customerGroupId = null;
+        if (app()->bound(CustomerGroupResolverInterface::class)) {
+            try {
+                $customerGroupId = app(CustomerGroupResolverInterface::class)->resolveForUser($cart->tenant_id, $cart->user_id);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
         $pricingCtx = new PricingContext(
             tenantId: $cart->tenant_id,
             currency: $currency,
             storeId: $cart->store_id,
             marketId: $cart->market_id,
             channelId: $cart->channel_id,
-            customerGroupId: null
+            customerGroupId: $customerGroupId
         );
 
         // 1. Calculate merchandise lines using PriceResolver with exact fractional quantity support
@@ -70,22 +87,54 @@ class CheckoutPricingOrchestrator
             ->where('is_default', true)
             ->first();
 
+        // Owner Delta §3/§4: negotiated B2B Quote pricing is resolved
+        // ENTIRELY server-side here, never from any client-suppliable
+        // input. A Cart with no quote-derived lines gets an empty map and
+        // is byte-for-byte unaffected. Guarded so Checkout has zero hard
+        // dependency on the optional B2B module.
+        $quoteNegotiatedPrices = [];
+        if (app()->bound(QuoteLinePriceResolverInterface::class)) {
+            try {
+                $quoteNegotiatedPrices = app(QuoteLinePriceResolverInterface::class)->resolveNegotiatedPricesForCart($cart);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+        }
+
         foreach ($cart->lines as $line) {
             /** @var CartLine $line */
             $qtyStr = (string) $line->quantity;
 
-            $pItem = new PricingItem(
-                productId: $line->product_id,
-                variantId: $line->variant_id,
-                quantity: $qtyStr
-            );
+            $auctionWinningPriceMinor = $line->metadata['winning_bid_amount_minor'] ?? null;
 
-            $priceResult = $this->priceResolver->resolve($pItem, $pricingCtx);
-            if ($priceResult === null) {
-                throw PriceUnavailableException::forProduct($line->product_id, $line->variant_id);
+            if (array_key_exists($line->id, $quoteNegotiatedPrices)) {
+                // A negotiated line's price is authoritative on its own —
+                // it never falls back to (or is validated against) the
+                // normal PriceResolver, since the whole point of a Quote is
+                // that the standard catalog price may not even apply here.
+                $unitPrice = MoneyValue::fromMinor($quoteNegotiatedPrices[$line->id], $currency);
+            } elseif (is_int($auctionWinningPriceMinor)) {
+                // Phase-20 Auctions Owner Delta §7: the winner's price is
+                // the frozen winning bid amount, read directly from this
+                // system-generated Cart line's own metadata — never the
+                // normal PriceResolver (an Auction Product has no
+                // PriceBook price at all).
+                $unitPrice = MoneyValue::fromMinor($auctionWinningPriceMinor, $currency);
+            } else {
+                $pItem = new PricingItem(
+                    productId: $line->product_id,
+                    variantId: $line->variant_id,
+                    quantity: $qtyStr
+                );
+
+                $priceResult = $this->priceResolver->resolve($pItem, $pricingCtx);
+                if ($priceResult === null) {
+                    throw PriceUnavailableException::forProduct($line->product_id, $line->variant_id);
+                }
+
+                $unitPrice = $priceResult->unitPrice;
             }
 
-            $unitPrice = $priceResult->unitPrice;
             $unitPriceMinor = $unitPrice->getMinorAmount();
 
             // Exact multiplication with fractional quantity (e.g. 4000 * 1.25 = 5000 minor)
@@ -135,7 +184,7 @@ class CheckoutPricingOrchestrator
             storeId: $cart->store_id,
             marketId: $cart->market_id,
             channelId: $cart->channel_id,
-            customerGroupId: null,
+            customerGroupId: $customerGroupId,
             customerId: $cart->user_id,
             couponCodes: $cart->coupon_code !== null ? [$cart->coupon_code] : []
         );

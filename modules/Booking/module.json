@@ -1,0 +1,10 @@
+{
+    "name": "Booking",
+    "slug": "booking",
+    "description": "Phase-20: Booking/Service Product Type — resource availability, capacity-safe slot holds, Checkout-integrated confirmation.",
+    "version": "1.0.0",
+    "provider": "Modules\\Booking\\BookingServiceProvider",
+    "requires": ["catalog", "cart", "checkout", "order"],
+    "order": 220,
+    "enabled": true
+}

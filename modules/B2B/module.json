@@ -1,0 +1,10 @@
+{
+    "name": "B2B",
+    "slug": "b2b",
+    "description": "Phase-20: Company accounts, Company-scoped purchasing roles, wholesale/negotiated pricing, RFQ/Quotes, and Company credit exposure control.",
+    "version": "1.0.0",
+    "provider": "Modules\\B2B\\B2BServiceProvider",
+    "requires": ["catalog", "pricing", "cart", "checkout", "order"],
+    "order": 200,
+    "enabled": true
+}

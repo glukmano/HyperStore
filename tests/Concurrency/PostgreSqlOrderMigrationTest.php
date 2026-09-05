@@ -68,6 +68,9 @@ class PostgreSqlOrderMigrationTest extends TestCase
         'database/migrations/2026_09_05_000030_create_messaging_tables.php',
         'database/migrations/2026_09_06_000110_create_affiliate_tables.php',
         'database/migrations/2026_09_06_000111_create_customer_referral_tables.php',
+        'database/migrations/2026_09_07_000116_create_b2b_tables.php',
+        'database/migrations/2026_09_07_000117_create_auction_tables.php',
+        'database/migrations/2026_09_07_000118_create_booking_tables.php',
     ];
 
     private string $testDb;

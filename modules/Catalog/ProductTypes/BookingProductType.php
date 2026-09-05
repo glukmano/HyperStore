@@ -32,4 +32,9 @@ class BookingProductType extends ProductTypeDefinition
     {
         return true;
     }
+
+    public function getStorefrontTemplate(): string
+    {
+        return 'booking';
+    }
 }

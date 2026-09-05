@@ -11,4 +11,7 @@ enum PaymentStatus: string
     case PAID = 'paid';
     case REFUNDED = 'refunded';
     case VOIDED = 'voided';
+
+    /** Phase-20 B2B: placed on Company payment terms, invoice not yet paid. */
+    case INVOICED = 'invoiced';
 }

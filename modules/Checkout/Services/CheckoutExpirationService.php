@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Checkout\Services;
 
 use Illuminate\Support\Facades\DB;
+use Modules\Booking\Contracts\BookingHoldHookInterface;
 use Modules\Checkout\Contracts\CheckoutMutationBarrierInterface;
 use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
@@ -60,6 +61,14 @@ class CheckoutExpirationService
         if (app()->bound(LoyaltyCheckoutRedemptionServiceInterface::class)) {
             try {
                 app(LoyaltyCheckoutRedemptionServiceInterface::class)->cancelForCheckout($session->uuid, $session->tenant_id);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
+
+        if (app()->bound(BookingHoldHookInterface::class)) {
+            try {
+                app(BookingHoldHookInterface::class)->cancelHoldsForCheckout($session);
             } catch (Throwable $e) {
                 report($e);
             }

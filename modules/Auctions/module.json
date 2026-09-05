@@ -1,0 +1,10 @@
+{
+    "name": "Auctions",
+    "slug": "auctions",
+    "description": "Phase-20: Auction Product Type — PostgreSQL-authoritative bidding, immutable bid history, inventory-reservation-safe settlement.",
+    "version": "1.0.0",
+    "provider": "Modules\\Auctions\\AuctionsServiceProvider",
+    "requires": ["catalog", "inventory", "cart", "checkout", "order"],
+    "order": 210,
+    "enabled": true
+}

@@ -139,6 +139,7 @@ $storefrontRoutes = function (string $namePrefix = ''): void {
     Route::get('/p/{sku}', ProductPage::class)->name($namePrefix.'storefront.product');
     Route::get('/cart', CartPage::class)->name($namePrefix.'storefront.cart');
     Route::get('/checkout', CheckoutPage::class)->name($namePrefix.'storefront.checkout');
+    Route::middleware('auth')->get('/checkout/resume/{resumeCheckoutSessionId}', CheckoutPage::class)->name($namePrefix.'storefront.checkout.resume');
     Route::get('/order/confirmation/{orderNumber}', OrderConfirmationPage::class)->name($namePrefix.'storefront.order-confirmation');
     Route::get('/order/lookup', OrderLookupPage::class)->name($namePrefix.'storefront.order-lookup');
     Route::get('/vendor/{slug}', VendorStorefrontPage::class)->name($namePrefix.'storefront.vendor');
