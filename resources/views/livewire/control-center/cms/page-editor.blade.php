@@ -31,11 +31,35 @@
     <x-ui.card :title="__('Blocks')">
         @forelse ($blocks as $block)
             <div class="flex items-center justify-between border-b py-2" wire:key="block-{{ $block->id }}">
-                <span>{{ $block->block_type }}</span>
-                <span class="text-sm text-base-content/50">{{ __('Position') }}: {{ $block->position }}</span>
+                <div>
+                    <span class="font-medium">{{ $block->block_type }}</span>
+                    <span class="text-sm text-base-content/50 ms-2">{{ __('Position') }}: {{ $block->position }}</span>
+                </div>
+                <div class="space-x-1">
+                    <x-ui.button size="xs" variant="ghost" wire:click="moveBlockUp({{ $block->id }})">↑</x-ui.button>
+                    <x-ui.button size="xs" variant="ghost" wire:click="moveBlockDown({{ $block->id }})">↓</x-ui.button>
+                    <x-ui.button size="xs" variant="danger" wire:click="removeBlock({{ $block->id }})">{{ __('Remove') }}</x-ui.button>
+                </div>
             </div>
         @empty
             <x-ui.empty-state :title="__('No blocks yet')" />
         @endforelse
+
+        <div class="mt-4 space-y-3">
+            <h3 class="font-semibold">{{ __('Add Block') }}</h3>
+            @if($blockError)
+                <x-ui.alert variant="danger">{{ $blockError }}</x-ui.alert>
+            @endif
+            <div class="form-control max-w-xs">
+                <label class="label"><span class="label-text">{{ __('Block Type') }}</span></label>
+                <select wire:model="newBlockType" class="select select-bordered">
+                    @foreach(array_keys($availableBlockTypes) as $key)
+                        <option value="{{ $key }}">{{ $key }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <x-ui.textarea wire:model="newBlockConfigJson" label="{{ __('Config (JSON)') }}" rows="4" />
+            <x-ui.button wire:click="addBlock" variant="primary">{{ __('Add Block') }}</x-ui.button>
+        </div>
     </x-ui.card>
 </div>

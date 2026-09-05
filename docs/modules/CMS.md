@@ -32,6 +32,10 @@ A plugin may register a block type via `BlockTypeRegistryInterface::register()` 
 
 Rich-text/blog body content and the `html` block type are sanitized via `App\Core\Support\Contracts\ContentSanitizerInterface` (wrapping `stevebauman/purify`) on every write — never trusted as pre-sanitized at render time from an untrusted source.
 
-## 7. Tests
+## 7. Control Center Screens
+
+All CRUD/moderation surfaces are wired (Phase-17 completion delta): `modules/Cms/Livewire/{PageManager,PageEditor,BlogManager,FaqManager,MenuManager,BannerManager,MediaLibraryManager,RedirectManager}.php`, each gated by `cms.view`/`cms.manage` the same inline `->can()` + `is_super_admin` pattern as every other Control Center screen. `PageEditor` supports real block CRUD — add (with a JSON config editor scoped to the registered block type), reorder (move up/down), and remove — not just a read-only block list. `MediaLibraryManager` is intentionally scoped to Banner-owned media only: Spatie MediaLibrary's `media` table has no `tenant_id` of its own, so a fully universal cross-module media browser is out of scope for this pass; tenant scoping here is via the owning Banner's `tenant_id`.
+
+## 8. Tests
 
 `tests/Feature/Cms/{PageBuilderTest,CmsContentTest}.php`, `tests/Feature/ControlCenter/Phase17ControlCenterScreensTest.php`, `tests/Feature/Storefront/Phase17StorefrontPagesTest.php`.

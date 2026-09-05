@@ -15,8 +15,17 @@ final class AlertSubscriptionService
         private readonly ContextManager $contextManager,
     ) {}
 
-    public function subscribeToPriceDrop(User $user, int $productId, ?int $variantId, int $baselinePriceMinor, string $currency, ?int $targetPriceMinor = null): PriceDropSubscription
-    {
+    public function subscribeToPriceDrop(
+        User $user,
+        int $productId,
+        ?int $variantId,
+        int $baselinePriceMinor,
+        string $currency,
+        ?int $targetPriceMinor = null,
+        ?int $storeId = null,
+        ?int $channelId = null,
+        ?int $marketId = null,
+    ): PriceDropSubscription {
         return PriceDropSubscription::query()->updateOrCreate(
             [
                 'tenant_id' => (int) $this->contextManager->getTenant()->getId(),
@@ -28,6 +37,9 @@ final class AlertSubscriptionService
                 'baseline_price_minor' => $baselinePriceMinor,
                 'currency' => $currency,
                 'target_price_minor' => $targetPriceMinor,
+                'store_id' => $storeId,
+                'channel_id' => $channelId,
+                'market_id' => $marketId,
                 'is_active' => true,
                 'notified_at' => null,
                 'created_at' => now(),

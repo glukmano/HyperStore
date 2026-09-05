@@ -19,6 +19,7 @@ use Modules\Inventory\Events\InventoryReservationReleased;
 use Modules\Inventory\Events\InventoryReserved;
 use Modules\Inventory\Events\LowStockDetected;
 use Modules\Inventory\Events\OutOfStockDetected;
+use Modules\Inventory\Events\StockReplenished;
 use Modules\Inventory\Exceptions\ReservationAdoptionException;
 use Modules\Inventory\Models\InventoryMovement;
 use Modules\Inventory\Models\InventoryReservation;
@@ -362,11 +363,15 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
                 /** @var StockItem|null $stockItem */
                 $stockItem = StockItem::query()->where('id', $alloc->stock_item_id)->lockForUpdate()->first();
                 if ($stockItem !== null) {
+                    $previousAts = $stockItem->getAvailableToSellQuantity();
+
                     $allocQty = Quantity::fromString((string) $alloc->quantity);
                     $currentReserved = Quantity::fromString((string) $stockItem->reserved);
                     $newReserved = $currentReserved->subtract($allocQty);
                     $stockItem->reserved = $newReserved->isNegative() ? '0.0000' : $newReserved->toString();
                     $stockItem->save();
+
+                    $this->dispatchStockReplenishedIfCrossedZero($stockItem, $previousAts);
                 }
             }
 
@@ -493,11 +498,15 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
                 /** @var StockItem|null $stockItem */
                 $stockItem = StockItem::query()->where('id', $alloc->stock_item_id)->lockForUpdate()->first();
                 if ($stockItem !== null) {
+                    $previousAts = $stockItem->getAvailableToSellQuantity();
+
                     $allocQty = Quantity::fromString((string) $alloc->quantity);
                     $currentReserved = Quantity::fromString((string) $stockItem->reserved);
                     $newReserved = $currentReserved->subtract($allocQty);
                     $stockItem->reserved = $newReserved->isNegative() ? '0.0000' : $newReserved->toString();
                     $stockItem->save();
+
+                    $this->dispatchStockReplenishedIfCrossedZero($stockItem, $previousAts);
                 }
             }
 
@@ -508,5 +517,29 @@ class InventoryReservationService implements InventoryReservationServiceInterfac
 
             return true;
         });
+    }
+
+    /**
+     * Shared edge-detection helper for every reservation-lifecycle path that
+     * can move a StockItem's available-to-sell quantity from <=0 to >0 —
+     * release() and expire() both restore `reserved` downward, which is
+     * exactly the same transition InventoryAdjustmentService::adjust()
+     * detects for on_hand-side mutations. $stockItem must already reflect
+     * its POST-mutation state (already saved) when this is called.
+     */
+    private function dispatchStockReplenishedIfCrossedZero(StockItem $stockItem, Quantity $previousAts): void
+    {
+        $newAts = $stockItem->getAvailableToSellQuantity();
+
+        if (! $previousAts->isPositive() && $newAts->isPositive()) {
+            StockReplenished::dispatch(
+                $stockItem->tenant_id,
+                $stockItem->inventory_source_id,
+                $stockItem->product_id,
+                $stockItem->product_variant_id,
+                $previousAts->toString(),
+                $newAts->toString(),
+            );
+        }
     }
 }

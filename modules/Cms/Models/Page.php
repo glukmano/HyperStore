@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Carbon;
+use Laravel\Scout\Searchable;
 
 /**
  * @property int $id
@@ -22,7 +23,7 @@ use Illuminate\Support\Carbon;
  */
 class Page extends Model
 {
-    use BelongsToTenant;
+    use BelongsToTenant, Searchable;
 
     public const string STATUS_DRAFT = 'draft';
 
@@ -82,5 +83,33 @@ class Page extends Model
     {
         return $this->status === self::STATUS_PUBLISHED
             && ($this->published_at === null || $this->published_at->isPast());
+    }
+
+    public function shouldBeSearchable(): bool
+    {
+        return $this->isPublished();
+    }
+
+    public function searchableAs(): string
+    {
+        return 'cms_pages';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function toSearchableArray(): array
+    {
+        $document = [
+            'id' => $this->id,
+            'tenant_id' => $this->tenant_id,
+        ];
+
+        foreach ($this->translations as $translation) {
+            $document['title_'.$translation->locale] = $translation->title;
+            $document['slug_'.$translation->locale] = $translation->slug;
+        }
+
+        return $document;
     }
 }

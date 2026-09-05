@@ -9,12 +9,13 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 use Modules\Catalog\Models\Product;
+use Modules\Notifications\Contracts\HasNotificationChannels;
 
 /**
  * database + mail only — the smallest first-party notification boundary
  * (Phase-17 §10). No SMS/WhatsApp/push channel.
  */
-class PriceDropDetected extends Notification implements ShouldQueue
+class PriceDropDetected extends Notification implements HasNotificationChannels, ShouldQueue
 {
     use Queueable;
 

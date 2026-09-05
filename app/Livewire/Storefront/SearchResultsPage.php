@@ -18,6 +18,18 @@ class SearchResultsPage extends Component
     #[Url]
     public string $q = '';
 
+    public ?int $lastSearchQueryId = null;
+
+    public function recordClick(int $productId, int $position, SearchServiceInterface $searchService): void
+    {
+        if ($this->lastSearchQueryId === null) {
+            return;
+        }
+
+        $tenantId = (int) app(ContextManager::class)->getTenant()->getId();
+        $searchService->recordClick($this->lastSearchQueryId, $tenantId, $productId, $position);
+    }
+
     public function render(SearchServiceInterface $searchService, LocaleManagerInterface $localeManager): View
     {
         $contextManager = app(ContextManager::class);
@@ -31,6 +43,8 @@ class SearchResultsPage extends Component
                 locale: $localeManager->getLocale(),
             ))
             : new SearchResultSet(hits: [], total: 0, page: 1, perPage: 24);
+
+        $this->lastSearchQueryId = $results->searchQueryId;
 
         return view('theme::pages.search-results', ['results' => $results, 'query' => $this->q])
             ->layout('theme::layouts.app', ['title' => 'Search']);

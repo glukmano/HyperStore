@@ -13,11 +13,13 @@ use Modules\Customers\Notifications\BackInStockDetected;
 use Modules\Inventory\DTOs\InventoryContext;
 use Modules\Inventory\Events\StockReplenished;
 use Modules\Inventory\Services\InventoryAvailabilityService;
+use Modules\Notifications\Services\NotificationDispatchService;
 
 final class CheckBackInStockSubscriptions implements ShouldQueue
 {
     public function __construct(
         private readonly InventoryAvailabilityService $availabilityService,
+        private readonly NotificationDispatchService $notificationDispatch,
     ) {}
 
     public function handle(StockReplenished $event): void
@@ -64,7 +66,9 @@ final class CheckBackInStockSubscriptions implements ShouldQueue
             }
 
             $user = User::query()->find($subscription->user_id);
-            $user?->notify(new BackInStockDetected($product));
+            if ($user !== null) {
+                $this->notificationDispatch->send($user, 'back_in_stock', new BackInStockDetected($product));
+            }
         }
     }
 }

@@ -93,3 +93,17 @@ Comprehensive Pest coverage per domain (full list: plan §39), at minimum: wishl
 ## 17. Stop Condition
 
 On completion of all acceptance criteria: run full validation suite, document results, produce the final acceptance report, commit and push, then **stop**. Do not begin Phase-18.
+
+## 18. Completion Delta (post-acceptance-review fixes)
+
+The owner's post-acceptance review found the initial Phase-17 delivery backend-complete but UI-incomplete, with several correctness gaps in already-built services. This delta closed all of them in the same phase, without starting Phase-18:
+
+- **Storefront UX**: all 15 Class-A customer-facing features (Wishlist, Compare, Recently Viewed, Save for Later, Follow Product/Vendor, Price-Drop/Back-in-Stock Alerts, Gift Registry, Product/Vendor Reviews, Q&A, Messaging Inbox/Thread, Notification Preferences) are now reachable and operable, mostly embedded into the Product/Vendor/Cart/Account surfaces per the "reuse an existing surface" instruction rather than one page per feature. A storefront Account area (`/account/*`) was built as a prerequisite — it did not exist before.
+- **Control Center**: 15 of 17 previously-audited screens completed (Vendor Review moderation, Q&A moderation, Messaging moderation, Blog, FAQ, Menus, Banners, Media Library (Banner-scoped), Redirects, real Page Builder block CRUD, SEO settings, Search synonyms/merchandising/analytics).
+- **Search entity coverage**: Category, Vendor, CMS Page, and Blog Post are now indexed and searchable alongside Product, through the same one `SearchServiceInterface`, each with the same never-indexed-if-ineligible + tenant/store-isolation guarantees.
+- **Notifications module boundary**: restored as a real `modules/Notifications/` module (contracts, preference gate, dispatch service, `NotificationsServiceProvider` discovered by `ModuleKernel`) — domain notification *content* classes stay in their owning modules, only the cross-cutting gate/dispatch concern lives here.
+- **ATS transition coverage**: `StockReplenished` is now dispatched from every code path that can cross the available-to-sell `<=0 → >0` edge, not only `InventoryAdjustmentService::adjust()` — reservation release, reservation expiry, transfer receiving, and quarantine release were the four gaps found and closed.
+- **Owner Delta A-L schema/behavior audit**: 9 of 12 items were found genuinely incomplete and fixed (guest wishlist had no real identity model; Save for Later's price snapshot had no currency; price-drop evaluation trusted the event payload instead of re-resolving through Pricing; gift-registry attribution had no real Cart write path and was not idempotent; Messaging had no send-retry idempotency key and `markRead` could regress; Search had no Postgres-owned synonyms/merchandising tables, no batch stale-hit revalidation, and a one-click-per-query schema; private media had no authorization check before a signed URL was issued).
+- **Meilisearch**: confirmed reachable in this environment but is a pre-existing shared instance already holding unrelated data — a dedicated real-Meilisearch integration test was evaluated and deliberately not committed rather than risk corrupting that shared state (see `docs/modules/SEARCH.md` §8).
+
+See the delta completion report delivered to the owner for the full test/validation breakdown and commit hash.

@@ -38,11 +38,34 @@ class Phase17ArchitectureTest extends TestCase
         $matches = [];
         exec('grep -rl "Laravel\\\\\\\\Scout\\\\\\\\Searchable\|Meilisearch\\\\\\\\Client" '.escapeshellarg(base_path('modules')).' '.escapeshellarg(base_path('app')).' 2>/dev/null | grep -v "/vendor/"', $matches);
 
-        // Only modules/Search/ itself, or the one indexed model (Product, via
-        // Scout's own Searchable trait convention), may reference Scout/Meilisearch.
-        $unauthorized = array_filter($matches, fn (string $file) => ! str_contains($file, 'modules/Search/') && ! str_contains($file, 'modules/Catalog/Models/Product.php'));
+        // Only modules/Search/ itself, or the five indexed models (Product,
+        // Category, Vendor, Page, BlogPost, via Scout's own Searchable trait
+        // convention), may reference Scout/Meilisearch.
+        $allowedFiles = [
+            'modules/Catalog/Models/Product.php',
+            'modules/Catalog/Models/Category.php',
+            'modules/Marketplace/Models/Vendor.php',
+            'modules/Cms/Models/Page.php',
+            'modules/Cms/Models/BlogPost.php',
+        ];
+        $unauthorized = array_filter(
+            $matches,
+            function (string $file) use ($allowedFiles): bool {
+                if (str_contains($file, 'modules/Search/')) {
+                    return false;
+                }
 
-        $this->assertEmpty($unauthorized, 'Only modules/Search/ or Product (Searchable) may reference Scout/Meilisearch directly, found in: '.implode(', ', $unauthorized));
+                foreach ($allowedFiles as $allowed) {
+                    if (str_contains($file, $allowed)) {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        );
+
+        $this->assertEmpty($unauthorized, 'Only modules/Search/ or an indexed model (Searchable) may reference Scout/Meilisearch directly, found in: '.implode(', ', $unauthorized));
     }
 
     public function test_no_new_phase17_translation_table_hardcodes_a_two_language_column_pattern(): void

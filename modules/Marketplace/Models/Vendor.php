@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Str;
+use Laravel\Scout\Searchable;
 use Modules\Marketplace\Enums\VendorOperationalStatus;
 use Modules\Marketplace\Enums\VendorVerificationStatus;
 
@@ -54,6 +55,7 @@ use Modules\Marketplace\Enums\VendorVerificationStatus;
 class Vendor extends Model
 {
     use BelongsToTenant;
+    use Searchable;
 
     protected $table = 'vendors';
 
@@ -183,5 +185,33 @@ class Vendor extends Model
     public function subscriptions(): HasMany
     {
         return $this->hasMany(VendorPlanSubscription::class, 'vendor_id');
+    }
+
+    /**
+     * Only an Active (canSell()) vendor storefront is ever indexed — a
+     * suspended/terminated/pending vendor is never written to the index at
+     * all, never merely filtered out at query time.
+     */
+    public function shouldBeSearchable(): bool
+    {
+        return $this->operational_status?->canSell() ?? false;
+    }
+
+    public function searchableAs(): string
+    {
+        return 'vendors';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function toSearchableArray(): array
+    {
+        return [
+            'id' => $this->id,
+            'tenant_id' => $this->tenant_id,
+            'name' => $this->name,
+            'platform_slug' => $this->platform_slug,
+        ];
     }
 }

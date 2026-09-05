@@ -16,5 +16,12 @@ final readonly class SearchResultSet
         public int $page,
         public int $perPage,
         public array $facets = [],
+        /**
+         * The search_queries row id this result was recorded under, or null
+         * when analytics recording was skipped (e.g. an empty term). Passed
+         * back to SearchServiceInterface::recordClick() so one query
+         * execution can own multiple click records.
+         */
+        public ?int $searchQueryId = null,
     ) {}
 }

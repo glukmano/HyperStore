@@ -9,11 +9,14 @@
 
     @if (! empty($results->hits))
         <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-            @foreach ($results->hits as $hit)
-                <x-ui.card>
-                    <div class="font-medium">{{ $hit['name'] }}</div>
-                    <div class="text-sm text-base-content/60">{{ $hit['sku'] }}</div>
-                </x-ui.card>
+            @foreach ($results->hits as $index => $hit)
+                <a href="{{ route('storefront.product', $hit['sku']) }}" wire:navigate
+                   wire:click="recordClick({{ $hit['id'] }}, {{ $index }})">
+                    <x-ui.card>
+                        <div class="font-medium">{{ $hit['name'] }}</div>
+                        <div class="text-sm text-base-content/60">{{ $hit['sku'] }}</div>
+                    </x-ui.card>
+                </a>
             @endforeach
         </div>
     @else

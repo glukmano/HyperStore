@@ -7,6 +7,7 @@ namespace Modules\Messaging\Services;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
 use Modules\Messaging\Events\MessageSent;
 use Modules\Messaging\Exceptions\ConversationAuthorizationException;
 use Modules\Messaging\Exceptions\ConversationClosedException;
@@ -25,9 +26,16 @@ final class MessagingService
     ) {}
 
     /**
+     * `clientMessageId` is a caller-generated UUID (e.g. a Livewire
+     * component holding it across a network retry). If a message already
+     * exists for (conversation_id, sender_user_id, client_message_id), that
+     * existing row is returned rather than creating a duplicate — a retried
+     * send is idempotent. When omitted, a fresh UUID is generated, matching
+     * prior at-most-once-per-call behavior for callers that don't retry.
+     *
      * @param  list<int>  $attachmentMediaIds
      */
-    public function send(Conversation $conversation, User $sender, string $body, array $attachmentMediaIds = []): Message
+    public function send(Conversation $conversation, User $sender, string $body, array $attachmentMediaIds = [], ?string $clientMessageId = null): Message
     {
         if (! $this->policy->view($sender, $conversation)) {
             throw new ConversationAuthorizationException('You are not a participant in this conversation.');
@@ -37,16 +45,29 @@ final class MessagingService
             throw new ConversationClosedException('This conversation is closed.');
         }
 
+        $clientMessageId ??= (string) Str::uuid();
+
+        $existing = Message::query()
+            ->where('conversation_id', $conversation->id)
+            ->where('sender_user_id', $sender->id)
+            ->where('client_message_id', $clientMessageId)
+            ->first();
+
+        if ($existing !== null) {
+            return $existing;
+        }
+
         $rateLimitKey = 'messaging-send:'.$sender->id;
         if (RateLimiter::tooManyAttempts($rateLimitKey, self::MAX_MESSAGES_PER_MINUTE)) {
             throw new MessageRateLimitExceededException('Too many messages sent — please slow down.');
         }
         RateLimiter::hit($rateLimitKey, 60);
 
-        $message = DB::transaction(function () use ($conversation, $sender, $body, $attachmentMediaIds): Message {
+        $message = DB::transaction(function () use ($conversation, $sender, $body, $attachmentMediaIds, $clientMessageId): Message {
             $message = Message::query()->create([
                 'conversation_id' => $conversation->id,
                 'sender_user_id' => $sender->id,
+                'client_message_id' => $clientMessageId,
                 'body' => $body,
                 'sent_at' => now(),
             ]);
@@ -74,11 +95,19 @@ final class MessagingService
         return $message;
     }
 
+    /**
+     * Never regresses last_read_at: a WHERE guard means an out-of-order or
+     * duplicate markRead (e.g. two browser tabs) can only advance the
+     * timestamp forward, never reset it to an earlier value.
+     */
     public function markRead(Conversation $conversation, User $user): void
     {
         ConversationParticipant::query()
             ->where('conversation_id', $conversation->id)
             ->where('user_id', $user->id)
+            ->where(function ($q) {
+                $q->whereNull('last_read_at')->orWhere('last_read_at', '<', now());
+            })
             ->update(['last_read_at' => now()]);
     }
 

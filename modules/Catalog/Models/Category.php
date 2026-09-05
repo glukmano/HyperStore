@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Laravel\Scout\Searchable;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 
@@ -24,7 +25,7 @@ use Spatie\MediaLibrary\InteractsWithMedia;
  */
 class Category extends Model implements HasMedia
 {
-    use BelongsToTenant, InteractsWithMedia;
+    use BelongsToTenant, InteractsWithMedia, Searchable;
 
     protected $fillable = [
         'tenant_id',
@@ -116,5 +117,37 @@ class Category extends Model implements HasMedia
     public function registerMediaCollections(): void
     {
         $this->addMediaCollection('category_image')->singleFile();
+    }
+
+    /**
+     * Mirrors Product::shouldBeSearchable() — only ever indexed when active
+     * and assigned to at least one store; never a source of truth by itself.
+     */
+    public function shouldBeSearchable(): bool
+    {
+        return $this->status === 'active' && $this->stores()->exists();
+    }
+
+    public function searchableAs(): string
+    {
+        return 'categories';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function toSearchableArray(): array
+    {
+        $document = [
+            'id' => $this->id,
+            'tenant_id' => $this->tenant_id,
+            'store_ids' => $this->stores()->pluck('stores.id')->all(),
+        ];
+
+        foreach ($this->translations as $translation) {
+            $document['name_'.$translation->locale] = $translation->name;
+        }
+
+        return $document;
     }
 }

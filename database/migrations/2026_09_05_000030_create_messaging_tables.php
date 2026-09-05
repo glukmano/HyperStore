@@ -55,6 +55,7 @@ return new class extends Migration
             $table->uuid('uuid')->unique();
             $table->foreignId('conversation_id')->constrained('conversations')->cascadeOnDelete();
             $table->foreignId('sender_user_id')->constrained('users')->cascadeOnDelete();
+            $table->uuid('client_message_id');
             $table->text('body');
             $table->timestamp('sent_at')->useCurrent();
             $table->timestamp('edited_at')->nullable();
@@ -62,6 +63,10 @@ return new class extends Migration
             $table->jsonb('metadata')->nullable();
 
             $table->index(['conversation_id', 'sent_at']);
+            // Durable send-retry idempotency: a network retry of the same
+            // client-generated id for the same sender/conversation must
+            // return the existing row, never create a duplicate message.
+            $table->unique(['conversation_id', 'sender_user_id', 'client_message_id'], 'uq_messages_client_message_id');
         });
 
         Schema::create('message_attachments', function (Blueprint $table): void {

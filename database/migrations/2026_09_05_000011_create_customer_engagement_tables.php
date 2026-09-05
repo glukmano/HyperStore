@@ -14,11 +14,16 @@ return new class extends Migration
         $isPgsql = DB::getDriverName() === 'pgsql';
 
         // ── Wishlists ──────────────────────────────────────────────────────────
+        // Guest wishlists are modeled the same guest-vs-auth way as
+        // recently_viewed_items: an XOR identity (user_id OR session_id, never
+        // both/neither) plus a partial unique index per identity so at most
+        // one row can be flagged is_default for a given user or session.
         Schema::create('wishlists', function (Blueprint $table): void {
             $table->id();
             $table->uuid('uuid')->unique();
             $table->foreignId('tenant_id')->constrained('tenants')->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained('users')->cascadeOnDelete();
+            $table->foreignId('user_id')->nullable()->constrained('users')->cascadeOnDelete();
+            $table->string('session_id', 100)->nullable();
             $table->string('name', 150)->default('Default');
             $table->boolean('is_default')->default(true);
             $table->string('visibility', 20)->default('private');
@@ -26,9 +31,13 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['tenant_id', 'user_id']);
+            $table->index(['tenant_id', 'session_id']);
         });
         if ($isPgsql) {
             DB::statement("ALTER TABLE wishlists ADD CONSTRAINT chk_wishlists_visibility CHECK (visibility IN ('private', 'shared'))");
+            DB::statement('ALTER TABLE wishlists ADD CONSTRAINT chk_wishlists_identity_xor CHECK ((user_id IS NOT NULL) <> (session_id IS NOT NULL))');
+            DB::statement('CREATE UNIQUE INDEX uq_wishlists_default_user ON wishlists (tenant_id, user_id) WHERE user_id IS NOT NULL AND is_default = true');
+            DB::statement('CREATE UNIQUE INDEX uq_wishlists_default_session ON wishlists (tenant_id, session_id) WHERE session_id IS NOT NULL AND is_default = true');
         }
 
         Schema::create('wishlist_items', function (Blueprint $table): void {
@@ -78,6 +87,7 @@ return new class extends Migration
             $table->foreignId('variant_id')->nullable()->constrained('product_variants')->cascadeOnDelete();
             $table->unsignedInteger('quantity')->default(1);
             $table->integer('unit_price_minor_snapshot');
+            $table->string('currency', 3);
             $table->timestamp('added_at')->useCurrent();
 
             $table->index(['tenant_id', 'user_id']);
@@ -114,6 +124,9 @@ return new class extends Migration
             $table->integer('target_price_minor')->nullable();
             $table->string('currency', 3);
             $table->integer('baseline_price_minor');
+            $table->foreignId('store_id')->nullable()->constrained('stores')->nullOnDelete();
+            $table->foreignId('channel_id')->nullable()->constrained('channels')->nullOnDelete();
+            $table->foreignId('market_id')->nullable()->constrained('markets')->nullOnDelete();
             $table->boolean('is_active')->default(true);
             $table->timestamp('notified_at')->nullable();
             $table->timestamp('created_at')->useCurrent();
@@ -191,6 +204,11 @@ return new class extends Migration
             $table->foreignId('purchaser_user_id')->nullable()->constrained('users')->nullOnDelete();
             $table->unsignedInteger('quantity');
             $table->timestamp('purchased_at')->useCurrent();
+
+            // One OrderItem can only ever fulfil one gift-registry purchase
+            // record — this is what makes RecordGiftRegistryPurchasesOnOrderCompletion
+            // idempotent against a duplicate OrderStatusChanged delivery.
+            $table->unique('order_item_id');
         });
     }
 

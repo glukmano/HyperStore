@@ -58,7 +58,18 @@ final class PriceWriteService
 
             if ($oldAmountMinor === null || $oldAmountMinor !== $amountMinor) {
                 DB::afterCommit(function () use ($tenantId, $productId, $variantId, $priceBookId, $oldAmountMinor, $amountMinor, $priceBook): void {
-                    PriceChanged::dispatch($tenantId, $productId, $variantId, $priceBookId, $oldAmountMinor, $amountMinor, $priceBook->currency);
+                    PriceChanged::dispatch(
+                        $tenantId,
+                        $productId,
+                        $variantId,
+                        $priceBookId,
+                        $oldAmountMinor,
+                        $amountMinor,
+                        $priceBook->currency,
+                        $priceBook->store_id,
+                        $priceBook->channel_id,
+                        $priceBook->market_id,
+                    );
                 });
             }
 

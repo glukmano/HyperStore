@@ -186,12 +186,14 @@ class InventoryAdjustmentService implements InventoryAdjustmentServiceInterface
             /** @var StockItem $locked */
             $locked = StockItem::query()->where('id', $stockItem->id)->lockForUpdate()->firstOrFail();
 
+            $previousAts = $locked->getAvailableToSellQuantity();
+
             $currQuar = Quantity::fromString((string) $locked->quarantined);
             $newQuar = $currQuar->subtract($quantity);
             $locked->quarantined = $newQuar->isNegative() ? '0.0000' : $newQuar->toString();
             $locked->save();
 
-            return InventoryMovement::create([
+            $movement = InventoryMovement::create([
                 'tenant_id' => $locked->tenant_id,
                 'stock_item_id' => $locked->id,
                 'inventory_source_id' => $locked->inventory_source_id,
@@ -203,6 +205,20 @@ class InventoryAdjustmentService implements InventoryAdjustmentServiceInterface
                 'reason' => $reason ?? 'Stock released from quarantine',
                 'created_at' => now(),
             ]);
+
+            $newAts = $locked->getAvailableToSellQuantity();
+            if (! $previousAts->isPositive() && $newAts->isPositive()) {
+                StockReplenished::dispatch(
+                    $locked->tenant_id,
+                    $locked->inventory_source_id,
+                    $locked->product_id,
+                    $locked->product_variant_id,
+                    $previousAts->toString(),
+                    $newAts->toString(),
+                );
+            }
+
+            return $movement;
         });
     }
 

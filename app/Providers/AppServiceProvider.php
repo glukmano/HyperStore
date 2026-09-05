@@ -243,6 +243,149 @@ class AppServiceProvider extends ServiceProvider
             order: 80,
         ));
 
+        $navigation->register(new NavigationItem(
+            key: 'platform-vendor-reviews',
+            label: 'Vendor Reviews',
+            routeName: 'control-center.platform.vendor-reviews.index',
+            group: 'Platform',
+            permission: 'reviews.view',
+            context: 'tenant',
+            icon: '⭐',
+            order: 71,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-qa',
+            label: 'Q&A Moderation',
+            routeName: 'control-center.platform.qa.index',
+            group: 'Platform',
+            permission: 'reviews.view',
+            context: 'tenant',
+            icon: '❓',
+            order: 72,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-messaging',
+            label: 'Messaging',
+            routeName: 'control-center.platform.messaging.index',
+            group: 'Platform',
+            permission: 'messaging.moderate',
+            context: 'tenant',
+            icon: '✉️',
+            order: 73,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-cms-blog',
+            label: 'Blog',
+            routeName: 'control-center.platform.cms.blog.index',
+            group: 'Platform',
+            permission: 'cms.view',
+            context: 'tenant',
+            icon: '📝',
+            order: 81,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-cms-faq',
+            label: 'FAQ',
+            routeName: 'control-center.platform.cms.faq.index',
+            group: 'Platform',
+            permission: 'cms.view',
+            context: 'tenant',
+            icon: '💬',
+            order: 82,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-cms-menus',
+            label: 'Menus',
+            routeName: 'control-center.platform.cms.menus.index',
+            group: 'Platform',
+            permission: 'cms.view',
+            context: 'tenant',
+            icon: '🧭',
+            order: 83,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-cms-banners',
+            label: 'Banners',
+            routeName: 'control-center.platform.cms.banners.index',
+            group: 'Platform',
+            permission: 'cms.view',
+            context: 'tenant',
+            icon: '🖼️',
+            order: 84,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-cms-media',
+            label: 'Media Library',
+            routeName: 'control-center.platform.cms.media.index',
+            group: 'Platform',
+            permission: 'cms.view',
+            context: 'tenant',
+            icon: '🗂️',
+            order: 85,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-cms-redirects',
+            label: 'Redirects',
+            routeName: 'control-center.platform.cms.redirects.index',
+            group: 'Platform',
+            permission: 'cms.view',
+            context: 'tenant',
+            icon: '↪️',
+            order: 86,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-seo-settings',
+            label: 'SEO Settings',
+            routeName: 'control-center.platform.seo.settings',
+            group: 'Platform',
+            permission: 'seo.manage',
+            context: 'tenant',
+            icon: '🔍',
+            order: 90,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-search-synonyms',
+            label: 'Search Synonyms',
+            routeName: 'control-center.platform.search.synonyms.index',
+            group: 'Platform',
+            permission: 'search.manage',
+            context: 'tenant',
+            icon: '🔤',
+            order: 91,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-search-merchandising',
+            label: 'Search Merchandising',
+            routeName: 'control-center.platform.search.merchandising.index',
+            group: 'Platform',
+            permission: 'search.manage',
+            context: 'tenant',
+            icon: '📌',
+            order: 92,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-search-analytics',
+            label: 'Search Analytics',
+            routeName: 'control-center.platform.search.analytics',
+            group: 'Platform',
+            permission: 'search.manage',
+            context: 'tenant',
+            icon: '📊',
+            order: 93,
+        ));
+
         $this->app->make(ThemeRegistryInterface::class)->register(
             ThemeManifest::fromJsonFile(base_path('themes/default/theme.json'))
         );

@@ -36,7 +36,27 @@
                     <label class="label"><span class="label-text">{{ __('Qty') }}</span></label>
                     <input type="number" min="1" wire:model="quantity" class="input input-bordered w-full" />
                 </div>
-                <x-ui.button wire:click="addToCart" variant="primary">{{ __('Add to Cart') }}</x-ui.button>
+                @if(! $availability || $availability->isInStock)
+                    <x-ui.button wire:click="addToCart" variant="primary">{{ __('Add to Cart') }}</x-ui.button>
+                @else
+                    <x-ui.button wire:click="subscribeBackInStockAlert" variant="secondary">{{ __('Notify Me When Available') }}</x-ui.button>
+                @endif
+            </div>
+
+            <div class="flex flex-wrap gap-2 pt-2">
+                <x-ui.button wire:click="toggleWishlist" variant="ghost" size="sm">
+                    {{ $isInWishlist ? __('♥ In Wishlist') : __('♡ Add to Wishlist') }}
+                </x-ui.button>
+                <x-ui.button wire:click="toggleFollow" variant="ghost" size="sm">
+                    {{ $isFollowing ? __('★ Following') : __('☆ Follow this Product') }}
+                </x-ui.button>
+                <x-ui.button wire:click="subscribePriceDropAlert" variant="ghost" size="sm">
+                    {{ __('Alert me on price drop') }}
+                </x-ui.button>
+                <x-ui.button wire:click="toggleCompare" variant="ghost" size="sm">
+                    {{ $isInCompare ? __('Remove from Compare') : __('Add to Compare') }}
+                </x-ui.button>
+                <a href="{{ route('storefront.compare') }}" wire:navigate class="btn btn-ghost btn-sm">{{ __('View Compare') }}</a>
             </div>
         </div>
     </div>

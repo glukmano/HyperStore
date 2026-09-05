@@ -16,4 +16,12 @@ use Modules\Search\DTOs\SearchResultSet;
 interface SearchServiceInterface
 {
     public function search(SearchQuery $query): SearchResultSet;
+
+    /**
+     * Records a click against a prior search execution. One search_queries
+     * row can own many search_clicks rows — a shopper opening several
+     * results from the same query is not lost the way a single
+     * clicked_product_id column would lose it.
+     */
+    public function recordClick(int $searchQueryId, int $tenantId, int $productId, ?int $resultPosition = null): void;
 }

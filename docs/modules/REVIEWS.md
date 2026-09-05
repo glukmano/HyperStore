@@ -33,6 +33,10 @@ Never a DB trigger (invisible to Larastan/Pest). `Modules\Reviews\Services\Ratin
 
 `ReviewMediaService` mirrors `Modules\Catalog\Services\CatalogMediaService`'s exact shape (`review_photos`/`review_videos` MediaLibrary collections). Review/Q&A text uses the shared `App\Core\Support\Contracts\ContentSanitizerInterface`.
 
-## 6. Tests
+## 6. Storefront & Control Center Surfaces
 
-`tests/Feature/Reviews/{ProductReviewTest,VendorReviewTest,ProductQaTest}.php` — covers both `SellerOrder`-present and -absent verified-purchase branches, one-review-per-user uniqueness, and moderation-triggered aggregate recompute.
+`App\Livewire\Storefront\{ProductReviewsSection,ProductQaSection,VendorReviewsSection}` are embedded directly into the product page (`/p/{sku}`) and vendor storefront page (`/vendor/{slug}`) rather than separate pages — list + submit form + verified-purchase badge + seller replies, all in one place. Control Center moderation: `Modules\Reviews\Livewire\{ReviewModerationManager,VendorReviewModerationManager,QaModerationManager}` (`/control-center/platform/{reviews,vendor-reviews,qa}`, `reviews.view`/`reviews.moderate`/`qa.moderate`).
+
+## 7. Tests
+
+`tests/Feature/Reviews/{ProductReviewTest,VendorReviewTest,ProductQaTest}.php` — covers both `SellerOrder`-present and -absent verified-purchase branches, one-review-per-user uniqueness, and moderation-triggered aggregate recompute. `tests/Feature/Storefront/Phase17StorefrontPagesTest.php` and `tests/Feature/ControlCenter/Phase17ControlCenterScreensTest.php` cover the storefront/Control-Center surfaces above.

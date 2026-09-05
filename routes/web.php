@@ -29,16 +29,26 @@ use App\Http\Controllers\Auth\NewPasswordController;
 use App\Http\Controllers\Auth\PasswordResetLinkController;
 use App\Http\Controllers\Auth\RegisteredUserController;
 use App\Http\Controllers\Auth\VerifyEmailController;
+use App\Http\Controllers\Storefront\MessageAttachmentController;
 use App\Livewire\ControlCenter\ChannelManager;
 use App\Livewire\ControlCenter\DashboardOverview;
 use App\Livewire\ControlCenter\MarketManager;
 use App\Livewire\ControlCenter\StoreManager;
 use App\Livewire\ControlCenter\TenantSettingsManager;
 use App\Livewire\ControlCenter\UserRoleManager;
+use App\Livewire\Storefront\Account\ConversationThread;
+use App\Livewire\Storefront\Account\GiftRegistriesPage;
+use App\Livewire\Storefront\Account\GiftRegistryEditor;
+use App\Livewire\Storefront\Account\MessagesInbox;
+use App\Livewire\Storefront\Account\NotificationPreferencesPage;
+use App\Livewire\Storefront\Account\RecentlyViewedPage;
+use App\Livewire\Storefront\Account\WishlistPage;
 use App\Livewire\Storefront\CartPage;
 use App\Livewire\Storefront\CategoryPage;
 use App\Livewire\Storefront\CheckoutPage;
 use App\Livewire\Storefront\CmsPage;
+use App\Livewire\Storefront\ComparePage;
+use App\Livewire\Storefront\GiftRegistryPublicPage;
 use App\Livewire\Storefront\Home;
 use App\Livewire\Storefront\OrderConfirmationPage;
 use App\Livewire\Storefront\OrderLookupPage;
@@ -48,9 +58,22 @@ use App\Livewire\Storefront\VendorStorefrontPage;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Modules\Cms\Livewire\BannerManager;
+use Modules\Cms\Livewire\BlogManager;
+use Modules\Cms\Livewire\FaqManager;
+use Modules\Cms\Livewire\MediaLibraryManager;
+use Modules\Cms\Livewire\MenuManager;
 use Modules\Cms\Livewire\PageEditor;
 use Modules\Cms\Livewire\PageManager;
+use Modules\Cms\Livewire\RedirectManager;
+use Modules\Messaging\Livewire\MessagingModerationManager;
+use Modules\Reviews\Livewire\QaModerationManager;
 use Modules\Reviews\Livewire\ReviewModerationManager;
+use Modules\Reviews\Livewire\VendorReviewModerationManager;
+use Modules\Search\Livewire\MerchandisingManager;
+use Modules\Search\Livewire\SearchAnalyticsDashboard;
+use Modules\Search\Livewire\SynonymManager;
+use Modules\Seo\Livewire\SeoSettingsManager;
 
 // ── Health check (Minimal Public Liveness) ────────────────────────────────────
 Route::get('/up', function () {
@@ -99,6 +122,25 @@ Route::middleware([SetLocaleAndDirectionMiddleware::class, ResolveStorefrontThem
         Route::get('/vendor/{slug}', VendorStorefrontPage::class)->name('storefront.vendor');
         Route::get('/search', SearchResultsPage::class)->name('storefront.search');
         Route::get('/pages/{slug}', CmsPage::class)->name('storefront.cms-page');
+
+        // Guest-or-authenticated Customer Engagement surfaces (Phase-17 delta).
+        Route::get('/compare', ComparePage::class)->name('storefront.compare');
+        Route::get('/registry/{shareToken}', GiftRegistryPublicPage::class)->name('registry.public');
+        Route::get('/message-attachments/{attachment}', [MessageAttachmentController::class, 'show'])
+            ->middleware('auth')
+            ->name('storefront.message-attachments.show');
+
+        Route::get('/account/wishlist', WishlistPage::class)->name('account.wishlist');
+        Route::get('/account/wishlist/shared/{shareToken}', WishlistPage::class)->name('account.wishlist.shared');
+        Route::get('/account/recently-viewed', RecentlyViewedPage::class)->name('account.recently-viewed');
+
+        Route::middleware('auth')->prefix('account')->name('account.')->group(function (): void {
+            Route::get('/gift-registries', GiftRegistriesPage::class)->name('gift-registries.index');
+            Route::get('/gift-registries/{registry}', GiftRegistryEditor::class)->name('gift-registries.show');
+            Route::get('/messages', MessagesInbox::class)->name('messages.index');
+            Route::get('/messages/{conversation}', ConversationThread::class)->name('messages.show');
+            Route::get('/notifications', NotificationPreferencesPage::class)->name('notifications');
+        });
     });
 
 // ── Control Center · Platform Admin Screens (Stores, Markets, Channels, Settings, Users) ──
@@ -118,11 +160,27 @@ Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, Resolv
         });
 
         Route::get('/reviews', ReviewModerationManager::class)->name('reviews.index');
+        Route::get('/vendor-reviews', VendorReviewModerationManager::class)->name('vendor-reviews.index');
+        Route::get('/qa', QaModerationManager::class)->name('qa.index');
+        Route::get('/messaging', MessagingModerationManager::class)->name('messaging.index');
 
         Route::prefix('cms/pages')->name('cms.pages.')->group(function () {
             Route::get('/', PageManager::class)->name('index');
             Route::get('/{page}', PageEditor::class)->name('edit');
         });
+
+        Route::get('/cms/blog', BlogManager::class)->name('cms.blog.index');
+        Route::get('/cms/faq', FaqManager::class)->name('cms.faq.index');
+        Route::get('/cms/menus', MenuManager::class)->name('cms.menus.index');
+        Route::get('/cms/banners', BannerManager::class)->name('cms.banners.index');
+        Route::get('/cms/media', MediaLibraryManager::class)->name('cms.media.index');
+        Route::get('/cms/redirects', RedirectManager::class)->name('cms.redirects.index');
+
+        Route::get('/seo/settings', SeoSettingsManager::class)->name('seo.settings');
+
+        Route::get('/search/synonyms', SynonymManager::class)->name('search.synonyms.index');
+        Route::get('/search/merchandising', MerchandisingManager::class)->name('search.merchandising.index');
+        Route::get('/search/analytics', SearchAnalyticsDashboard::class)->name('search.analytics');
     });
 
 // ── Control Center ────────────────────────────────────────────────────────────

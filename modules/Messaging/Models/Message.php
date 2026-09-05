@@ -18,6 +18,7 @@ use Spatie\MediaLibrary\InteractsWithMedia;
  * @property string $uuid
  * @property int $conversation_id
  * @property int $sender_user_id
+ * @property string $client_message_id
  * @property string $body
  * @property Carbon $sent_at
  * @property ?Carbon $edited_at
@@ -30,7 +31,7 @@ class Message extends Model implements HasMedia
 
     public $timestamps = false;
 
-    protected $fillable = ['conversation_id', 'sender_user_id', 'body', 'sent_at', 'edited_at', 'deleted_at', 'metadata'];
+    protected $fillable = ['conversation_id', 'sender_user_id', 'client_message_id', 'body', 'sent_at', 'edited_at', 'deleted_at', 'metadata'];
 
     protected static function booted(): void
     {

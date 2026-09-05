@@ -19,6 +19,7 @@ use Modules\Catalog\Models\ProductVariant;
  * @property ?int $variant_id
  * @property int $quantity
  * @property int $unit_price_minor_snapshot
+ * @property string $currency
  */
 class SavedForLaterItem extends Model
 {
@@ -33,6 +34,7 @@ class SavedForLaterItem extends Model
         'variant_id',
         'quantity',
         'unit_price_minor_snapshot',
+        'currency',
         'added_at',
     ];
 

@@ -53,9 +53,24 @@ final class GiftRegistryService
      * immutable snapshot data, referenced by ID only (soft reference,
      * matching how OrderItem itself references product_id).
      */
+    /**
+     * `order_item_id` is uniquely constrained (one order line can only ever
+     * fulfil one gift-registry purchase record), so this is safe to call
+     * more than once for the same OrderItem — a duplicate OrderStatusChanged
+     * delivery increments `quantity_purchased` at most once.
+     */
     public function recordPurchase(GiftRegistryItem $item, int $orderId, int $orderItemId, ?int $purchaserUserId, int $quantity): GiftRegistryPurchase
     {
         return DB::transaction(function () use ($item, $orderId, $orderItemId, $purchaserUserId, $quantity): GiftRegistryPurchase {
+            $existing = GiftRegistryPurchase::query()
+                ->where('order_item_id', $orderItemId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($existing !== null) {
+                return $existing;
+            }
+
             $purchase = GiftRegistryPurchase::query()->create([
                 'registry_item_id' => $item->id,
                 'order_id' => $orderId,

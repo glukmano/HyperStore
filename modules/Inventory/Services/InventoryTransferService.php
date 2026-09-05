@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Modules\Catalog\Models\Product;
 use Modules\Inventory\Contracts\InventoryTransferServiceInterface;
+use Modules\Inventory\Events\StockReplenished;
 use Modules\Inventory\Events\StockTransferReceived;
 use Modules\Inventory\Events\StockTransferred;
 use Modules\Inventory\Models\InventoryMovement;
@@ -351,6 +352,8 @@ class InventoryTransferService implements InventoryTransferServiceInterface
 
                         $lockedDestStock = StockItem::query()->where('id', $destStock->id)->lockForUpdate()->firstOrFail();
 
+                        $previousAts = $lockedDestStock->getAvailableToSellQuantity();
+
                         $currentIncoming = Quantity::fromString((string) $lockedDestStock->incoming);
                         $newIncoming = $currentIncoming->subtract($incQty);
                         $lockedDestStock->incoming = $newIncoming->isNegative() ? '0.0000' : $newIncoming->toString();
@@ -369,6 +372,18 @@ class InventoryTransferService implements InventoryTransferServiceInterface
                         }
 
                         $lockedDestStock->save();
+
+                        $newAts = $lockedDestStock->getAvailableToSellQuantity();
+                        if (! $previousAts->isPositive() && $newAts->isPositive()) {
+                            StockReplenished::dispatch(
+                                $lockedDestStock->tenant_id,
+                                $lockedDestStock->inventory_source_id,
+                                $lockedDestStock->product_id,
+                                $lockedDestStock->product_variant_id,
+                                $previousAts->toString(),
+                                $newAts->toString(),
+                            );
+                        }
 
                         if ($goodQty->isPositive()) {
                             InventoryMovement::create([

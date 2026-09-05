@@ -1,0 +1,9 @@
+{
+    "name": "Notifications",
+    "slug": "notifications",
+    "version": "1.0.0",
+    "description": "Shared notification boundary: preference/delivery policy consulted before dispatching a database/mail notification. Domain-specific Notification classes remain in their owning modules (e.g. Modules\\Customers\\Notifications\\*) — this module owns only the cross-cutting gate/dispatch contract, never the notification content itself.",
+    "provider": "Modules\\Notifications\\NotificationsServiceProvider",
+    "dependencies": [],
+    "enabled": true
+}

@@ -21,7 +21,7 @@ final class SaveForLaterService implements SaveForLaterServiceInterface
         private readonly CartServiceInterface $cartService,
     ) {}
 
-    public function saveForLater(User $user, int $productId, ?int $variantId, int $quantity, int $unitPriceMinorSnapshot): SavedForLaterItem
+    public function saveForLater(User $user, int $productId, ?int $variantId, int $quantity, int $unitPriceMinorSnapshot, string $currency): SavedForLaterItem
     {
         return SavedForLaterItem::query()->create([
             'tenant_id' => (int) $this->contextManager->getTenant()->getId(),
@@ -30,6 +30,7 @@ final class SaveForLaterService implements SaveForLaterServiceInterface
             'variant_id' => $variantId,
             'quantity' => $quantity,
             'unit_price_minor_snapshot' => $unitPriceMinorSnapshot,
+            'currency' => $currency,
             'added_at' => now(),
         ]);
     }

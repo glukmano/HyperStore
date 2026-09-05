@@ -9,8 +9,9 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
 use Modules\Catalog\Models\Product;
+use Modules\Notifications\Contracts\HasNotificationChannels;
 
-class BackInStockDetected extends Notification implements ShouldQueue
+class BackInStockDetected extends Notification implements HasNotificationChannels, ShouldQueue
 {
     use Queueable;
 

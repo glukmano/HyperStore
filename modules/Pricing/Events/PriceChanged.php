@@ -25,5 +25,8 @@ class PriceChanged
         public readonly ?int $oldAmountMinor,
         public readonly int $newAmountMinor,
         public readonly string $currency,
+        public readonly ?int $storeId = null,
+        public readonly ?int $channelId = null,
+        public readonly ?int $marketId = null,
     ) {}
 }

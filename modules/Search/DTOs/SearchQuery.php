@@ -25,5 +25,12 @@ final readonly class SearchQuery
         public int $page = 1,
         public int $perPage = 24,
         public ?string $sort = null,
+        /**
+         * One of 'product', 'category', 'vendor', 'cms_page', 'blog_post'.
+         * Store-scoping only applies to product/category — vendor/CMS
+         * content is tenant-wide, matching those entities' own visibility
+         * model (see ScoutSearchService).
+         */
+        public string $entityType = 'product',
     ) {}
 }

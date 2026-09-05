@@ -21,6 +21,9 @@ use Modules\Catalog\Models\ProductVariant;
  * @property ?int $target_price_minor
  * @property string $currency
  * @property int $baseline_price_minor
+ * @property ?int $store_id
+ * @property ?int $channel_id
+ * @property ?int $market_id
  * @property bool $is_active
  * @property ?Carbon $notified_at
  */
@@ -38,6 +41,9 @@ class PriceDropSubscription extends Model
         'target_price_minor',
         'currency',
         'baseline_price_minor',
+        'store_id',
+        'channel_id',
+        'market_id',
         'is_active',
         'notified_at',
         'created_at',
@@ -55,6 +61,9 @@ class PriceDropSubscription extends Model
             'variant_id' => 'integer',
             'target_price_minor' => 'integer',
             'baseline_price_minor' => 'integer',
+            'store_id' => 'integer',
+            'channel_id' => 'integer',
+            'market_id' => 'integer',
             'is_active' => 'boolean',
             'notified_at' => 'datetime',
             'created_at' => 'datetime',
@@ -85,16 +94,21 @@ class PriceDropSubscription extends Model
         return $this->belongsTo(ProductVariant::class, 'variant_id');
     }
 
-    public function shouldTrigger(int $newAmountMinor): bool
+    /**
+     * Evaluated only against a price re-resolved live through Pricing's own
+     * PriceResolverInterface (never a client-supplied or event-cached
+     * amount) — see CheckPriceDropSubscriptions.
+     */
+    public function shouldTrigger(int $currentAmountMinor): bool
     {
         if (! $this->is_active || $this->notified_at !== null) {
             return false;
         }
 
         if ($this->target_price_minor !== null) {
-            return $newAmountMinor <= $this->target_price_minor;
+            return $currentAmountMinor <= $this->target_price_minor;
         }
 
-        return $newAmountMinor < $this->baseline_price_minor;
+        return $currentAmountMinor < $this->baseline_price_minor;
     }
 }

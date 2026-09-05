@@ -11,6 +11,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
+use Modules\Customers\Services\WishlistService;
 use Modules\Marketplace\Models\VendorUser;
 
 /**
@@ -30,7 +31,7 @@ class AuthenticatedSessionController extends Controller
         return view('auth.login');
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(Request $request, WishlistService $wishlistService): RedirectResponse
     {
         $credentials = $request->validate([
             'email' => ['required', 'string', 'email'],
@@ -38,6 +39,10 @@ class AuthenticatedSessionController extends Controller
         ]);
 
         $remember = $request->boolean('remember');
+
+        // Captured before session regeneration below — the guest wishlist (if
+        // any) was stored under this pre-login session id.
+        $guestSessionId = $request->session()->getId();
 
         if (! Auth::attempt(['email' => $credentials['email'], 'password' => $credentials['password']], $remember)) {
             throw ValidationException::withMessages([
@@ -57,6 +62,13 @@ class AuthenticatedSessionController extends Controller
         }
 
         $request->session()->regenerate();
+
+        try {
+            $wishlistService->mergeGuestWishlist($user, $guestSessionId);
+        } catch (\Throwable) {
+            // No tenant context resolved (e.g. a non-storefront login) — the
+            // guest wishlist, if any, simply stays unmerged; never blocks login.
+        }
 
         return redirect()->intended($this->postLoginRoute($user));
     }

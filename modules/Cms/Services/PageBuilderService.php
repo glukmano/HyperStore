@@ -74,6 +74,11 @@ final class PageBuilderService
         });
     }
 
+    public function removeBlock(Page $page, int $blockId): void
+    {
+        PageBlock::query()->where('page_id', $page->id)->where('id', $blockId)->delete();
+    }
+
     public function publish(Page $page, User $editor): Page
     {
         $page->status = Page::STATUS_PUBLISHED;

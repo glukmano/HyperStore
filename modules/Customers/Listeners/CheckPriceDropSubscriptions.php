@@ -10,10 +10,19 @@ use Illuminate\Support\Facades\DB;
 use Modules\Catalog\Models\Product;
 use Modules\Customers\Models\PriceDropSubscription;
 use Modules\Customers\Notifications\PriceDropDetected;
+use Modules\Notifications\Services\NotificationDispatchService;
+use Modules\Pricing\Contracts\PriceResolverInterface;
+use Modules\Pricing\DTOs\PricingContext;
+use Modules\Pricing\DTOs\PricingItem;
 use Modules\Pricing\Events\PriceChanged;
 
 final class CheckPriceDropSubscriptions implements ShouldQueue
 {
+    public function __construct(
+        private readonly PriceResolverInterface $priceResolver,
+        private readonly NotificationDispatchService $notificationDispatch,
+    ) {}
+
     public function handle(PriceChanged $event): void
     {
         $candidates = PriceDropSubscription::query()
@@ -34,7 +43,31 @@ final class CheckPriceDropSubscriptions implements ShouldQueue
         }
 
         foreach ($candidates as $subscription) {
-            if (! $subscription->shouldTrigger($event->newAmountMinor)) {
+            /** @var PriceDropSubscription $subscription */
+
+            // Customers never calculates a price itself: the subscription's
+            // own stored store/channel/market/currency context is re-resolved
+            // through Pricing's authoritative PriceResolverInterface right
+            // now — the PriceChanged event payload is only the trigger to
+            // re-check, never the trusted source of the current price.
+            $currentPrice = $this->priceResolver->resolve(
+                new PricingItem(productId: $event->productId, variantId: $event->variantId),
+                new PricingContext(
+                    tenantId: $event->tenantId,
+                    currency: $subscription->currency,
+                    storeId: $subscription->store_id,
+                    marketId: $subscription->market_id,
+                    channelId: $subscription->channel_id,
+                ),
+            );
+
+            if ($currentPrice === null) {
+                continue;
+            }
+
+            $currentAmountMinor = $currentPrice->unitPrice->getMinorAmount();
+
+            if (! $subscription->shouldTrigger($currentAmountMinor)) {
                 continue;
             }
 
@@ -53,7 +86,9 @@ final class CheckPriceDropSubscriptions implements ShouldQueue
             }
 
             $user = User::query()->find($subscription->user_id);
-            $user?->notify(new PriceDropDetected($product, $event->newAmountMinor, $event->currency));
+            if ($user !== null) {
+                $this->notificationDispatch->send($user, 'price_drop', new PriceDropDetected($product, $currentAmountMinor, $subscription->currency));
+            }
         }
     }
 }

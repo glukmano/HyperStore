@@ -15,7 +15,8 @@ use Illuminate\Support\Str;
  * @property int $id
  * @property string $uuid
  * @property int $tenant_id
- * @property int $user_id
+ * @property ?int $user_id
+ * @property ?string $session_id
  * @property string $name
  * @property bool $is_default
  * @property string $visibility
@@ -28,6 +29,7 @@ class Wishlist extends Model
     protected $fillable = [
         'tenant_id',
         'user_id',
+        'session_id',
         'name',
         'is_default',
         'visibility',
