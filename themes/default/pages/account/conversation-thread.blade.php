@@ -1,4 +1,8 @@
-<div class="flex flex-col md:flex-row gap-6" wire:poll.5s>
+{{-- wire:poll is a degradation fallback only (e.g. window.Echo never
+     connected because Reverb is down) — the primary realtime update path
+     is the private Reverb channel subscription wired in
+     ConversationThread::onMessageBroadcast(). --}}
+<div class="flex flex-col md:flex-row gap-6" wire:poll.15s>
     @include('theme::components.account-nav')
 
     <div class="flex-1 space-y-4">

@@ -107,3 +107,14 @@ The owner's post-acceptance review found the initial Phase-17 delivery backend-c
 - **Meilisearch**: confirmed reachable in this environment but is a pre-existing shared instance already holding unrelated data — a dedicated real-Meilisearch integration test was evaluated and deliberately not committed rather than risk corrupting that shared state (see `docs/modules/SEARCH.md` §8).
 
 See the delta completion report delivered to the owner for the full test/validation breakdown and commit hash.
+
+## 19. Realtime Messaging Closure (post-delta review)
+
+The completion delta above (§18) left `ConversationThread` on a `wire:poll`-only update path with no Echo/Reverb wiring — flagged as not satisfying the approved first-party realtime requirement. Closed:
+
+- `App\Livewire\Storefront\Account\ConversationThread::onMessageBroadcast()` carries `#[On('echo-private:conversation.{conversation.id},.message.sent')]`, using Livewire's built-in Laravel Echo integration to subscribe the browser to the exact private channel `MessageSent::broadcastOn()` targets, authorized by the same `routes/channels.php` callback (`ConversationPolicy`) already covered by `ConversationChannelAuthTest`.
+- The listener method body is empty by design: Livewire's own request cycle re-runs `render()`, which re-queries `messages` from PostgreSQL — the socket payload is never rendered directly, so a reconnect or duplicate delivery just re-triggers the same idempotent full re-render (deduplicated by `wire:key="msg-{id}"`), and PostgreSQL remains authoritative exactly as Master §18 requires.
+- `resources/js/echo.js` (new, imported by `resources/js/app.js`) constructs `window.Echo` from the already-present `laravel-echo`/`pusher-js` dependencies using `VITE_REVERB_*` build-time env vars; when absent, `window.Echo` is simply never created.
+- `wire:poll.15s` remains, explicitly documented in both the Blade view and `docs/modules/MESSAGING.md` as a degradation fallback only — not the primary mechanism.
+- Verified locally: `php artisan reverb:start` boots and binds its configured port; `npm run build` bundles Echo/Pusher into the compiled asset with the `reverb` broadcaster wired in. No live end-to-end browser/socket delivery test was run (no browser-level test tool in this repo) — this is disclosed, not claimed proven.
+- New `tests/Feature/Messaging/RealtimeMessagingWiringTest.php` asserts the exact `#[On(...)]` attribute value, that it matches `MessageSent::broadcastAs()`/`broadcastOn()`, and that the JS bootstrap/fallback/channel-auth wiring all exist in source.
