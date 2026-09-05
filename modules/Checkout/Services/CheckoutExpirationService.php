@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\DB;
 use Modules\Checkout\Contracts\CheckoutMutationBarrierInterface;
 use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
+use Modules\Promotions\Contracts\LoyaltyCheckoutRedemptionServiceInterface;
+use Throwable;
 
 class CheckoutExpirationService
 {
@@ -50,6 +52,18 @@ class CheckoutExpirationService
         });
 
         $session->refresh();
+
+        // Non-blocking, optional cross-module dependency (same pattern as
+        // Affiliate's attribution-freeze hook in OrderCreationService): a
+        // checkout that expires without ever becoming an Order must not
+        // leave a dangling Loyalty point deduction behind.
+        if (app()->bound(LoyaltyCheckoutRedemptionServiceInterface::class)) {
+            try {
+                app(LoyaltyCheckoutRedemptionServiceInterface::class)->cancelForCheckout($session->uuid, $session->tenant_id);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
 
         throw new CheckoutExpiredException("CHECKOUT_EXPIRED: Checkout session [{$session->id}] has expired at [{$session->expires_at->toIso8601String()}].");
     }

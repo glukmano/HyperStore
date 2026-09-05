@@ -39,6 +39,23 @@ final class LoyaltyService
     }
 
     /**
+     * Public read for UI callers deciding whether to show a redemption
+     * control at all for the checkout session's currency — never a
+     * substitute for redeemPoints()'s own server-side re-validation.
+     */
+    public function redemptionValueForCurrency(int $tenantId, string $currency): ?int
+    {
+        $program = $this->activeProgram($tenantId);
+        if ($program === null) {
+            return null;
+        }
+
+        $rule = $this->currencyRule($tenantId, (int) $program->id, $currency);
+
+        return $rule?->point_redemption_value_minor;
+    }
+
+    /**
      * Earn a fixed number of points for a non-order source (e.g. a Customer
      * referral reward). Idempotent by (source_type, source_uuid, entry_type).
      */
@@ -276,6 +293,48 @@ final class LoyaltyService
 
             return $valueMinor;
         });
+    }
+
+    /**
+     * Reverses a previously-redeemed point spend (checkout-completion
+     * delta §4/§18) — used only when a checkout-time redemption never
+     * turns into a paid Order (the customer abandons/cancels checkout).
+     * Idempotent by the same sourceUuid the original redemption used; a
+     * replayed or double-cancelled request is a safe no-op. Never touches
+     * the original 'redeemed' entry — posts a compensating credit instead.
+     */
+    public function reverseRedemption(string $sourceUuid): void
+    {
+        $entry = LoyaltyPointEntry::where('source_type', 'redemption')
+            ->where('source_uuid', $sourceUuid)
+            ->where('entry_type', 'redeemed')
+            ->first();
+
+        if ($entry === null) {
+            return;
+        }
+
+        $reversalUuid = 'redemption_reversal:'.$sourceUuid;
+        $already = LoyaltyPointEntry::where('tenant_id', $entry->tenant_id)
+            ->where('source_type', 'redemption_reversal')
+            ->where('source_uuid', $reversalUuid)
+            ->where('entry_type', 'manual_adjustment_credit')
+            ->exists();
+        if ($already) {
+            return;
+        }
+
+        LoyaltyPointEntry::create([
+            'tenant_id' => $entry->tenant_id,
+            'customer_profile_id' => $entry->customer_profile_id,
+            'loyalty_program_id' => $entry->loyalty_program_id,
+            'entry_type' => 'manual_adjustment_credit',
+            'points' => -$entry->points,
+            'source_type' => 'redemption_reversal',
+            'source_uuid' => $reversalUuid,
+            'availability_status' => PayableAvailabilityStatus::Available,
+            'available_at' => CarbonImmutable::now(),
+        ]);
     }
 
     /**

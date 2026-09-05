@@ -24,6 +24,7 @@ use Modules\Marketplace\Contracts\MarketplaceCommercialPolicyInterface;
 use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
 use Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
+use Modules\Promotions\Contracts\LoyaltyCheckoutRedemptionServiceInterface;
 use RuntimeException;
 
 class CheckoutOrchestrator implements CheckoutOrchestratorInterface
@@ -755,6 +756,14 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
 
                 $this->reservationOrchestrator->releaseAll($lockedSession);
+
+                if (app()->bound(LoyaltyCheckoutRedemptionServiceInterface::class)) {
+                    try {
+                        app(LoyaltyCheckoutRedemptionServiceInterface::class)->cancelForCheckout($lockedSession->uuid, $lockedSession->tenant_id);
+                    } catch (\Throwable $e) {
+                        report($e);
+                    }
+                }
 
                 $lockedSession->state = 'cancelled';
                 $lockedSession->reservation_references = null;

@@ -52,6 +52,9 @@
             </div>
         </x-ui.card>
     @elseif($step === 'payment')
+        @auth
+            <livewire:promotions.loyalty-checkout-redemption :checkout-session-id="$checkoutSessionId" />
+        @endauth
         <x-ui.card>
             <div class="space-y-4">
                 <x-ui.select label="{{ __('Payment method') }}" wire:model="paymentMethodType">

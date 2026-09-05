@@ -81,3 +81,10 @@ This file, ADR-0142, ADR-0143, `docs/decisions/README.md` updated.
 ## 15. Stop Condition
 
 Phase-19 is complete. Do not start Phase-20 without explicit owner instruction.
+
+## 16. Known Pre-Existing Issues (Not Introduced By This Phase)
+
+- `tests/Concurrency/PostgreSqlMarketplaceConcurrencyTest::test_race_b_concurrent_custom_domain_claim` fails against real PostgreSQL. Confirmed via `git diff` (zero Phase-19 changes touch Vendor custom-domain-claim code) and a full database reset (rules out cross-run pollution) to be a pre-existing, deterministic bug in Phase-11 domain-verification logic, unrelated to Affiliate/Loyalty/Referral/Marketing. Not fixed here (out of this phase's authority boundary). Every other Phase-19-authored real-PostgreSQL test passes.
+- `Modules\Order\Services\OrderSnapshotValidator` silently drops Vendor commission fields from its `$validatedSnapshot['lines']` closed array shape (see ADR-0143) — a pre-existing Marketplace (Phase-11) gap, not introduced or fixed by Phase-19.
+- `Modules\Promotions\Services\CouponValidationService::recordUsage()` is defined but never invoked anywhere in the real Checkout/Order flow — coupon `times_used` never actually increments in production today. Pre-existing (predates Phase-19); the Phase-19 Final Completion Delta's Loyalty-checkout-redemption coupons rely only on `usage_limit` (checked directly against `times_used`, which stays `0`), which is unaffected by this gap, but it means an ordinary marketing coupon's per-customer/usage limits are not actually enforced end-to-end yet. Not fixed here (out of scope).
+- Checkout supports only a single `Cart.coupon_code` slot. Redeeming Loyalty points at checkout (minted as a one-time coupon) will replace an already-applied marketing coupon rather than stack with it — a pre-existing single-coupon-slot architectural limitation, not introduced by this delta. The checkout redemption UI does not yet warn the customer before this replacement occurs.

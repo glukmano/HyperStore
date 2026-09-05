@@ -26,12 +26,17 @@ use Modules\Promotions\Conditions\MinQuantityCondition;
 use Modules\Promotions\Conditions\ProductCondition;
 use Modules\Promotions\Conditions\ProductTypeCondition;
 use Modules\Promotions\Conditions\StoreCondition;
+use Modules\Promotions\Contracts\LoyaltyCheckoutRedemptionServiceInterface;
 use Modules\Promotions\Contracts\PromotionLineEligibilityResolverInterface;
 use Modules\Promotions\Livewire\CouponManager;
+use Modules\Promotions\Livewire\LoyaltyAccountPanel;
+use Modules\Promotions\Livewire\LoyaltyCheckoutRedemption;
+use Modules\Promotions\Livewire\LoyaltyProgramManager;
 use Modules\Promotions\Livewire\PromotionManager;
 use Modules\Promotions\Registries\PromotionActionRegistry;
 use Modules\Promotions\Registries\PromotionConditionRegistry;
 use Modules\Promotions\Services\CouponValidationService;
+use Modules\Promotions\Services\LoyaltyCheckoutRedemptionService;
 use Modules\Promotions\Services\PromotionLineEligibilityResolver;
 use Modules\Promotions\Services\PromotionRuleEngine;
 
@@ -79,6 +84,7 @@ class PromotionsServiceProvider extends ModuleServiceProvider
         $this->app->singleton(PromotionLineEligibilityResolverInterface::class, PromotionLineEligibilityResolver::class);
         $this->app->singleton(CouponValidationService::class);
         $this->app->singleton(PromotionRuleEngine::class);
+        $this->app->singleton(LoyaltyCheckoutRedemptionServiceInterface::class, LoyaltyCheckoutRedemptionService::class);
     }
 
     public function boot(): void
@@ -96,6 +102,7 @@ class PromotionsServiceProvider extends ModuleServiceProvider
         $nav = $this->app->make(NavigationRegistryInterface::class);
         $nav->register(new NavigationItem('promotions.index', 'Promotions', 'control-center.promotions.index', 'Promotions', 'promotions.view', 'tenant', '🎯', 10));
         $nav->register(new NavigationItem('promotions.coupons', 'Coupons', 'control-center.promotions.coupons', 'Promotions', 'coupons.view', 'tenant', '🎟️', 20));
+        $nav->register(new NavigationItem('promotions.loyalty', 'Loyalty Program', 'control-center.promotions.loyalty', 'Promotions', 'loyalty.manage', 'tenant', '⭐', 30));
     }
 
     protected function registerLivewireComponents(): void
@@ -103,6 +110,9 @@ class PromotionsServiceProvider extends ModuleServiceProvider
         if (class_exists(Livewire::class)) {
             Livewire::component('promotions.promotion-manager', PromotionManager::class);
             Livewire::component('promotions.coupon-manager', CouponManager::class);
+            Livewire::component('promotions.loyalty-program-manager', LoyaltyProgramManager::class);
+            Livewire::component('promotions.loyalty-account-panel', LoyaltyAccountPanel::class);
+            Livewire::component('promotions.loyalty-checkout-redemption', LoyaltyCheckoutRedemption::class);
         }
     }
 }

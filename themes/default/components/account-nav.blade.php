@@ -5,6 +5,8 @@
         'account.gift-registries.index' => __('Gift Registries'),
         'account.messages.index' => __('Messages'),
         'account.notifications' => __('Notification Preferences'),
+        'account.loyalty' => __('Loyalty Points'),
+        'account.referrals' => __('Refer a Friend'),
     ];
 @endphp
 <x-ui.card class="w-full md:w-56 shrink-0">

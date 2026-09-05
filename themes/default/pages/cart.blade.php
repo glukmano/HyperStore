@@ -38,6 +38,8 @@
         </div>
     @endif
 
+    <livewire:storefront.cart-recommendations-section />
+
     @auth
         @if($savedItems->isNotEmpty())
             <x-ui.card class="mt-4">

@@ -13,6 +13,7 @@
             'isInCompare' => $isInCompare,
         ])
 
+        <livewire:storefront.product-recommendations-section :product-id="$product->id" />
         <livewire:storefront.product-reviews-section :product-id="$product->id" />
         <livewire:storefront.product-qa-section :product-id="$product->id" />
     @endif

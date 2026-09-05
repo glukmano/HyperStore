@@ -462,6 +462,17 @@ class AppServiceProvider extends ServiceProvider
             order: 93,
         ));
 
+        $navigation->register(new NavigationItem(
+            key: 'platform-customer-referrals',
+            label: 'Customer Referrals',
+            routeName: 'control-center.platform.customers.referrals',
+            group: 'Platform',
+            permission: 'customers.view',
+            context: 'tenant',
+            icon: '🤝',
+            order: 94,
+        ));
+
         $this->app->make(ThemeRegistryInterface::class)->register(
             ThemeManifest::fromJsonFile(base_path('themes/default/theme.json'))
         );

@@ -19,6 +19,7 @@ use Modules\Customers\Models\CustomerReferral;
 use Modules\Customers\Services\CustomerReferralService;
 use Modules\Order\Events\OrderStatusChanged;
 use Modules\Order\Models\Order;
+use Modules\Promotions\Models\LoyaltyPointEntry;
 use Modules\Promotions\Models\LoyaltyProgram;
 use Modules\Promotions\Models\LoyaltyProgramCurrencyRule;
 use Modules\Promotions\Services\LoyaltyService;
@@ -136,5 +137,52 @@ class CustomerReferralServiceTest extends TestCase
         $secondOrder = $this->makeReferredOrder($referredProfile);
         OrderStatusChanged::dispatch($secondOrder, 'payment', 'pending', 'paid');
         $this->assertSame(500, $loyaltyService->getAvailableBalance($this->referrerProfile));
+    }
+
+    /**
+     * Final Completion Delta §5: the reward amount must be an explicit,
+     * configurable LoyaltyProgram setting — not a hardcoded constant.
+     * Changing it must affect only FUTURE rewards; a reward already granted
+     * (an immutable ledger entry) must never be retroactively altered.
+     */
+    public function test_referral_reward_amount_is_configurable_and_historical_rewards_are_unaffected(): void
+    {
+        $program = LoyaltyProgram::where('tenant_id', $this->tenant->id)->firstOrFail();
+        $this->assertSame(500, $program->referral_reward_points, 'Default preserves prior hardcoded behavior.');
+
+        $codeA = $this->service->getOrCreateCode($this->referrerProfile);
+        $referredUserA = User::factory()->create();
+        $referredProfileA = CustomerProfile::create(['tenant_id' => $this->tenant->id, 'user_id' => $referredUserA->id]);
+        $this->service->recordReferralSignup($referredProfileA, $codeA->code);
+        $orderA = $this->makeReferredOrder($referredProfileA);
+        OrderStatusChanged::dispatch($orderA, 'payment', 'pending', 'paid');
+
+        $referralA = CustomerReferral::where('referred_customer_profile_id', $referredProfileA->id)->firstOrFail();
+        $entryA = LoyaltyPointEntry::where('source_type', 'customer_referral')
+            ->where('source_uuid', 'customer_referral:'.$referralA->id)
+            ->firstOrFail();
+        $this->assertSame(500, $entryA->points);
+
+        // Configuration change — no code change, no new deploy.
+        $program->update(['referral_reward_points' => 1000]);
+
+        $referrerUserB = User::factory()->create();
+        $referrerProfileB = CustomerProfile::create(['tenant_id' => $this->tenant->id, 'user_id' => $referrerUserB->id]);
+        $codeB = $this->service->getOrCreateCode($referrerProfileB);
+        $referredUserB = User::factory()->create();
+        $referredProfileB = CustomerProfile::create(['tenant_id' => $this->tenant->id, 'user_id' => $referredUserB->id]);
+        $this->service->recordReferralSignup($referredProfileB, $codeB->code);
+        $orderB = $this->makeReferredOrder($referredProfileB);
+        OrderStatusChanged::dispatch($orderB, 'payment', 'pending', 'paid');
+
+        $referralB = CustomerReferral::where('referred_customer_profile_id', $referredProfileB->id)->firstOrFail();
+        $entryB = LoyaltyPointEntry::where('source_type', 'customer_referral')
+            ->where('source_uuid', 'customer_referral:'.$referralB->id)
+            ->firstOrFail();
+        $this->assertSame(1000, $entryB->points, 'The new reward amount applies to the new referral.');
+
+        // The historical entry for referral A must remain exactly as granted.
+        $entryA->refresh();
+        $this->assertSame(500, $entryA->points, 'A historical reward is never retroactively altered by a later configuration change.');
     }
 }

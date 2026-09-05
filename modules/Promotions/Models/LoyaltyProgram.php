@@ -19,6 +19,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property string $name
  * @property int $pending_hold_days
  * @property int|null $points_expire_after_days
+ * @property int $referral_reward_points
  * @property bool $is_active
  * @property-read Collection<int, LoyaltyProgramCurrencyRule> $currencyRules
  */
@@ -33,12 +34,14 @@ class LoyaltyProgram extends Model
         'name',
         'pending_hold_days',
         'points_expire_after_days',
+        'referral_reward_points',
         'is_active',
     ];
 
     protected $casts = [
         'pending_hold_days' => 'integer',
         'points_expire_after_days' => 'integer',
+        'referral_reward_points' => 'integer',
         'is_active' => 'boolean',
     ];
 

@@ -18,6 +18,7 @@ class Phase19PermissionSeeder extends Seeder
         'loyalty.manage',
         'marketing-campaigns.view',
         'marketing-campaigns.manage',
+        'customers.view',
     ];
 
     public function run(): void

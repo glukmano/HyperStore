@@ -142,4 +142,43 @@ class ProductRecommendationServiceTest extends TestCase
 
         $this->assertFalse($results->contains('id', $b->id));
     }
+
+    /**
+     * Final Completion Delta §7: recommendations must respect the resolved
+     * Market, not merely Store-level publication. A Product published in
+     * the Store but restricted to a DIFFERENT Market than the one being
+     * browsed must never be recommended — while a Product with no Market
+     * restriction at all (the Catalog default for a listing published
+     * without explicit marketIds) remains recommendable in every Market the
+     * Store actively serves.
+     */
+    public function test_recommendations_exclude_a_product_unavailable_in_the_resolved_market(): void
+    {
+        $marketUs = Market::create(['tenant_id' => $this->tenant->id, 'code' => 'US', 'name' => 'US', 'default_currency_code' => 'USD', 'default_locale_code' => 'en', 'timezone' => 'UTC', 'is_active' => true]);
+        $marketSa = Market::create(['tenant_id' => $this->tenant->id, 'code' => 'SA', 'name' => 'SA', 'default_currency_code' => 'SAR', 'default_locale_code' => 'ar', 'timezone' => 'UTC', 'is_active' => true]);
+
+        $this->store->markets()->attach([
+            $marketUs->id => ['is_active' => true, 'is_default' => true],
+            $marketSa->id => ['is_active' => true, 'is_default' => false],
+        ]);
+
+        $source = $this->makeProduct('SKU-SRC');
+        $usOnly = $this->makeProduct('SKU-US-ONLY');
+        $unrestricted = $this->makeProduct('SKU-UNRESTRICTED');
+
+        // Restrict the "usOnly" listing to the US Market only.
+        ProductStoreListing::where('product_id', $usOnly->id)->where('store_id', $this->store->id)
+            ->first()
+            ->markets()
+            ->attach($marketUs->id, ['is_enabled' => true]);
+
+        $this->makeOrderWithItems([$source->id, $usOnly->id, $unrestricted->id], paymentStatus: 'paid');
+
+        $resultsInSa = $this->service->frequentlyBoughtWith($this->tenant->id, $this->store->id, $source->id, marketId: $marketSa->id);
+        $this->assertFalse($resultsInSa->contains('id', $usOnly->id), 'A US-only listing must not be recommended while browsing the SA Market.');
+        $this->assertTrue($resultsInSa->contains('id', $unrestricted->id), 'An unrestricted listing remains recommendable in any Market the Store serves.');
+
+        $resultsInUs = $this->service->frequentlyBoughtWith($this->tenant->id, $this->store->id, $source->id, marketId: $marketUs->id);
+        $this->assertTrue($resultsInUs->contains('id', $usOnly->id), 'A US-restricted listing IS recommendable while browsing the US Market.');
+    }
 }

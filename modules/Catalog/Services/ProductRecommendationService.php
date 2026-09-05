@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Modules\Catalog\Services;
 
+use App\Core\Stores\Models\Store;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Modules\Catalog\Models\Product;
@@ -13,14 +14,26 @@ use Modules\Order\Models\OrderItem;
 /**
  * Owner Delta correction §17: rule-based only (no ML/AI), and only ever
  * learns from qualifying completed Order data — cancelled/unpaid Orders are
- * excluded at the query source. Every result is re-checked against the
- * requesting Store's own ProductStoreListing publication status before
- * being returned, so a product no longer sellable in this Store never
- * appears, however frequently it co-occurred historically.
+ * excluded at the query source.
+ *
+ * Final Completion Delta §7: every result is re-checked, at read time,
+ * against the FULL regional-eligibility boundary already established by the
+ * Catalog domain model — Store, resolved Market, and the active Store↔Market
+ * relation — not merely Store-level publication. There is no separate
+ * "regional availability checker" service anywhere else in the codebase to
+ * delegate to (confirmed by source audit: even the CMS ProductGrid block's
+ * read path only checks Store-level status/visibility); the authoritative
+ * eligibility DATA is ProductStoreListing::markets() (pivot is_enabled) and
+ * Store::markets() (pivot is_active) — the exact same relations
+ * App\Livewire\Storefront\RegionalSwitcher already reads. This service reads
+ * those same relations directly rather than inventing a parallel rule.
  */
 final class ProductRecommendationService
 {
-    public function frequentlyBoughtWith(int $tenantId, int $storeId, int $productId, int $limit = 6): Collection
+    /**
+     * @return Collection<int, Product>
+     */
+    public function frequentlyBoughtWith(int $tenantId, int $storeId, int $productId, int $limit = 6, ?int $marketId = null): Collection
     {
         $qualifyingOrderIds = OrderItem::query()
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
@@ -45,10 +58,13 @@ final class ProductRecommendationService
             ->limit($limit * 4)
             ->pluck('freq', 'product_id');
 
-        return $this->filterEligibleAndRank($tenantId, $storeId, $coOccurrence, $limit);
+        return $this->filterEligibleAndRank($tenantId, $storeId, $coOccurrence, $limit, $marketId);
     }
 
-    public function relatedByCategory(int $tenantId, int $storeId, Product $product, int $limit = 6): Collection
+    /**
+     * @return Collection<int, Product>
+     */
+    public function relatedByCategory(int $tenantId, int $storeId, Product $product, int $limit = 6, ?int $marketId = null): Collection
     {
         $categoryIds = $product->categories()->pluck('categories.id');
         if ($categoryIds->isEmpty()) {
@@ -64,34 +80,71 @@ final class ProductRecommendationService
             ->pluck('id')
             ->mapWithKeys(fn ($id) => [$id => 1]);
 
-        return $this->filterEligibleAndRank($tenantId, $storeId, $candidateProductIds, $limit);
+        return $this->filterEligibleAndRank($tenantId, $storeId, $candidateProductIds, $limit, $marketId);
     }
 
-    public function crossSellUpsell(int $tenantId, int $storeId, Product $product, int $limit = 6): Collection
+    /**
+     * @return Collection<int, Product>
+     */
+    public function crossSellUpsell(int $tenantId, int $storeId, Product $product, int $limit = 6, ?int $marketId = null): Collection
     {
-        return $this->frequentlyBoughtWith($tenantId, $storeId, (int) $product->id, $limit);
+        return $this->frequentlyBoughtWith($tenantId, $storeId, (int) $product->id, $limit, $marketId);
     }
 
     /**
      * @param  \Illuminate\Support\Collection<int, int>  $productIdToWeight
      * @return Collection<int, Product>
      */
-    private function filterEligibleAndRank(int $tenantId, int $storeId, $productIdToWeight, int $limit): Collection
+    private function filterEligibleAndRank(int $tenantId, int $storeId, $productIdToWeight, int $limit, ?int $marketId): Collection
     {
         if ($productIdToWeight->isEmpty()) {
             return new Collection;
         }
 
-        $eligibleProductIds = ProductStoreListing::where('store_id', $storeId)
+        // A resolved Market that this Store does not actually, actively
+        // serve can never make anything eligible — matching the exact
+        // relation RegionalSwitcher::mount() already reads
+        // ($store->markets()->wherePivot('is_active', true)).
+        if ($marketId !== null) {
+            $storeServesMarket = Store::where('id', $storeId)
+                ->whereHas('markets', function ($q) use ($marketId): void {
+                    $q->where('markets.id', $marketId)->where('store_markets.is_active', true);
+                })
+                ->exists();
+
+            if (! $storeServesMarket) {
+                return new Collection;
+            }
+        }
+
+        $listingQuery = ProductStoreListing::where('store_id', $storeId)
             ->where('status', 'published')
-            ->whereIn('product_id', $productIdToWeight->keys())
-            ->pluck('product_id');
+            ->where('visibility', 'visible')
+            ->whereIn('product_id', $productIdToWeight->keys());
+
+        if ($marketId !== null) {
+            // A listing with no Market rows at all is unrestricted (Catalog
+            // only attaches Market rows when marketIds were explicitly
+            // supplied at publish time — see PublishProductToStoreAction) —
+            // it must not be silently excluded by a Market that was simply
+            // never configured for it. A listing that DOES restrict markets
+            // must match the resolved Market via an enabled pivot row.
+            $listingQuery->where(function ($q) use ($marketId): void {
+                $q->whereDoesntHave('markets')
+                    ->orWhereHas('markets', function ($q2) use ($marketId): void {
+                        $q2->where('markets.id', $marketId)->where('product_store_markets.is_enabled', true);
+                    });
+            });
+        }
+
+        $eligibleProductIds = $listingQuery->pluck('product_id');
 
         if ($eligibleProductIds->isEmpty()) {
             return new Collection;
         }
 
         return Product::where('tenant_id', $tenantId)
+            ->where('status', 'active')
             ->whereIn('id', $eligibleProductIds)
             ->get()
             ->sortByDesc(fn (Product $p) => $productIdToWeight[$p->id] ?? 0)

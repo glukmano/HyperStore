@@ -34,6 +34,7 @@ use App\Http\Controllers\Storefront\MessageAttachmentController;
 use App\Livewire\ControlCenter\ChannelManager;
 use App\Livewire\ControlCenter\CountryManager;
 use App\Livewire\ControlCenter\CurrencyManager;
+use App\Livewire\ControlCenter\CustomerReferralManager;
 use App\Livewire\ControlCenter\DashboardOverview;
 use App\Livewire\ControlCenter\DomainManager;
 use App\Livewire\ControlCenter\LanguageManager;
@@ -47,6 +48,7 @@ use App\Livewire\Storefront\Account\GiftRegistryEditor;
 use App\Livewire\Storefront\Account\MessagesInbox;
 use App\Livewire\Storefront\Account\NotificationPreferencesPage;
 use App\Livewire\Storefront\Account\RecentlyViewedPage;
+use App\Livewire\Storefront\Account\ReferralSharePage;
 use App\Livewire\Storefront\Account\WishlistPage;
 use App\Livewire\Storefront\CartPage;
 use App\Livewire\Storefront\CategoryPage;
@@ -71,6 +73,7 @@ use Modules\Cms\Livewire\MenuManager;
 use Modules\Cms\Livewire\PageEditor;
 use Modules\Cms\Livewire\PageManager;
 use Modules\Cms\Livewire\RedirectManager;
+use Modules\Customers\Http\Controllers\CustomerReferralLinkController;
 use Modules\Messaging\Livewire\MessagingModerationManager;
 use Modules\Reviews\Livewire\QaModerationManager;
 use Modules\Reviews\Livewire\ReviewModerationManager;
@@ -159,7 +162,13 @@ $storefrontRoutes = function (string $namePrefix = ''): void {
         Route::get('/messages', MessagesInbox::class)->name($namePrefix.'account.messages.index');
         Route::get('/messages/{conversation}', ConversationThread::class)->name($namePrefix.'account.messages.show');
         Route::get('/notifications', NotificationPreferencesPage::class)->name($namePrefix.'account.notifications');
+        Route::get('/referrals', ReferralSharePage::class)->name($namePrefix.'account.referrals');
     });
+
+    // Phase-19 Final Completion Delta §3: visiting a Customer's referral
+    // link mints the hs_ref_code cookie CaptureReferralSignupListener reads
+    // at signup — see CustomerReferralLinkController.
+    Route::get('/refer/{code}', [CustomerReferralLinkController::class, 'visit'])->name($namePrefix.'customer-referral.visit');
 };
 
 Route::middleware([ResolveContextMiddleware::class, ResolveStorefrontThemeMiddleware::class])
@@ -200,6 +209,7 @@ Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, Resolv
         Route::get('/vendor-reviews', VendorReviewModerationManager::class)->name('vendor-reviews.index');
         Route::get('/qa', QaModerationManager::class)->name('qa.index');
         Route::get('/messaging', MessagingModerationManager::class)->name('messaging.index');
+        Route::get('/customers/referrals', CustomerReferralManager::class)->name('customers.referrals');
 
         Route::prefix('cms/pages')->name('cms.pages.')->group(function () {
             Route::get('/', PageManager::class)->name('index');

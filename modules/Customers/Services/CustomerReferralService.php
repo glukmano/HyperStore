@@ -126,12 +126,24 @@ final class CustomerReferralService
             /** @var CustomerProfile|null $referrer */
             $referrer = CustomerProfile::find($referral->referrer_customer_profile_id);
             if ($referrer !== null) {
-                app(LoyaltyService::class)->earnPoints(
-                    customerProfile: $referrer,
-                    points: 500,
-                    sourceType: 'customer_referral',
-                    sourceUuid: 'customer_referral:'.$referral->id,
-                );
+                $loyaltyService = app(LoyaltyService::class);
+                $program = $loyaltyService->activeProgram((int) $order->tenant_id);
+
+                // Final Completion Delta §5: the reward amount is an explicit,
+                // Tenant-scoped LoyaltyProgram configuration value — never a
+                // hardcoded constant. No active program means no reward, exactly
+                // like every other Loyalty operation (Owner Delta §10/§11).
+                // The amount is read ONCE, here, at grant time, and frozen into
+                // the append-only ledger entry — a later change to this setting
+                // never alters an already-granted historical reward.
+                if ($program !== null && $program->referral_reward_points > 0) {
+                    $loyaltyService->earnPoints(
+                        customerProfile: $referrer,
+                        points: $program->referral_reward_points,
+                        sourceType: 'customer_referral',
+                        sourceUuid: 'customer_referral:'.$referral->id,
+                    );
+                }
             }
         });
     }
