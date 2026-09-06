@@ -18,6 +18,7 @@ use Modules\Checkout\DTOs\CheckoutCustomerData;
 use Modules\Customers\Models\CustomerProfile;
 use Modules\Order\Contracts\OrderCreationServiceInterface;
 use Modules\Order\DTOs\OrderCreationDTO;
+use Modules\Order\Models\Order;
 use Modules\Order\Models\OrderItem;
 use Modules\Payment\Exceptions\GatewayDoesNotSupportRecurringException;
 use Modules\Payment\Exceptions\PaymentReconciliationPendingException;
@@ -66,6 +67,26 @@ final class SubscriptionRenewalService
     {
         $now = $this->dbNow();
 
+        // Reconcile stuck `unknown` attempts FIRST — Owner Delta §11: never
+        // issue another charge while a prior request's outcome is still
+        // indeterminate. This must run BEFORE the "due" scan below because
+        // an Unknown outcome never advances next_billing_at nor changes the
+        // Subscription's own status (it may legitimately still be Active),
+        // so the affected Subscription would otherwise be re-selected by
+        // the plain "due" query on every pass without ever resolving.
+        $unknownAttempts = SubscriptionRenewalAttempt::where('tenant_id', $tenantId)
+            ->where('status', SubscriptionRenewalStatus::Unknown->value)
+            ->get();
+
+        foreach ($unknownAttempts as $attempt) {
+            $subscription = Subscription::find($attempt->subscription_id);
+            if ($subscription === null) {
+                continue;
+            }
+
+            $this->executeClaimedRenewal($subscription, $attempt);
+        }
+
         // New-period renewals: next_billing_at has arrived for a
         // subscription with no attempt yet for its (un-advanced) period.
         $due = Subscription::where('tenant_id', $tenantId)
@@ -97,15 +118,16 @@ final class SubscriptionRenewalService
             ->update(['status' => SubscriptionStatus::Cancelled->value]);
     }
 
-    private function claimAndProcess(Subscription $subscription, CarbonImmutable $billingPeriodStart, CarbonImmutable $now, int $attemptNumber = 1): void
+    private function claimAndProcess(Subscription $subscription, CarbonImmutable $billingPeriodStart, CarbonImmutable $now): void
     {
-        $providerIdempotencyKey = "subscription:{$subscription->id}:period:{$billingPeriodStart->toIso8601String()}".($attemptNumber > 1 ? ":retry{$attemptNumber}" : '');
+        $providerIdempotencyKey = "subscription:{$subscription->id}:period:{$billingPeriodStart->toIso8601String()}";
 
         try {
             $attempt = SubscriptionRenewalAttempt::create([
                 'tenant_id' => $subscription->tenant_id,
                 'subscription_id' => $subscription->id,
                 'billing_period_start' => $billingPeriodStart,
+                'attempt_number' => 1,
                 'status' => SubscriptionRenewalStatus::Claimed->value,
                 'provider_idempotency_key' => $providerIdempotencyKey,
                 'claimed_at' => $now,
@@ -122,47 +144,71 @@ final class SubscriptionRenewalService
         $this->executeClaimedRenewal($subscription, $attempt);
     }
 
+    /**
+     * D.43 dunning retry — genuinely distinct from the original attempt.
+     * A DEFINITIVE failure followed by a later scheduled retry is a NEW
+     * real payment attempt and gets its OWN durable
+     * provider_idempotency_key (derived from a persisted,
+     * monotonically-incrementing `attempt_number` — never a `COUNT(*)`
+     * over rows, since exactly one row is ever reused for one billing
+     * period, per Owner Delta §11). The re-claim itself (SELECT ... FOR
+     * UPDATE, re-check eligibility, then UPDATE, all inside one
+     * transaction) is what prevents two concurrent workers from both
+     * flipping the same attempt to `claimed` and both building an Order —
+     * the row lock is the exclusivity mechanism here, exactly like the
+     * unique-constraint INSERT is for a brand-new claim.
+     */
     private function maybeRetryPastDue(Subscription $subscription, CarbonImmutable $now): void
     {
         $billingPeriodStart = CarbonImmutable::instance($subscription->current_period_end);
-
-        /** @var SubscriptionRenewalAttempt|null $attempt */
-        $attempt = SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)
-            ->where('billing_period_start', $billingPeriodStart)
-            ->first();
-
-        if ($attempt === null || ! in_array($attempt->status, [SubscriptionRenewalStatus::Failed, SubscriptionRenewalStatus::Unknown], true)) {
-            return;
-        }
-
         $plan = $subscription->plan;
         $retryDays = $plan->dunning_retry_days ?? [1, 3, 7];
-        $attemptNumber = (int) (SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)
-            ->where('billing_period_start', $billingPeriodStart)
-            ->count());
 
-        if ($attemptNumber > count($retryDays)) {
-            $subscription->status = SubscriptionStatus::Suspended;
-            $subscription->save();
+        $claimed = DB::transaction(function () use ($subscription, $billingPeriodStart, $retryDays, $now): ?SubscriptionRenewalAttempt {
+            /** @var SubscriptionRenewalAttempt|null $attempt */
+            $attempt = SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)
+                ->where('billing_period_start', $billingPeriodStart)
+                ->lockForUpdate()
+                ->first();
 
+            if ($attempt === null || ! in_array($attempt->status, [SubscriptionRenewalStatus::Failed, SubscriptionRenewalStatus::Unknown], true)) {
+                return null;
+            }
+
+            $currentAttemptNumber = $attempt->attempt_number;
+            if ($currentAttemptNumber > count($retryDays)) {
+                $subscription->status = SubscriptionStatus::Suspended;
+                $subscription->save();
+
+                return null;
+            }
+
+            $daysSinceResolved = $attempt->resolved_at !== null ? $attempt->resolved_at->diffInDays($now) : 0;
+            if ($daysSinceResolved < $retryDays[$currentAttemptNumber - 1]) {
+                return null;
+            }
+
+            $nextAttemptNumber = $currentAttemptNumber + 1;
+
+            // Re-claim the SAME row (an UPDATE, never a second INSERT for
+            // this period) — but with a freshly-derived, durable
+            // idempotency key distinct from every prior attempt's key.
+            $attempt->status = SubscriptionRenewalStatus::Claimed;
+            $attempt->attempt_number = $nextAttemptNumber;
+            $attempt->provider_idempotency_key = "subscription:{$subscription->id}:period:{$billingPeriodStart->toIso8601String()}:retry{$nextAttemptNumber}";
+            $attempt->failure_reason = null;
+            $attempt->claimed_at = $now;
+            $attempt->resolved_at = null;
+            $attempt->save();
+
+            return $attempt;
+        });
+
+        if ($claimed === null) {
             return;
         }
 
-        $daysSinceClaim = $attempt->resolved_at !== null ? $attempt->resolved_at->diffInDays($now) : 0;
-        if ($daysSinceClaim < $retryDays[$attemptNumber - 1]) {
-            return;
-        }
-
-        // Re-claim the SAME row (an UPDATE, never a second INSERT for this
-        // period) with a freshly-derived idempotency key for this attempt.
-        $attempt->status = SubscriptionRenewalStatus::Claimed;
-        $attempt->provider_idempotency_key = "subscription:{$subscription->id}:period:{$billingPeriodStart->toIso8601String()}:retry{$attemptNumber}";
-        $attempt->failure_reason = null;
-        $attempt->claimed_at = $now;
-        $attempt->resolved_at = null;
-        $attempt->save();
-
-        $this->executeClaimedRenewal($subscription, $attempt);
+        $this->executeClaimedRenewal($subscription, $claimed);
     }
 
     private function executeClaimedRenewal(Subscription $subscription, SubscriptionRenewalAttempt $attempt): void
@@ -178,61 +224,72 @@ final class SubscriptionRenewalService
                 $subscription->pending_plan_id = null;
             }
 
-            /** @var CustomerProfile $customerProfile */
-            $customerProfile = CustomerProfile::findOrFail($subscription->customer_profile_id);
-            /** @var User $customerUser */
-            $customerUser = User::findOrFail($customerProfile->user_id);
-            /** @var Market $market */
-            $market = Market::findOrFail($subscription->market_id);
+            // One billing period is one authoritative renewal economic
+            // identity end-to-end — not just one SubscriptionRenewalAttempt
+            // row, but also one Order. A reconciliation of a stuck
+            // `unknown` attempt, or a genuinely new dunning retry after a
+            // definitive failure, both re-attempt PAYMENT against the
+            // SAME already-created Order — never a second Order for the
+            // same period.
+            if ($attempt->order_id !== null) {
+                $order = Order::findOrFail($attempt->order_id);
+            } else {
+                /** @var CustomerProfile $customerProfile */
+                $customerProfile = CustomerProfile::findOrFail($subscription->customer_profile_id);
+                /** @var User $customerUser */
+                $customerUser = User::findOrFail($customerProfile->user_id);
+                /** @var Market $market */
+                $market = Market::findOrFail($subscription->market_id);
 
-            // A dedicated, isolated Cart for this renewal — NEVER the
-            // customer's own live storefront cart (CartService::
-            // getOrCreateActiveCart() would otherwise merge this synthetic
-            // purchase into whatever the customer happens to be shopping
-            // for right now).
-            $cart = Cart::create([
-                'tenant_id' => $subscription->tenant_id,
-                'user_id' => $customerProfile->user_id,
-                'store_id' => $subscription->store_id,
-                'market_id' => $subscription->market_id,
-                'channel_id' => $subscription->channel_id,
-                'currency' => $market->default_currency_code,
-                'status' => 'active',
-            ]);
+                // A dedicated, isolated Cart for this renewal — NEVER the
+                // customer's own live storefront cart (CartService::
+                // getOrCreateActiveCart() would otherwise merge this
+                // synthetic purchase into whatever the customer happens to
+                // be shopping for right now).
+                $cart = Cart::create([
+                    'tenant_id' => $subscription->tenant_id,
+                    'user_id' => $customerProfile->user_id,
+                    'store_id' => $subscription->store_id,
+                    'market_id' => $subscription->market_id,
+                    'channel_id' => $subscription->channel_id,
+                    'currency' => $market->default_currency_code,
+                    'status' => 'active',
+                ]);
 
-            $this->cartService->addLine($cart, new CartLineItemData(
-                productId: $plan->product_id,
-                variantId: null,
-                quantity: CartQuantity::fromInt(1),
-                customizations: ['subscription_id' => $subscription->id, 'billing_period_start' => $attempt->billing_period_start->toIso8601String()]
-            ));
+                $this->cartService->addLine($cart, new CartLineItemData(
+                    productId: $plan->product_id,
+                    variantId: null,
+                    quantity: CartQuantity::fromInt(1),
+                    customizations: ['subscription_id' => $subscription->id, 'billing_period_start' => $attempt->billing_period_start->toIso8601String()]
+                ));
 
-            $session = $this->checkoutOrchestrator->createFromCart($cart);
-            $session = $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData(
-                email: $customerUser->email,
-                firstName: $customerUser->name !== '' ? $customerUser->name : 'Customer',
-                lastName: ''
-            ));
-            $ready = $this->checkoutOrchestrator->markReadyForOrder($session);
+                $session = $this->checkoutOrchestrator->createFromCart($cart);
+                $session = $this->checkoutOrchestrator->setCustomerData($session, new CheckoutCustomerData(
+                    email: $customerUser->email,
+                    firstName: $customerUser->name !== '' ? $customerUser->name : 'Customer',
+                    lastName: ''
+                ));
+                $ready = $this->checkoutOrchestrator->markReadyForOrder($session);
 
-            $result = $this->orderCreationService->createFromCheckout(new OrderCreationDTO(
-                tenantId: $ready->tenantId,
-                checkoutId: $ready->checkoutSessionId
-            ));
-            $order = $result->order;
+                $result = $this->orderCreationService->createFromCheckout(new OrderCreationDTO(
+                    tenantId: $ready->tenantId,
+                    checkoutId: $ready->checkoutSessionId
+                ));
+                $order = $result->order;
 
-            $attempt->order_id = $order->id;
-            $attempt->save();
+                $attempt->order_id = $order->id;
+                $attempt->save();
 
-            $order->loadMissing('items');
-            foreach ($order->items as $item) {
-                /** @var OrderItem $item */
-                if ((int) $item->product_id === (int) $plan->product_id) {
-                    $item->subscription_id = (int) $subscription->id;
-                    $item->billing_period_start_snapshot = $attempt->billing_period_start;
-                    $item->billing_period_end_snapshot = $plan->nextPeriodEnd($attempt->billing_period_start);
-                    $item->plan_snapshot = ['plan_id' => $plan->id, 'name' => $plan->name, 'billing_interval' => $plan->billing_interval, 'unit_price_minor' => $item->unit_price_minor];
-                    $item->save();
+                $order->loadMissing('items');
+                foreach ($order->items as $item) {
+                    /** @var OrderItem $item */
+                    if ((int) $item->product_id === (int) $plan->product_id) {
+                        $item->subscription_id = (int) $subscription->id;
+                        $item->billing_period_start_snapshot = $attempt->billing_period_start;
+                        $item->billing_period_end_snapshot = $plan->nextPeriodEnd($attempt->billing_period_start);
+                        $item->plan_snapshot = ['plan_id' => $plan->id, 'name' => $plan->name, 'billing_interval' => $plan->billing_interval, 'unit_price_minor' => $item->unit_price_minor];
+                        $item->save();
+                    }
                 }
             }
 

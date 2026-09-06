@@ -19,6 +19,7 @@ use Modules\Subscriptions\Enums\SubscriptionRenewalStatus;
  * @property int $tenant_id
  * @property int $subscription_id
  * @property CarbonInterface $billing_period_start
+ * @property int $attempt_number
  * @property SubscriptionRenewalStatus $status
  * @property ?int $order_id
  * @property string $provider_idempotency_key
@@ -36,6 +37,7 @@ class SubscriptionRenewalAttempt extends Model
         'tenant_id',
         'subscription_id',
         'billing_period_start',
+        'attempt_number',
         'status',
         'order_id',
         'provider_idempotency_key',
@@ -48,6 +50,7 @@ class SubscriptionRenewalAttempt extends Model
     {
         return [
             'billing_period_start' => 'immutable_datetime',
+            'attempt_number' => 'integer',
             'status' => SubscriptionRenewalStatus::class,
             'claimed_at' => 'immutable_datetime',
             'resolved_at' => 'immutable_datetime',

@@ -20,12 +20,16 @@ use Modules\Payment\Contracts\PaymentGatewayInterface;
 use Modules\Payment\Contracts\PaymentGatewayRegistryInterface;
 use Modules\Payment\DTOs\SetupPaymentMethodRequest;
 use Modules\Payment\Models\CustomerPaymentMethod;
+use Modules\Payment\Models\Payment;
+use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Providers\FakePaymentGateway;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Pricing\Models\TaxClass;
 use Modules\Subscriptions\Models\Subscription;
 use Modules\Subscriptions\Models\SubscriptionPlan;
 use Modules\Subscriptions\Models\SubscriptionRenewalAttempt;
+use Modules\Subscriptions\Services\SubscriptionRenewalService;
 use Tests\TestCase;
 
 /**
@@ -195,5 +199,58 @@ exit(0);
         $subscription->refresh();
         $this->assertSame('active', $subscription->status->value);
         $this->assertTrue($subscription->current_period_end->isFuture());
+    }
+
+    /**
+     * FINAL ACCEPTANCE CHECK item 2: the DUNNING RETRY path (re-claiming an
+     * already-existing, definitively-failed attempt row) has its own
+     * distinct concurrency-exclusivity mechanism (a row lock inside one
+     * transaction, re-checked after acquiring the lock) — separate from
+     * the fresh-claim path's unique-constraint INSERT. Two workers racing
+     * the exact same retry must still result in exactly one re-claim, one
+     * new payment attempt (a new PaymentTransaction under a new
+     * idempotency key), and NO second renewal Order.
+     */
+    public function test_two_workers_racing_the_same_dunning_retry_result_in_exactly_one_reclaim_and_one_new_attempt(): void
+    {
+        $subscription = $this->makeSubscription();
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->default();
+        $gateway->forcedNextOutcome = 'decline';
+
+        app(SubscriptionRenewalService::class)->processDueRenewals($this->tenant->id);
+
+        $attempt = SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)->firstOrFail();
+        $this->assertSame('failed', $attempt->status->value);
+        $this->assertSame(1, $attempt->attempt_number);
+        $firstOrderId = $attempt->order_id;
+
+        // The retry day has arrived, and this time the provider approves.
+        $attempt->update(['resolved_at' => now()->subDays(2)]);
+        $gateway->forcedNextOutcome = null;
+
+        $bootstrap = $this->getBootstrapScript();
+        $tenantId = $this->tenant->id;
+
+        $workerCode = "{$bootstrap}
+// __BARRIER_WAIT__
+app(\\Modules\\Subscriptions\\Services\\SubscriptionRenewalService::class)->processDueRenewals({$tenantId});
+echo 'DONE';
+exit(0);
+";
+
+        $this->executeConcurrently([$workerCode, $workerCode]);
+
+        $attempt->refresh();
+        $this->assertSame('succeeded', $attempt->status->value);
+        $this->assertSame(2, $attempt->attempt_number, 'Exactly one re-claim must have happened — attempt_number must advance by exactly 1, not 2, even though two workers raced it.');
+        $this->assertSame($firstOrderId, $attempt->order_id, 'The retry must reuse the SAME renewal Order — never a second Order for this billing period.');
+
+        $this->assertSame(1, Order::where('tenant_id', $this->tenant->id)->count());
+
+        $payment = Payment::where('order_id', $firstOrderId)->firstOrFail();
+        $transactionCount = PaymentTransaction::where('payment_id', $payment->id)->count();
+        $this->assertSame(2, $transactionCount, 'Exactly two real payment attempts must exist for this Order: the original failure and the one successful retry — never a third from a duplicate concurrent re-claim.');
     }
 }

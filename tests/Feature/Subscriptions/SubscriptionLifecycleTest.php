@@ -17,6 +17,10 @@ use Modules\Payment\DTOs\GatewayVoidRequest;
 use Modules\Payment\DTOs\SetupPaymentMethodRequest;
 use Modules\Payment\Exceptions\GatewayDoesNotSupportRecurringException;
 use Modules\Payment\Models\CustomerPaymentMethod;
+use Modules\Payment\Models\Payment;
+use Modules\Payment\Models\PaymentTransaction;
+use Modules\Payment\Providers\FakePaymentGateway;
+use Modules\Payment\Services\PaymentInitiationService;
 use Modules\Pricing\Models\Price;
 use Modules\Pricing\Models\PriceBook;
 use Modules\Pricing\Models\TaxClass;
@@ -261,5 +265,198 @@ class SubscriptionLifecycleTest extends TestCase
 
         $item->refresh();
         $this->assertSame(1500, $item->plan_snapshot['unit_price_minor']);
+    }
+
+    /**
+     * FINAL ACCEPTANCE CHECK item 2, scenario A: a prior request's outcome
+     * must be reconciled with the SAME provider request — never re-charged
+     * — while it remains indeterminate.
+     */
+    public function test_a_stuck_unknown_attempt_is_reconciled_and_never_charged_twice(): void
+    {
+        $plan = $this->makePlan(1500);
+        $subscription = $this->createSubscriptionFixture($plan);
+        $subscription->update([
+            'next_billing_at' => now()->subMinute(),
+            'current_period_end' => now()->subMinute(),
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->default();
+        $gateway->forcedNextOutcome = 'timeout_after_success';
+
+        $renewalService = app(SubscriptionRenewalService::class);
+        $renewalService->processDueRenewals($this->tenant->id);
+
+        $attempt = SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)->firstOrFail();
+        $this->assertSame('unknown', $attempt->status->value);
+        $this->assertSame(1, $gateway->monetaryExecutionCount, 'The indeterminate call itself counts as one real gateway invocation.');
+        $originalKey = $attempt->provider_idempotency_key;
+
+        // The provider outcome becomes knowable now (it actually succeeded
+        // — the saved record in FakePaymentGateway already reflects this).
+        // A stuck `unknown` attempt must be reconciled with the SAME
+        // request, never charged a second time.
+        $gateway->forcedNextOutcome = null;
+        $renewalService->processDueRenewals($this->tenant->id);
+
+        $attempt->refresh();
+        $this->assertSame('succeeded', $attempt->status->value);
+        $this->assertSame($originalKey, $attempt->provider_idempotency_key, 'Reconciliation of an unknown outcome must never mint a new idempotency key.');
+        $this->assertSame(1, $gateway->monetaryExecutionCount, 'Reconciling a stuck unknown attempt must NEVER call chargeOffSession() again.');
+        $this->assertGreaterThanOrEqual(1, $gateway->reconciliationCallCount);
+
+        $this->assertSame(1, Order::where('tenant_id', $this->tenant->id)->count());
+        $this->assertSame(1, SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)->count());
+
+        $subscription->refresh();
+        $this->assertSame('active', $subscription->status->value);
+    }
+
+    /**
+     * FINAL ACCEPTANCE CHECK item 2, scenario B: a definitive failure
+     * followed by a later scheduled retry is a genuinely NEW payment
+     * attempt — it must get its own durable provider idempotency key
+     * (never reuse the failed attempt's key), while remaining linked to
+     * the same Subscription + billing period and the SAME renewal Order.
+     */
+    public function test_a_definitive_failure_then_a_later_retry_gets_a_new_durable_idempotency_key_and_reuses_the_same_order(): void
+    {
+        $plan = $this->makePlan(1500);
+        $subscription = $this->createSubscriptionFixture($plan);
+        $subscription->update([
+            'next_billing_at' => now()->subMinute(),
+            'current_period_end' => now()->subMinute(),
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->default();
+        $gateway->forcedNextOutcome = 'decline';
+
+        $renewalService = app(SubscriptionRenewalService::class);
+        $renewalService->processDueRenewals($this->tenant->id);
+
+        $attempt = SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)->firstOrFail();
+        $this->assertSame('failed', $attempt->status->value);
+        $this->assertSame(1, $attempt->attempt_number);
+        $firstKey = $attempt->provider_idempotency_key;
+        $firstOrderId = $attempt->order_id;
+        $this->assertNotNull($firstOrderId);
+
+        $subscription->refresh();
+        $this->assertSame('past_due', $subscription->status->value);
+
+        // Simulate the configured retry day (default dunning_retry_days
+        // includes day 1) having arrived, and the provider now approving
+        // the charge.
+        $attempt->update(['resolved_at' => now()->subDays(2)]);
+        $gateway->forcedNextOutcome = null;
+
+        $renewalService->processDueRenewals($this->tenant->id);
+
+        $attempt->refresh();
+        $this->assertSame('succeeded', $attempt->status->value);
+        $this->assertSame(2, $attempt->attempt_number);
+        $secondKey = $attempt->provider_idempotency_key;
+
+        $this->assertNotSame($firstKey, $secondKey, 'A genuinely new dunning retry attempt must never reuse the failed attempt\'s idempotency key.');
+        $this->assertSame($firstOrderId, $attempt->order_id, 'A retry re-attempts payment against the SAME renewal Order — never a second Order for the same billing period.');
+        $this->assertSame(1, Order::where('tenant_id', $this->tenant->id)->count());
+
+        // Both real, distinct payment attempts remain queryable — an
+        // auditable history of each real attempt.
+        $payment = Payment::where('order_id', $firstOrderId)->firstOrFail();
+        $transactions = PaymentTransaction::where('payment_id', $payment->id)->orderBy('id')->get();
+        $this->assertCount(2, $transactions);
+        $this->assertSame($firstKey, $transactions->first()->provider_idempotency_key);
+        $this->assertSame($secondKey, $transactions->last()->provider_idempotency_key);
+        $this->assertSame('failure', $transactions->first()->status);
+        $this->assertSame('success', $transactions->last()->status);
+    }
+
+    public function test_dunning_retries_exhaust_and_suspend_the_subscription_after_the_configured_retry_days(): void
+    {
+        $plan = $this->makePlan(1500);
+        $plan->update(['dunning_retry_days' => [1]]);
+        $subscription = $this->createSubscriptionFixture($plan);
+        $subscription->update([
+            'next_billing_at' => now()->subMinute(),
+            'current_period_end' => now()->subMinute(),
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->default();
+        $gateway->forcedNextOutcome = 'decline';
+
+        $renewalService = app(SubscriptionRenewalService::class);
+        $renewalService->processDueRenewals($this->tenant->id);
+
+        $attempt = SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)->firstOrFail();
+        $this->assertSame(1, $attempt->attempt_number);
+
+        // First (and only configured) retry — also declined.
+        $attempt->update(['resolved_at' => now()->subDays(2)]);
+        $renewalService->processDueRenewals($this->tenant->id);
+
+        $attempt->refresh();
+        $this->assertSame(2, $attempt->attempt_number);
+        $subscription->refresh();
+        $this->assertSame('past_due', $subscription->status->value);
+
+        // No more retry days configured — the next pass must suspend, not
+        // attempt a third charge.
+        $attempt->update(['resolved_at' => now()->subDays(2)]);
+        $renewalService->processDueRenewals($this->tenant->id);
+
+        $attempt->refresh();
+        $subscription->refresh();
+        $this->assertSame('suspended', $subscription->status->value);
+        $this->assertSame(2, $attempt->attempt_number, 'No third attempt must be made once retries are exhausted.');
+        $this->assertSame(1, Order::where('tenant_id', $this->tenant->id)->count());
+    }
+
+    /**
+     * A direct replay of an already-definitively-failed attempt under the
+     * EXACT SAME idempotency key (e.g. a client/network-level retry of the
+     * identical call, not a new dunning attempt) must never re-charge —
+     * it replays the recorded failure.
+     */
+    public function test_replaying_the_same_failed_idempotency_key_never_charges_again(): void
+    {
+        $plan = $this->makePlan(1500);
+        $subscription = $this->createSubscriptionFixture($plan);
+        $subscription->update([
+            'next_billing_at' => now()->subMinute(),
+            'current_period_end' => now()->subMinute(),
+        ]);
+
+        /** @var FakePaymentGateway $gateway */
+        $gateway = app(PaymentGatewayRegistryInterface::class)->default();
+        $gateway->forcedNextOutcome = 'decline';
+
+        app(SubscriptionRenewalService::class)->processDueRenewals($this->tenant->id);
+
+        $attempt = SubscriptionRenewalAttempt::where('subscription_id', $subscription->id)->firstOrFail();
+        $this->assertSame(1, $gateway->monetaryExecutionCount);
+
+        $order = Order::findOrFail($attempt->order_id);
+        $paymentMethod = CustomerPaymentMethod::where('id', $subscription->payment_method_id)->firstOrFail();
+
+        $gateway->forcedNextOutcome = null;
+
+        // A literal replay of the SAME request (same key) — must not
+        // re-attempt the gateway, must replay the recorded failure.
+        $response = app(PaymentInitiationService::class)->initiateOffSessionPayment(
+            tenantId: $this->tenant->id,
+            orderId: $order->id,
+            amountMinor: $order->amount_due_minor ?? $order->grand_total_minor,
+            currency: $order->currency,
+            gatewayProviderCode: $paymentMethod->gateway_provider_code,
+            gatewayReference: $paymentMethod->gateway_reference,
+            providerIdempotencyKey: $attempt->provider_idempotency_key
+        );
+
+        $this->assertSame(1, $gateway->monetaryExecutionCount, 'Replaying the same failed idempotency key must never call the gateway again.');
+        $this->assertNotSame('captured', $response['status']);
     }
 }

@@ -160,7 +160,28 @@ class PaymentInitiationService
             return [$payment, $transaction];
         });
 
+        // Monotonicity guards — mirrors PaymentTransactionReconciliationService's
+        // own discipline. A pre-existing transaction for this EXACT
+        // providerIdempotencyKey means this is a replay of an attempt
+        // already made (not a new attempt — a new attempt always carries
+        // its own fresh key, derived by the caller), so the outcome must
+        // never be re-decided by calling the gateway again:
+        //  - SUCCESS: replay the success.
+        //  - UNKNOWN (a prior timeout): reconcile with the provider to
+        //    learn the real outcome — NEVER issue another charge while
+        //    the original request's outcome is still indeterminate
+        //    (Owner Delta §11).
+        //  - FAILURE: replay the definitive failure — do not reinterpret
+        //    or retry it under the same key. A genuinely new dunning
+        //    retry attempt must supply a NEW providerIdempotencyKey (see
+        //    SubscriptionRenewalService::maybeRetryPastDue()).
         if ($transaction->status === PaymentTransactionStatus::SUCCESS->value) {
+            return $this->reconciliationService->formatResponse($payment->fresh() ?? $payment, $transaction);
+        }
+        if ($transaction->status === PaymentTransactionStatus::UNKNOWN->value) {
+            return $this->reconciliationService->reconcile($transaction, $payment);
+        }
+        if ($transaction->status === PaymentTransactionStatus::FAILURE->value) {
             return $this->reconciliationService->formatResponse($payment->fresh() ?? $payment, $transaction);
         }
 
