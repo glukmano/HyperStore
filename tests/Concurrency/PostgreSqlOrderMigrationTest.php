@@ -74,6 +74,12 @@ class PostgreSqlOrderMigrationTest extends TestCase
         'database/migrations/2026_09_08_000119_create_digital_delivery_tables.php',
         'database/migrations/2026_09_08_000120_create_subscriptions_tables.php',
         'database/migrations/2026_09_08_000121_create_wallet_tables.php',
+        // Phase-22: pos_manual_discount_audit_log FK-depends on order_items,
+        // and orders itself gains pos_register_id/pos_register_session_id/
+        // cashier_user_id/pickup_location_id — the same recurring gap this
+        // list exists to close, one more time.
+        'database/migrations/2026_09_10_000124_create_pos_tables.php',
+        'database/migrations/2026_09_10_000125_add_pos_columns_and_widen_tender_constraints.php',
     ];
 
     private string $testDb;

@@ -14,9 +14,12 @@ use Modules\Wallet\Contracts\StoreValueCheckoutHookInterface;
  * itself (Order creation precedes payment: OrderCreationService::
  * executeOrderCreationTransaction() runs first, PaymentInitiationService
  * charges the (possibly Store-Value-reduced) amountDueMinor second).
- * PaymentCaptured fires for BOTH a real gateway capture and the existing
- * zero-total-order branch (a fully-Store-Value-covered Order), so this one
- * listener handles every case uniformly.
+ * PaymentCaptured fires for a real gateway capture, the existing
+ * zero-total-order branch (a fully-Store-Value-covered Order), and — as of
+ * Phase-22 — a POS cash settlement, so this one listener handles every case
+ * uniformly, tagging the resulting order_payment_tender_allocations row
+ * with the correct tender_type ('cash' for a cash settlement, otherwise
+ * 'external_gateway').
  */
 class ConvertStoreValueHoldOnPaymentCaptured
 {
@@ -29,7 +32,7 @@ class ConvertStoreValueHoldOnPaymentCaptured
         $payment = $event->payment;
         $transaction = $event->transaction;
 
-        if (! in_array($transaction->operation_type, ['purchase', 'capture', 'zero_total_settlement'], true)) {
+        if (! in_array($transaction->operation_type, ['purchase', 'capture', 'zero_total_settlement', 'cash_settlement'], true)) {
             return;
         }
 
@@ -39,6 +42,8 @@ class ConvertStoreValueHoldOnPaymentCaptured
             return;
         }
 
-        $this->hook->convertHoldsToCaptureForOrder($order, (int) $transaction->amount_minor, (string) $transaction->uuid);
+        $tenderType = $transaction->operation_type === 'cash_settlement' ? 'cash' : 'external_gateway';
+
+        $this->hook->convertHoldsToCaptureForOrder($order, (int) $transaction->amount_minor, (string) $transaction->uuid, $tenderType);
     }
 }

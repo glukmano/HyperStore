@@ -13,14 +13,23 @@ use Modules\Order\Contracts\ShippingRefundPolicyInterface;
 use Modules\Order\Enums\RefundEligibilityStatus;
 use Modules\Order\Enums\SellerReturnStatus;
 use Modules\Order\Models\SellerReturn;
-use Modules\Payment\Models\Payment;
 use Modules\Payment\Models\PaymentTransaction;
-use Modules\Payment\Services\PaymentRefundService;
+use Modules\Wallet\Services\StoreValueRefundService;
 
+/**
+ * Phase-22 Owner Delta §5: the real refund call site now dispatches through
+ * the tender-aware StoreValueRefundService (itself delegating per-tender
+ * application to the tender-neutral TenderRefundDispatchService) instead of
+ * calling PaymentRefundService directly — a necessary fix, since this RMA
+ * refund path pre-dated Phase-21's tender-allocation model and had never
+ * been wired to it, meaning a POS cash-tendered (or Store-Value-tendered)
+ * Order refunded through Returns would otherwise have been misrouted
+ * entirely to the external gateway.
+ */
 class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
 {
     public function __construct(
-        private readonly PaymentRefundService $paymentRefundService,
+        private readonly StoreValueRefundService $storeValueRefundService,
         private readonly VendorPayableSubledgerServiceInterface $vendorPayableSubledger,
         private readonly ShippingRefundPolicyInterface $shippingRefundPolicy
     ) {}
@@ -35,8 +44,11 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            // Idempotency check 1: already completed
-            if ($sellerReturn->refund_status === 'completed' && $sellerReturn->payment_refund_transaction_id !== null) {
+            // Idempotency check 1: already completed. payment_refund_transaction_id
+            // is only ever populated for an external_gateway tender slice — a
+            // pure-cash or pure-Store-Value refund legitimately never sets it,
+            // so refund_status alone is the authoritative completion signal.
+            if ($sellerReturn->refund_status === 'completed') {
                 return $sellerReturn;
             }
 
@@ -71,33 +83,32 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
             $sellerOrder = $sellerReturn->sellerOrder;
             $order = $sellerOrder->order;
 
-            /** @var Payment $payment */
-            $payment = Payment::query()
-                ->where('tenant_id', $tenantId)
-                ->where('order_id', $order->id)
-                ->firstOrFail();
-
-            // Execute Payment refund using durable idempotency key = refund_operation_uuid
-            $refundRes = $this->paymentRefundService->refund(
-                tenantId: $tenantId,
-                paymentUuid: $payment->uuid,
-                amountMinor: $totalCustomerRefundMinor,
-                idempotencyKey: $sellerReturn->refund_operation_uuid,
-                metadata: [
-                    'seller_return_id' => $sellerReturn->id,
-                    'seller_return_uuid' => $sellerReturn->uuid,
-                    'seller_order_id' => $sellerOrder->id,
-                ]
+            // Tender-aware refund dispatch — refunds preserve the ORIGINAL
+            // tender allocation (external_gateway, wallet, store_credit,
+            // gift_card, cash), never assuming a single full-gateway
+            // refund. Idempotency key = refund_operation_uuid.
+            $tenderResults = $this->storeValueRefundService->refundOrder(
+                $order,
+                $totalCustomerRefundMinor,
+                (string) $sellerReturn->refund_operation_uuid
             );
 
-            /** @var PaymentTransaction $tx */
-            $tx = PaymentTransaction::query()
-                ->where('tenant_id', $tenantId)
-                ->where('uuid', $refundRes['transaction_uuid'])
-                ->firstOrFail();
+            foreach ($tenderResults as $result) {
+                if ($result['tender_type'] === 'external_gateway' && ($result['transaction_status'] ?? null) !== null) {
+                    if ($result['transaction_status'] !== 'success') {
+                        throw new InvalidArgumentException("Payment refund transaction failed with status [{$result['transaction_status']}].");
+                    }
 
-            if ($tx->status !== 'success') {
-                throw new InvalidArgumentException("Payment refund transaction failed with status [{$tx->status}].");
+                    /** @var PaymentTransaction|null $tx */
+                    $tx = PaymentTransaction::query()
+                        ->where('tenant_id', $tenantId)
+                        ->where('uuid', $result['transaction_uuid'])
+                        ->first();
+
+                    if ($tx !== null) {
+                        $sellerReturn->payment_refund_transaction_id = $tx->id;
+                    }
+                }
             }
 
             // Record Marketplace refund adjustment if vendor order
@@ -117,7 +128,6 @@ class ReturnRefundOrchestrator implements ReturnRefundOrchestratorInterface
             }
 
             // Finalize SellerReturn
-            $sellerReturn->payment_refund_transaction_id = $tx->id;
             $sellerReturn->refund_status = 'completed';
             $sellerReturn->refund_eligibility_status = RefundEligibilityStatus::REFUNDED->value;
             $sellerReturn->status = SellerReturnStatus::COMPLETED->value;

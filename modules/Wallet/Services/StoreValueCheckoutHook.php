@@ -130,7 +130,7 @@ class StoreValueCheckoutHook implements StoreValueCheckoutHookInterface
         });
     }
 
-    public function convertHoldsToCaptureForOrder(Order $order, int $gatewayCapturedAmountMinor, string $gatewayTransactionUuid): void
+    public function convertHoldsToCaptureForOrder(Order $order, int $settledAmountMinor, string $settlementTransactionUuid, string $settlementTenderType = 'external_gateway'): void
     {
         /** @var CheckoutSession|null $session */
         $session = CheckoutSession::where('id', $order->checkout_id)->first();
@@ -140,7 +140,7 @@ class StoreValueCheckoutHook implements StoreValueCheckoutHookInterface
 
         $refs = (array) ($session->store_value_hold_refs ?? []);
 
-        DB::transaction(function () use ($order, $refs, $gatewayCapturedAmountMinor, $gatewayTransactionUuid): void {
+        DB::transaction(function () use ($order, $refs, $settledAmountMinor, $settlementTransactionUuid, $settlementTenderType): void {
             foreach ($refs as $ref) {
                 /** @var StoreValueEntry|null $holdEntry */
                 $holdEntry = StoreValueEntry::find($ref['hold_entry_id']);
@@ -161,14 +161,14 @@ class StoreValueCheckoutHook implements StoreValueCheckoutHookInterface
                 ]);
             }
 
-            if ($gatewayCapturedAmountMinor > 0) {
+            if ($settledAmountMinor > 0) {
                 OrderPaymentTenderAllocation::firstOrCreate([
                     'tenant_id' => $order->tenant_id,
                     'order_id' => $order->id,
-                    'tender_type' => 'external_gateway',
-                    'source_reference' => $gatewayTransactionUuid,
+                    'tender_type' => $settlementTenderType,
+                    'source_reference' => $settlementTransactionUuid,
                 ], [
-                    'amount_minor' => $gatewayCapturedAmountMinor,
+                    'amount_minor' => $settledAmountMinor,
                     'currency' => $order->currency,
                 ]);
             }

@@ -33,7 +33,7 @@ class PaymentEventAdapter
                 return;
             }
 
-            if (! in_array($transaction->operation_type, ['purchase', 'capture', 'zero_total_settlement'], true)) {
+            if (! in_array($transaction->operation_type, ['purchase', 'capture', 'zero_total_settlement', 'cash_settlement'], true)) {
                 return;
             }
 

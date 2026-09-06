@@ -45,10 +45,16 @@ class PostPaymentFinancialMovementJob implements ShouldQueue
 
         $postingType = $eligibilityPolicy->resolvePostingType($this->movement->operationType);
 
+        // Phase-22 / ADR-0155: a cash settlement debits/credits CASH_ON_HAND
+        // instead of PAYMENT_CLEARING — the smallest correct extension of
+        // this exact job's existing posting shape (source-audited), never a
+        // second Ledger path. The credit side is unchanged in both cases.
+        $isCash = in_array($this->movement->operationType, ['cash_settlement', 'cash_refund'], true);
+
         // Fail-closed resolution of required system accounts (no implicit provisioning during posting)
         $paymentClearing = $accountRegistry->getAccountByRole(
             $this->movement->tenantId,
-            SystemAccountRole::PAYMENT_CLEARING
+            $isCash ? SystemAccountRole::CASH_ON_HAND : SystemAccountRole::PAYMENT_CLEARING
         );
 
         $customerFunds = $accountRegistry->getAccountByRole(
@@ -66,7 +72,9 @@ class PostPaymentFinancialMovementJob implements ShouldQueue
                     direction: JournalDirection::DEBIT,
                     amountMinor: $this->movement->amountMinor,
                     currency: $this->movement->currency,
-                    description: "Payment clearing for transaction [{$this->movement->transactionUuid}]"
+                    description: $isCash
+                        ? "Cash received for transaction [{$this->movement->transactionUuid}]"
+                        : "Payment clearing for transaction [{$this->movement->transactionUuid}]"
                 ),
                 new JournalLineDTO(
                     accountId: (int) $customerFunds->id,
@@ -93,7 +101,9 @@ class PostPaymentFinancialMovementJob implements ShouldQueue
                     direction: JournalDirection::CREDIT,
                     amountMinor: $this->movement->amountMinor,
                     currency: $this->movement->currency,
-                    description: "Payment clearing disbursement for refund [{$this->movement->transactionUuid}]"
+                    description: $isCash
+                        ? "Cash disbursed for refund [{$this->movement->transactionUuid}]"
+                        : "Payment clearing disbursement for refund [{$this->movement->transactionUuid}]"
                 ),
             ];
         }

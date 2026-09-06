@@ -41,10 +41,12 @@ interface StoreValueCheckoutHookInterface
      * Converts every still-`held` Store Value entry for the Order's
      * originating CheckoutSession into a final `capture`, and records the
      * order_payment_tender_allocations rows for both the Store Value
-     * portion and the external-gateway portion. Called from a listener on
-     * Payment's PaymentCaptured event (never at Order-creation time itself
-     * — the hold must not convert to capture before payment truly
-     * succeeds).
+     * portion and the settlement portion (tagged by $settlementTenderType
+     * — 'external_gateway' for a real gateway capture/zero-total
+     * settlement, 'cash' for a Phase-22 POS cash settlement). Called from a
+     * listener on Payment's PaymentCaptured event (never at Order-creation
+     * time itself — the hold must not convert to capture before payment
+     * truly succeeds).
      */
-    public function convertHoldsToCaptureForOrder(Order $order, int $gatewayCapturedAmountMinor, string $gatewayTransactionUuid): void;
+    public function convertHoldsToCaptureForOrder(Order $order, int $settledAmountMinor, string $settlementTransactionUuid, string $settlementTenderType = 'external_gateway'): void;
 }

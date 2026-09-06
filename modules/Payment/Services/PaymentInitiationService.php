@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Payment\Services;
 
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use Modules\Order\Contracts\OrderPaymentSynchronizationServiceInterface;
 use Modules\Order\Enums\PaymentStatus as OrderPaymentStatus;
 use Modules\Order\Models\Order;
@@ -542,6 +543,113 @@ class PaymentInitiationService
             }
 
             return $this->reconciliationService->formatResponse($lockedPayment, $lockedTx);
+        });
+    }
+
+    /**
+     * Phase-22 Owner Delta §4/§6: cash is a genuine, Ledger-integrated
+     * Payment tender — never a faked/skipped payment. Structurally mirrors
+     * handleZeroTotalOrder()'s "no gateway call, immediate success" shape,
+     * but for a real positive cash amount rather than a zero total. Kept
+     * entirely separate from initiatePayment()/executeInitiation() so the
+     * existing gateway-payment branch logic is untouched by this addition.
+     *
+     * @return array<string, mixed>
+     */
+    public function initiateCashPayment(InitiatePaymentDTO $dto): array
+    {
+        $payload = [
+            'tenant_id' => $dto->tenantId,
+            'order_id' => $dto->orderId,
+            'amount_minor' => $dto->amountMinor,
+            'currency' => strtoupper($dto->currency),
+            'metadata' => $dto->metadata,
+        ];
+
+        return $this->idempotencyService->execute(
+            tenantId: $dto->tenantId,
+            orderId: $dto->orderId,
+            paymentId: null,
+            operationType: 'initiate_cash_payment',
+            idempotencyKey: $dto->idempotencyKey,
+            requestPayload: $payload,
+            callback: fn (PaymentOperationKey $opKey): array => $this->handleCashPayment($dto, $opKey)
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function handleCashPayment(InitiatePaymentDTO $dto, PaymentOperationKey $opKey): array
+    {
+        /** @var Order $order */
+        $order = Order::query()->where('tenant_id', $dto->tenantId)->where('id', $dto->orderId)->firstOrFail();
+
+        if ($order->order_status === 'cancelled') {
+            throw OrderAlreadyCancelledException::forOrder($order->id);
+        }
+
+        $amountDueMinor = $order->amount_due_minor ?? $order->grand_total_minor;
+        if ($dto->amountMinor !== $amountDueMinor) {
+            throw PaymentAmountMismatchException::forAmounts($dto->amountMinor, $amountDueMinor);
+        }
+
+        if (strtoupper($dto->currency) !== strtoupper($order->currency)) {
+            throw PaymentCurrencyMismatchException::forCurrencies($dto->currency, $order->currency);
+        }
+
+        if ($dto->amountMinor <= 0) {
+            throw new InvalidArgumentException('Cash settlement amount must be positive — use zero-total settlement for a zero total.');
+        }
+
+        return DB::transaction(function () use ($dto, $order, $opKey): array {
+            /** @var Payment $payment */
+            $payment = Payment::query()
+                ->firstOrCreate(
+                    ['tenant_id' => $dto->tenantId, 'order_id' => $order->id],
+                    [
+                        'status' => PaymentStatus::PENDING->value,
+                        'amount_minor' => $dto->amountMinor,
+                        'currency' => $dto->currency,
+                        'authorized_amount_minor' => 0,
+                        'captured_amount_minor' => 0,
+                        'refunded_amount_minor' => 0,
+                        'metadata' => $dto->metadata,
+                    ]
+                );
+
+            /** @var PaymentTransaction $transaction */
+            $transaction = PaymentTransaction::query()
+                ->firstOrCreate(
+                    ['payment_operation_key_id' => $opKey->id],
+                    [
+                        'tenant_id' => $dto->tenantId,
+                        'payment_id' => $payment->id,
+                        'operation_type' => PaymentOperationType::CASH_SETTLEMENT->value,
+                        'status' => PaymentTransactionStatus::SUCCESS->value,
+                        'amount_minor' => $dto->amountMinor,
+                        'currency' => $dto->currency,
+                    ]
+                );
+
+            $payment->status = PaymentStatus::CAPTURED->value;
+            $payment->captured_amount_minor = $dto->amountMinor;
+            $payment->captured_at = now();
+            $payment->save();
+
+            $this->orderPaymentSyncService->syncPaymentStatus(
+                tenantId: $dto->tenantId,
+                orderId: $order->id,
+                status: OrderPaymentStatus::PAID,
+                reason: 'Cash settlement captured at POS register'
+            );
+
+            DB::afterCommit(function () use ($payment, $transaction): void {
+                PaymentCreated::dispatch($payment);
+                PaymentCaptured::dispatch($payment, $transaction);
+            });
+
+            return $this->reconciliationService->formatResponse($payment, $transaction);
         });
     }
 }

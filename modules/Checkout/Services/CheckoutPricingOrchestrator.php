@@ -199,7 +199,6 @@ class CheckoutPricingOrchestrator
             $totalDiscountMinor = $maxAllowedDiscount;
         }
 
-        $lineDiscounts = MoneyValue::zero($currency);
         $cartDiscounts = MoneyValue::fromMinor($totalDiscountMinor, $currency);
 
         // 3. Proportional Cart Discount Allocation (Largest Remainder Method, integer-only)
@@ -208,10 +207,25 @@ class CheckoutPricingOrchestrator
         $remainingSubtotals = [];
 
         foreach ($cart->lines as $line) {
+            // Phase-22 Owner Delta §10: a server-authoritative, bounded POS
+            // manual cashier discount — 0 <= discount <= eligible line
+            // amount, never a client-suppliable replacement price. Read
+            // directly from CartLine.metadata (set only via a
+            // pos.discount.manual-permission-gated, audit-logged POS
+            // action — see Modules\POS). Zero for every non-POS cart.
+            $manualDiscountMinor = (int) ($line->metadata['pos_manual_discount_minor'] ?? 0);
+            $manualDiscountMinor = max(0, min($manualDiscountMinor, $perLineSubtotals[$line->id]));
+
             $perLineAllocatedCartDiscounts[$line->id] = 0;
-            $perLineLineDiscounts[$line->id] = 0; // Line-level discounts if any
-            $remainingSubtotals[$line->id] = $perLineSubtotals[$line->id];
+            $perLineLineDiscounts[$line->id] = $manualDiscountMinor; // Line-level discounts (POS manual discount)
+            $remainingSubtotals[$line->id] = $perLineSubtotals[$line->id] - $manualDiscountMinor;
         }
+
+        // Owner Delta §10: this bucket was previously always zero (dead
+        // code) — now it correctly reflects the sum of any POS manual
+        // discounts, folded into the existing lineDiscounts/grandTotal
+        // reconciliation formula with zero other changes required.
+        $lineDiscounts = MoneyValue::fromMinor(array_sum($perLineLineDiscounts), $currency);
 
         if ($totalDiscountMinor > 0) {
             $cartLineIdsInCart = $cart->lines->pluck('id')->all();

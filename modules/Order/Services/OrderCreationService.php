@@ -34,6 +34,7 @@ use Modules\Order\Exceptions\ReservationAdoptionFailedException;
 use Modules\Order\Models\Order;
 use Modules\Order\Models\OrderItem;
 use Modules\Order\Models\OrderStatusHistory;
+use Modules\POS\Contracts\PosOrderContextHookInterface;
 use Throwable;
 
 class OrderCreationService implements OrderCreationServiceInterface
@@ -218,6 +219,14 @@ class OrderCreationService implements OrderCreationServiceInterface
             'store_id' => $validatedSnapshot['context']['store_id'],
             'market_id' => $validatedSnapshot['context']['market_id'],
             'channel_id' => $validatedSnapshot['context']['channel_id'],
+            // Phase-22 Owner Delta §2: read directly from the CheckoutSession's
+            // own pos_context_snapshot column (never through the closed-array
+            // OrderSnapshotValidator shape) — null for every non-POS checkout,
+            // zero behavior change. Live re-validation happens in the hard-fail
+            // hook below, AFTER the Order row exists.
+            'pos_register_id' => $checkout->pos_context_snapshot['register_id'] ?? null,
+            'pos_register_session_id' => $checkout->pos_context_snapshot['register_session_id'] ?? null,
+            'cashier_user_id' => $checkout->pos_context_snapshot['cashier_user_id'] ?? null,
             'user_id' => $checkout->user_id,
             'guest_token_hash' => $guestTokenHash,
             'currency' => $validatedSnapshot['context']['currency'],
@@ -260,6 +269,17 @@ class OrderCreationService implements OrderCreationServiceInterface
             app(CompanyOrderCreditHookInterface::class)->applyCompanyContextAndReserveCredit($order);
         }
 
+        // Phase-22 Owner Delta §2: POS Order context (register/session/
+        // cashier/store-market origin) is operational and audit-critical,
+        // NEVER a soft/optional snapshot — mirrors the B2B credit hook
+        // above exactly, never the Affiliate soft-hook pattern below. A
+        // closed/invalid RegisterSession, unauthorized cashier, or Store/
+        // Market mismatch propagates and rolls back this entire
+        // transaction. No-ops for a non-POS-originated Order.
+        if (app()->bound(PosOrderContextHookInterface::class)) {
+            app(PosOrderContextHookInterface::class)->validateAndFreezePosContext($order);
+        }
+
         // 6. Create Order Items from validated lines
         foreach ($validatedSnapshot['lines'] as $line) {
             // Phase-20 Owner Delta: freezes which QuoteLine (B2B §3) and/or
@@ -284,6 +304,9 @@ class OrderCreationService implements OrderCreationServiceInterface
                 'booking_id' => $lineMetadata['booking_id'] ?? null,
                 'booking_slot_starts_at_snapshot' => $lineMetadata['booking_slot_starts_at_snapshot'] ?? null,
                 'booking_timezone_snapshot' => $lineMetadata['booking_timezone_snapshot'] ?? null,
+                'pos_manual_discount_minor' => $lineMetadata['pos_manual_discount_minor'] ?? null,
+                'pos_manual_discount_reason' => $lineMetadata['pos_manual_discount_reason'] ?? null,
+                'pos_manual_discount_applied_by_user_id' => $lineMetadata['pos_manual_discount_applied_by_user_id'] ?? null,
                 'sku_snapshot' => $line['sku_snapshot'],
                 'name_snapshot' => $line['name_snapshot'],
                 'product_type_snapshot' => $line['product_type_snapshot'],

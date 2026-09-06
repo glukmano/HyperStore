@@ -355,10 +355,10 @@ class LedgerAccountClassificationSafetyTest extends TestCase
         $registry = app(LedgerAccountRegistryInterface::class);
 
         $registry->ensureRequiredSystemAccounts($this->tenant->id);
-        $this->assertSame(6, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
+        $this->assertSame(7, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
 
         // Repeated provisioning must succeed idempotently without modifying accounts
         $registry->ensureRequiredSystemAccounts($this->tenant->id);
-        $this->assertSame(6, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
+        $this->assertSame(7, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
     }
 }

@@ -1,0 +1,10 @@
+{
+    "name": "POS",
+    "slug": "pos",
+    "description": "Phase-22: Point of Sale / Omnichannel — Register/RegisterSession/CashMovement on top of the existing Cart/Checkout/Order/Payment/Inventory/Ledger/Returns pipeline. No second commerce core.",
+    "version": "1.0.0",
+    "provider": "Modules\\POS\\POSServiceProvider",
+    "requires": ["catalog", "pricing", "checkout", "order", "payment", "inventory", "ledger", "customers", "wallet"],
+    "order": 220,
+    "enabled": true
+}

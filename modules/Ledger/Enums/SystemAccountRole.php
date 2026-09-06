@@ -27,4 +27,13 @@ enum SystemAccountRole: string
      * and CUSTOMER_FUNDS_LIABILITY existed prior to this phase).
      */
     case STORE_VALUE_NON_CASH_ADJUSTMENT = 'store_value_non_cash_adjustment';
+
+    /**
+     * Phase-22 / ADR-0155: the asset account debited for a cash sale
+     * instead of PAYMENT_CLEARING — source-audited extension of the
+     * existing PostPaymentFinancialMovementJob posting shape, swapping
+     * only which asset account receives the debit; the credit side
+     * (CUSTOMER_FUNDS_LIABILITY) is unchanged.
+     */
+    case CASH_ON_HAND = 'cash_on_hand';
 }

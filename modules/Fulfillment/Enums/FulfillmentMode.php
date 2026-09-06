@@ -16,6 +16,13 @@ enum FulfillmentMode: string
     case SERVICE = 'service';
     case HYBRID = 'hybrid';
 
+    /**
+     * Phase-22: click-and-collect / BOPIS — reuses the existing
+     * PickupLocation/InventorySource machinery; the customer collects
+     * in person rather than receiving a shipment.
+     */
+    case PICKUP = 'pickup';
+
     public function isPhysical(): bool
     {
         return in_array($this, [
@@ -26,6 +33,7 @@ enum FulfillmentMode: string
             self::PRINT_ON_DEMAND,
             self::MADE_TO_ORDER,
             self::HYBRID,
+            self::PICKUP,
         ], true);
     }
 

@@ -9,29 +9,29 @@ use Illuminate\Support\Facades\DB;
 use Modules\Order\Models\Order;
 use Modules\Order\Models\OrderPaymentTenderAllocation;
 use Modules\Order\Models\RefundTenderAllocation;
-use Modules\Payment\Models\Payment;
-use Modules\Payment\Services\PaymentRefundService;
-use Modules\Wallet\Models\StoreValueAccount;
-use Modules\Wallet\Models\StoreValueEntry;
+use Modules\Order\Services\TenderRefundDispatchService;
 use RuntimeException;
 
 /**
  * D.50: refunds preserve the ORIGINAL tender allocation — never blindly
  * refunding everything to Store Credit, and never re-reading tender
  * allocations in a different order on a retry (which could otherwise
- * produce a different split). The external-gateway slice still routes
- * through the existing, unmodified PaymentRefundService (Owner Delta:
- * "Payment itself does not need to know about multiple tenders").
+ * produce a different split).
+ *
+ * Phase-22 Owner Delta §5: this class computes and persists the tender
+ * allocation (that math was already tender-neutral) but no longer applies
+ * it itself — per-tender application is delegated to the tender-neutral
+ * TenderRefundDispatchService, so Store Value is never the owner of Cash
+ * (or, for that matter, of the external-gateway slice either).
  */
 final class StoreValueRefundService
 {
     public function __construct(
-        private readonly StoreValueService $storeValueService,
-        private readonly PaymentRefundService $paymentRefundService
+        private readonly TenderRefundDispatchService $dispatchService
     ) {}
 
     /**
-     * @return list<array{tender_type: string, amount_minor: int}>
+     * @return list<array{tender_type: string, amount_minor: int, transaction_uuid: ?string, transaction_status: ?string}>
      */
     public function refundOrder(Order $order, int $totalRefundAmountMinor, string $refundEventUuid): array
     {
@@ -129,46 +129,14 @@ final class StoreValueRefundService
 
     /**
      * @param  Collection<int, RefundTenderAllocation>  $allocations
-     * @return list<array{tender_type: string, amount_minor: int}>
+     * @return list<array{tender_type: string, amount_minor: int, transaction_uuid: ?string, transaction_status: ?string}>
      */
     private function apply(Order $order, Collection $allocations): array
     {
         $results = [];
 
         foreach ($allocations as $allocation) {
-            if ($allocation->tender_type === 'external_gateway') {
-                /** @var Payment|null $payment */
-                $payment = Payment::where('order_id', $order->id)->first();
-                if ($payment !== null) {
-                    $this->paymentRefundService->refund(
-                        tenantId: $order->tenant_id,
-                        paymentUuid: (string) $payment->uuid,
-                        amountMinor: (int) $allocation->amount_minor,
-                        idempotencyKey: "refund_tender:{$allocation->refund_event_uuid}:external_gateway"
-                    );
-                }
-            } else {
-                $originalTender = OrderPaymentTenderAllocation::where('order_id', $order->id)
-                    ->where('tender_type', $allocation->tender_type)
-                    ->first();
-
-                if ($originalTender !== null) {
-                    /** @var StoreValueEntry|null $captureEntry */
-                    $captureEntry = StoreValueEntry::find((int) $originalTender->source_reference);
-                    if ($captureEntry !== null) {
-                        /** @var StoreValueAccount $account */
-                        $account = StoreValueAccount::where('id', $captureEntry->store_value_account_id)->firstOrFail();
-
-                        $this->storeValueService->refundCredit(
-                            $account,
-                            (int) $allocation->amount_minor,
-                            "refund_tender:{$allocation->refund_event_uuid}:{$allocation->tender_type}"
-                        );
-                    }
-                }
-            }
-
-            $results[] = ['tender_type' => $allocation->tender_type, 'amount_minor' => (int) $allocation->amount_minor];
+            $results[] = $this->dispatchService->dispatch($order, $allocation);
         }
 
         return $results;

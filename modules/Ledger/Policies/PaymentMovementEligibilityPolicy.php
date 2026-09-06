@@ -21,7 +21,7 @@ final class PaymentMovementEligibilityPolicy
             return false;
         }
 
-        return in_array($operationType, ['purchase', 'capture', 'refund'], true);
+        return in_array($operationType, ['purchase', 'capture', 'refund', 'cash_settlement', 'cash_refund'], true);
     }
 
     /**
@@ -30,8 +30,8 @@ final class PaymentMovementEligibilityPolicy
     public function resolvePostingType(string $operationType): string
     {
         return match ($operationType) {
-            'purchase', 'capture' => 'capture',
-            'refund' => 'refund',
+            'purchase', 'capture', 'cash_settlement' => 'capture',
+            'refund', 'cash_refund' => 'refund',
             default => throw new InvalidArgumentException("Operation type [{$operationType}] does not have an accounting posting type mapping."),
         };
     }

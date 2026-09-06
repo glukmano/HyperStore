@@ -980,7 +980,7 @@ PHP, $newTenant->id);
         // roles (Phase-21 / ADR-0150 added four Store Value roles alongside
         // the original payment_clearing/customer_funds_liability pair).
         $accounts = LedgerAccount::withoutGlobalScopes()->where('tenant_id', $newTenant->id)->get();
-        $this->assertCount(6, $accounts);
+        $this->assertCount(7, $accounts);
 
         foreach ([
             SystemAccountRole::PAYMENT_CLEARING,

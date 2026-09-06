@@ -40,6 +40,7 @@ use Modules\Cart\Models\Cart;
  * @property array<string, array<string, mixed>>|null $store_value_hold_refs
  * @property array<int, array<string, mixed>>|null $reservation_references
  * @property array<string, mixed>|null $fulfillment_snapshot
+ * @property array<string, mixed>|null $pos_context_snapshot
  * @property array<string, mixed>|null $ready_snapshot
  * @property int $evaluated_cart_version
  * @property int $version
@@ -97,6 +98,7 @@ class CheckoutSession extends Model
         'promotion_snapshot' => 'array',
         'reservation_references' => 'array',
         'fulfillment_snapshot' => 'array',
+        'pos_context_snapshot' => 'array',
         'ready_snapshot' => 'array',
         'evaluated_cart_version' => 'integer',
         'version' => 'integer',

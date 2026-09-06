@@ -80,6 +80,16 @@ class LedgerAccountRegistry implements LedgerAccountRegistryInterface
             normalBalance: NormalBalance::DEBIT->value,
             description: 'Counterpart for Store Value entries with no cash movement of their own: manual issuance/clawback and expiration breakage'
         );
+
+        $this->ensureAccount(
+            tenantId: $tenantId,
+            role: SystemAccountRole::CASH_ON_HAND->value,
+            code: 'cash_on_hand',
+            name: 'Cash On Hand',
+            type: AccountType::ASSET->value,
+            normalBalance: NormalBalance::DEBIT->value,
+            description: 'Physical cash held in POS register drawers, debited on a cash sale and credited on a cash refund'
+        );
     }
 
     public function getAccountByRole(int $tenantId, SystemAccountRole|string $role): LedgerAccount

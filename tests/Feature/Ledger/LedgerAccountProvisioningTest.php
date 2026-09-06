@@ -33,7 +33,7 @@ class LedgerAccountProvisioningTest extends TestCase
         $this->setUpLedgerTest();
     }
 
-    public function test_explicit_provisioning_creates_exactly_six_required_roles(): void
+    public function test_explicit_provisioning_creates_exactly_seven_required_roles(): void
     {
         /** @var LedgerAccountRegistryInterface $registry */
         $registry = app(LedgerAccountRegistryInterface::class);
@@ -42,7 +42,7 @@ class LedgerAccountProvisioningTest extends TestCase
 
         $registry->ensureRequiredSystemAccounts($this->tenant->id);
 
-        $this->assertSame(6, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
+        $this->assertSame(7, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
 
         $clearing = $registry->getAccountByRole($this->tenant->id, SystemAccountRole::PAYMENT_CLEARING);
         $liability = $registry->getAccountByRole($this->tenant->id, SystemAccountRole::CUSTOMER_FUNDS_LIABILITY);
@@ -73,6 +73,12 @@ class LedgerAccountProvisioningTest extends TestCase
         $this->assertSame(AccountType::EXPENSE->value, $nonCash->type);
         $this->assertSame(NormalBalance::DEBIT->value, $nonCash->normal_balance);
         $this->assertTrue($nonCash->is_system);
+
+        // Phase-22 / ADR-0155: the cash-on-hand asset role for POS cash tenders.
+        $cashOnHand = $registry->getAccountByRole($this->tenant->id, SystemAccountRole::CASH_ON_HAND);
+        $this->assertSame(AccountType::ASSET->value, $cashOnHand->type);
+        $this->assertSame(NormalBalance::DEBIT->value, $cashOnHand->normal_balance);
+        $this->assertTrue($cashOnHand->is_system);
     }
 
     public function test_repeated_provisioning_is_idempotent(): void
@@ -81,11 +87,11 @@ class LedgerAccountProvisioningTest extends TestCase
         $registry = app(LedgerAccountRegistryInterface::class);
 
         $registry->ensureRequiredSystemAccounts($this->tenant->id);
-        $this->assertSame(6, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
+        $this->assertSame(7, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
 
         // Repeated invocation must be a no-op
         $registry->ensureRequiredSystemAccounts($this->tenant->id);
-        $this->assertSame(6, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
+        $this->assertSame(7, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
     }
 
     public function test_artisan_command_provisions_required_system_accounts(): void
@@ -96,7 +102,7 @@ class LedgerAccountProvisioningTest extends TestCase
             '--tenant' => $this->tenant->id,
         ])->assertSuccessful();
 
-        $this->assertSame(6, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
+        $this->assertSame(7, LedgerAccount::where('tenant_id', $this->tenant->id)->count());
     }
 
     public function test_posting_with_both_roles_provisioned_succeeds(): void
