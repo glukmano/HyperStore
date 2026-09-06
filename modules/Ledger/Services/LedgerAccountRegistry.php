@@ -40,6 +40,46 @@ class LedgerAccountRegistry implements LedgerAccountRegistryInterface
             normalBalance: NormalBalance::CREDIT->value,
             description: 'Unallocated customer funds liability prior to commercial revenue recognition'
         );
+
+        $this->ensureAccount(
+            tenantId: $tenantId,
+            role: SystemAccountRole::WALLET_LIABILITY->value,
+            code: 'wallet_liability',
+            name: 'Wallet Liability',
+            type: AccountType::LIABILITY->value,
+            normalBalance: NormalBalance::CREDIT->value,
+            description: 'Closed-loop customer Wallet stored-value liability'
+        );
+
+        $this->ensureAccount(
+            tenantId: $tenantId,
+            role: SystemAccountRole::STORE_CREDIT_LIABILITY->value,
+            code: 'store_credit_liability',
+            name: 'Store Credit Liability',
+            type: AccountType::LIABILITY->value,
+            normalBalance: NormalBalance::CREDIT->value,
+            description: 'Retailer-issued Store Credit liability (refund credit, manual adjustment, promotion compensation)'
+        );
+
+        $this->ensureAccount(
+            tenantId: $tenantId,
+            role: SystemAccountRole::GIFT_CARD_LIABILITY->value,
+            code: 'gift_card_liability',
+            name: 'Gift Card Liability',
+            type: AccountType::LIABILITY->value,
+            normalBalance: NormalBalance::CREDIT->value,
+            description: 'Outstanding Gift Card balance liability — a liability creation at sale, never revenue recognition'
+        );
+
+        $this->ensureAccount(
+            tenantId: $tenantId,
+            role: SystemAccountRole::STORE_VALUE_NON_CASH_ADJUSTMENT->value,
+            code: 'store_value_non_cash_adjustment',
+            name: 'Store Value Non-Cash Adjustment',
+            type: AccountType::EXPENSE->value,
+            normalBalance: NormalBalance::DEBIT->value,
+            description: 'Counterpart for Store Value entries with no cash movement of their own: manual issuance/clawback and expiration breakage'
+        );
     }
 
     public function getAccountByRole(int $tenantId, SystemAccountRole|string $role): LedgerAccount

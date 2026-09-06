@@ -1,0 +1,10 @@
+{
+    "name": "DigitalDelivery",
+    "slug": "digital-delivery",
+    "description": "Phase-21: Digital Products, entitlements, secure signed-URL downloads, and license-key allocation.",
+    "version": "1.0.0",
+    "provider": "Modules\\DigitalDelivery\\DigitalDeliveryServiceProvider",
+    "requires": ["catalog", "customers", "order", "payment"],
+    "order": 230,
+    "enabled": true
+}

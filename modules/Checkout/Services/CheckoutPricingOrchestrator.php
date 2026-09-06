@@ -45,7 +45,8 @@ class CheckoutPricingOrchestrator
     public function calculate(
         Cart $cart,
         ?CheckoutAddress $shippingAddress = null,
-        ?SelectedShippingQuote $selectedShippingQuote = null
+        ?SelectedShippingQuote $selectedShippingQuote = null,
+        int $storeValueAppliedMinor = 0
     ): array {
         $cart->loadMissing('lines.product');
         $currency = $cart->currency;
@@ -430,6 +431,13 @@ class CheckoutPricingOrchestrator
 
         $grandTotal = MoneyValue::fromMinor(max(0, $grandTotalMinor), $currency);
 
+        // C.25: Store Value is applied AFTER tax, as a reduction of the
+        // amount actually tendered — never a merchandise discount that
+        // would alter the taxable base. Capped at grandTotal so a stale
+        // hold amount (e.g. after a cart change reduced the total) never
+        // drives amountDue negative.
+        $storeValueApplied = MoneyValue::fromMinor(min($storeValueAppliedMinor, max(0, $grandTotalMinor)), $currency);
+
         $totals = new CheckoutTotals(
             merchandiseSubtotal: $merchandiseSubtotal,
             lineDiscounts: $lineDiscounts,
@@ -438,7 +446,8 @@ class CheckoutPricingOrchestrator
             shippingDiscount: $shippingDiscount,
             shippingFinal: $shippingFinal,
             taxTotal: $taxTotal,
-            grandTotal: $grandTotal
+            grandTotal: $grandTotal,
+            storeValueApplied: $storeValueApplied
         );
 
         $discountsData = [];

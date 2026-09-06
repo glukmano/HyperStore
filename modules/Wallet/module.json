@@ -1,0 +1,10 @@
+{
+    "name": "Wallet",
+    "slug": "wallet",
+    "description": "Phase-21: shared Store Value engine (Wallet + Store Credit) — hold->capture/release checkout lifecycle, Ledger-integrated.",
+    "version": "1.0.0",
+    "provider": "Modules\\Wallet\\WalletServiceProvider",
+    "requires": ["customers", "checkout", "order", "payment", "ledger"],
+    "order": 210,
+    "enabled": true
+}

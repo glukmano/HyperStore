@@ -71,6 +71,9 @@ class PostgreSqlOrderMigrationTest extends TestCase
         'database/migrations/2026_09_07_000116_create_b2b_tables.php',
         'database/migrations/2026_09_07_000117_create_auction_tables.php',
         'database/migrations/2026_09_07_000118_create_booking_tables.php',
+        'database/migrations/2026_09_08_000119_create_digital_delivery_tables.php',
+        'database/migrations/2026_09_08_000120_create_subscriptions_tables.php',
+        'database/migrations/2026_09_08_000121_create_wallet_tables.php',
     ];
 
     private string $testDb;

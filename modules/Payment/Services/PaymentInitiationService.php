@@ -11,6 +11,8 @@ use Modules\Order\Models\Order;
 use Modules\Payment\Contracts\PaymentConcurrencyBarrierInterface;
 use Modules\Payment\Contracts\PaymentGatewayRegistryInterface;
 use Modules\Payment\Contracts\PaymentIdempotencyServiceInterface;
+use Modules\Payment\Contracts\RecurringPaymentGatewayInterface;
+use Modules\Payment\DTOs\GatewayOffSessionChargeRequest;
 use Modules\Payment\DTOs\GatewayPaymentRequest;
 use Modules\Payment\DTOs\InitiatePaymentDTO;
 use Modules\Payment\DTOs\PaymentActionDTO;
@@ -21,6 +23,7 @@ use Modules\Payment\Events\PaymentActionRequired;
 use Modules\Payment\Events\PaymentAuthorized;
 use Modules\Payment\Events\PaymentCaptured;
 use Modules\Payment\Events\PaymentCreated;
+use Modules\Payment\Exceptions\GatewayDoesNotSupportRecurringException;
 use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
 use Modules\Payment\Exceptions\GatewayUnavailableException;
 use Modules\Payment\Exceptions\InvalidPaymentTransitionException;
@@ -72,6 +75,168 @@ class PaymentInitiationService
     }
 
     /**
+     * Owner Delta §9/§11: charges a previously-tokenized CustomerPaymentMethod
+     * off-session, for an unattended Subscription renewal. The
+     * providerIdempotencyKey is computed by the CALLER at billing-period
+     * claim time (D.39) — BEFORE this method is ever invoked — never
+     * generated here, so a retried HTTP call is idempotent at the
+     * provider's own layer too.
+     *
+     * @return array<string, mixed>
+     */
+    public function initiateOffSessionPayment(
+        int $tenantId,
+        int $orderId,
+        int $amountMinor,
+        string $currency,
+        string $gatewayProviderCode,
+        string $gatewayReference,
+        string $providerIdempotencyKey
+    ): array {
+        /** @var Order $order */
+        $order = Order::query()->where('tenant_id', $tenantId)->where('id', $orderId)->firstOrFail();
+
+        $amountDueMinor = $order->amount_due_minor ?? $order->grand_total_minor;
+        if ($amountMinor !== $amountDueMinor) {
+            throw PaymentAmountMismatchException::forAmounts($amountMinor, $amountDueMinor);
+        }
+        if (strtoupper($currency) !== strtoupper($order->currency)) {
+            throw PaymentCurrencyMismatchException::forCurrencies($currency, $order->currency);
+        }
+
+        $gateway = $this->gatewayRegistry->get($gatewayProviderCode);
+        if (! $gateway instanceof RecurringPaymentGatewayInterface) {
+            throw GatewayDoesNotSupportRecurringException::forProvider($gatewayProviderCode);
+        }
+
+        [$payment, $transaction] = DB::transaction(function () use ($tenantId, $order, $amountMinor, $currency, $gatewayProviderCode, $providerIdempotencyKey): array {
+            /** @var Payment $payment */
+            $payment = Payment::query()
+                ->where('tenant_id', $tenantId)
+                ->where('order_id', $order->id)
+                ->lockForUpdate()
+                ->first();
+
+            if ($payment === null) {
+                $payment = Payment::create([
+                    'tenant_id' => $tenantId,
+                    'order_id' => $order->id,
+                    'status' => PaymentStatus::PENDING->value,
+                    'amount_minor' => $amountMinor,
+                    'currency' => $currency,
+                    'authorized_amount_minor' => 0,
+                    'captured_amount_minor' => 0,
+                    'refunded_amount_minor' => 0,
+                    'metadata' => [],
+                ]);
+
+                DB::afterCommit(function () use ($payment): void {
+                    PaymentCreated::dispatch($payment);
+                });
+            }
+
+            /** @var PaymentTransaction|null $existingTx */
+            $existingTx = PaymentTransaction::query()
+                ->where('payment_id', $payment->id)
+                ->where('provider_idempotency_key', $providerIdempotencyKey)
+                ->first();
+
+            if ($existingTx !== null) {
+                return [$payment, $existingTx];
+            }
+
+            /** @var PaymentTransaction $transaction */
+            $transaction = PaymentTransaction::create([
+                'tenant_id' => $tenantId,
+                'payment_id' => $payment->id,
+                'operation_type' => PaymentOperationType::PURCHASE->value,
+                'status' => PaymentTransactionStatus::PENDING->value,
+                'amount_minor' => $amountMinor,
+                'currency' => $currency,
+                'provider_code' => $gatewayProviderCode,
+                'provider_idempotency_key' => $providerIdempotencyKey,
+            ]);
+
+            return [$payment, $transaction];
+        });
+
+        if ($transaction->status === PaymentTransactionStatus::SUCCESS->value) {
+            return $this->reconciliationService->formatResponse($payment->fresh() ?? $payment, $transaction);
+        }
+
+        $request = new GatewayOffSessionChargeRequest(
+            tenantId: $tenantId,
+            paymentId: (int) $payment->id,
+            transactionId: (int) $transaction->id,
+            amountMinor: $amountMinor,
+            currency: $currency,
+            providerReference: $gatewayReference,
+            providerIdempotencyKey: $providerIdempotencyKey
+        );
+
+        try {
+            $result = $gateway->chargeOffSession($request);
+        } catch (GatewayIndeterminateOutcomeException) {
+            DB::transaction(function () use ($transaction): void {
+                /** @var PaymentTransaction $lockedTx */
+                $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
+                $lockedTx->status = PaymentTransactionStatus::UNKNOWN->value;
+                $lockedTx->normalized_error_code = 'gateway_timeout';
+                $lockedTx->save();
+            });
+
+            throw PaymentReconciliationPendingException::forTransaction($transaction->id);
+        } catch (Throwable) {
+            return DB::transaction(function () use ($payment, $transaction): array {
+                /** @var PaymentTransaction $lockedTx */
+                $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
+                $lockedTx->status = PaymentTransactionStatus::FAILURE->value;
+                $lockedTx->normalized_error_code = 'gateway_error';
+                $lockedTx->save();
+
+                return $this->reconciliationService->formatResponse($payment->fresh() ?? $payment, $lockedTx);
+            });
+        }
+
+        return DB::transaction(function () use ($payment, $transaction, $result, $amountMinor, $order): array {
+            /** @var Payment $lockedPayment */
+            $lockedPayment = Payment::query()->where('id', $payment->id)->lockForUpdate()->firstOrFail();
+            /** @var PaymentTransaction $lockedTx */
+            $lockedTx = PaymentTransaction::query()->where('id', $transaction->id)->lockForUpdate()->firstOrFail();
+
+            if ($result->status === PaymentTransactionStatus::SUCCESS) {
+                $lockedTx->status = PaymentTransactionStatus::SUCCESS->value;
+                $lockedTx->provider_reference = $result->providerReference;
+                $lockedTx->normalized_error_code = null;
+                $lockedTx->save();
+
+                $lockedPayment->status = PaymentStatus::CAPTURED->value;
+                $lockedPayment->captured_amount_minor = $amountMinor;
+                $lockedPayment->captured_at = now();
+                $lockedPayment->save();
+
+                $this->orderPaymentSyncService->syncPaymentStatus(
+                    tenantId: $order->tenant_id,
+                    orderId: $order->id,
+                    status: OrderPaymentStatus::PAID,
+                    reason: 'Off-session recurring payment captured successfully'
+                );
+
+                DB::afterCommit(function () use ($lockedPayment, $lockedTx): void {
+                    PaymentCaptured::dispatch($lockedPayment, $lockedTx);
+                });
+            } else {
+                $lockedTx->status = PaymentTransactionStatus::FAILURE->value;
+                $lockedTx->provider_reference = $result->providerReference;
+                $lockedTx->normalized_error_code = $result->normalizedErrorCode ?? 'declined';
+                $lockedTx->save();
+            }
+
+            return $this->reconciliationService->formatResponse($lockedPayment, $lockedTx);
+        });
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function executeInitiation(InitiatePaymentDTO $dto, PaymentOperationKey $opKey): array
@@ -83,8 +248,12 @@ class PaymentInitiationService
             throw OrderAlreadyCancelledException::forOrder($order->id);
         }
 
-        if ($dto->amountMinor !== $order->grand_total_minor) {
-            throw PaymentAmountMismatchException::forAmounts($dto->amountMinor, $order->grand_total_minor);
+        // C.25/C.27: relaxed from grand_total_minor to amount_due_minor —
+        // equal to grand_total_minor when no Store Value was applied (zero
+        // behavior change for every existing, non-Store-Value Order).
+        $amountDueMinor = $order->amount_due_minor ?? $order->grand_total_minor;
+        if ($dto->amountMinor !== $amountDueMinor) {
+            throw PaymentAmountMismatchException::forAmounts($dto->amountMinor, $amountDueMinor);
         }
 
         if (strtoupper($dto->currency) !== strtoupper($order->currency)) {

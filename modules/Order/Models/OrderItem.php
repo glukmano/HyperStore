@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Order\Models;
 
 use App\Core\Tenancy\Traits\BelongsToTenant;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -44,6 +45,11 @@ use Illuminate\Support\Str;
  * @property string|null $commission_rule_ref
  * @property array<string, mixed>|null $selected_options_snapshot
  * @property array<string, mixed>|null $customization_metadata_snapshot
+ * @property array<string, mixed>|null $entitlement_terms_snapshot
+ * @property int|null $subscription_id
+ * @property CarbonInterface|null $billing_period_start_snapshot
+ * @property CarbonInterface|null $billing_period_end_snapshot
+ * @property array<string, mixed>|null $plan_snapshot
  * @property-read Order $order
  * @property-read SellerOrderItem|null $sellerOrderItem
  * @property-read Collection<int, ReturnItem> $returnItems
@@ -97,6 +103,11 @@ class OrderItem extends Model
         'booking_id',
         'booking_slot_starts_at_snapshot',
         'booking_timezone_snapshot',
+        'entitlement_terms_snapshot',
+        'subscription_id',
+        'billing_period_start_snapshot',
+        'billing_period_end_snapshot',
+        'plan_snapshot',
     ];
 
     protected $casts = [
@@ -107,6 +118,11 @@ class OrderItem extends Model
         'winning_bid_amount_minor' => 'integer',
         'reserve_met' => 'boolean',
         'booking_slot_starts_at_snapshot' => 'immutable_datetime',
+        'entitlement_terms_snapshot' => 'array',
+        'subscription_id' => 'integer',
+        'billing_period_start_snapshot' => 'immutable_datetime',
+        'billing_period_end_snapshot' => 'immutable_datetime',
+        'plan_snapshot' => 'array',
         'allocated_cart_discount_minor' => 'integer',
         'discount_minor' => 'integer',
         'taxable_amount_minor' => 'integer',

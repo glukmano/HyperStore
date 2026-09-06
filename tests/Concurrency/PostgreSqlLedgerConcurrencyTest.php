@@ -976,15 +976,22 @@ PHP, $newTenant->id);
             $this->assertStringContainsString('PROVISIONED', $res['stdout']);
         }
 
-        // Must have exactly one payment_clearing and exactly one customer_funds_liability
+        // Must have exactly one of each of the six required system account
+        // roles (Phase-21 / ADR-0150 added four Store Value roles alongside
+        // the original payment_clearing/customer_funds_liability pair).
         $accounts = LedgerAccount::withoutGlobalScopes()->where('tenant_id', $newTenant->id)->get();
-        $this->assertCount(2, $accounts);
+        $this->assertCount(6, $accounts);
 
-        $clearing = $accounts->firstWhere('role', SystemAccountRole::PAYMENT_CLEARING->value);
-        $liability = $accounts->firstWhere('role', SystemAccountRole::CUSTOMER_FUNDS_LIABILITY->value);
-
-        $this->assertNotNull($clearing);
-        $this->assertNotNull($liability);
+        foreach ([
+            SystemAccountRole::PAYMENT_CLEARING,
+            SystemAccountRole::CUSTOMER_FUNDS_LIABILITY,
+            SystemAccountRole::WALLET_LIABILITY,
+            SystemAccountRole::STORE_CREDIT_LIABILITY,
+            SystemAccountRole::GIFT_CARD_LIABILITY,
+            SystemAccountRole::STORE_VALUE_NON_CASH_ADJUSTMENT,
+        ] as $role) {
+            $this->assertNotNull($accounts->firstWhere('role', $role->value), "Missing required system account role [{$role->value}].");
+        }
     }
 
     public function test_postgresql_immutability_triggers_reject_direct_sql_updates_and_deletes(): void

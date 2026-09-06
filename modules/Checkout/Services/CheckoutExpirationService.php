@@ -10,6 +10,7 @@ use Modules\Checkout\Contracts\CheckoutMutationBarrierInterface;
 use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Promotions\Contracts\LoyaltyCheckoutRedemptionServiceInterface;
+use Modules\Wallet\Contracts\StoreValueCheckoutHookInterface;
 use Throwable;
 
 class CheckoutExpirationService
@@ -69,6 +70,14 @@ class CheckoutExpirationService
         if (app()->bound(BookingHoldHookInterface::class)) {
             try {
                 app(BookingHoldHookInterface::class)->cancelHoldsForCheckout($session);
+            } catch (Throwable $e) {
+                report($e);
+            }
+        }
+
+        if (app()->bound(StoreValueCheckoutHookInterface::class)) {
+            try {
+                app(StoreValueCheckoutHookInterface::class)->releaseHoldsForCheckout($session);
             } catch (Throwable $e) {
                 report($e);
             }

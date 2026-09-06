@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Modules\Payment\Providers;
 
-use Modules\Payment\Contracts\PaymentGatewayInterface;
 use Modules\Payment\Contracts\PaymentGatewayReconciliationInterface;
+use Modules\Payment\Contracts\RecurringPaymentGatewayInterface;
 use Modules\Payment\DTOs\GatewayCaptureRequest;
+use Modules\Payment\DTOs\GatewayOffSessionChargeRequest;
 use Modules\Payment\DTOs\GatewayPaymentRequest;
 use Modules\Payment\DTOs\GatewayPaymentResult;
 use Modules\Payment\DTOs\GatewayReconciliationRequest;
@@ -14,10 +15,12 @@ use Modules\Payment\DTOs\GatewayReconciliationResult;
 use Modules\Payment\DTOs\GatewayRefundRequest;
 use Modules\Payment\DTOs\GatewayVoidRequest;
 use Modules\Payment\DTOs\PaymentActionDTO;
+use Modules\Payment\DTOs\SetupPaymentMethodRequest;
+use Modules\Payment\DTOs\SetupPaymentMethodResult;
 use Modules\Payment\Enums\PaymentActionType;
 use Modules\Payment\Exceptions\GatewayIndeterminateOutcomeException;
 
-class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayReconciliationInterface
+class FakePaymentGateway implements PaymentGatewayReconciliationInterface, RecurringPaymentGatewayInterface
 {
     public const PROVIDER_CODE = 'fake';
 
@@ -254,5 +257,54 @@ class FakePaymentGateway implements PaymentGatewayInterface, PaymentGatewayRecon
         $this->monetaryExecutionCount = 0;
         $this->reconciliationCallCount = 0;
         $this->forcedNextOutcome = null;
+    }
+
+    public function setupPaymentMethod(SetupPaymentMethodRequest $request): SetupPaymentMethodResult
+    {
+        if ($this->forcedNextOutcome === 'setup_decline' || $request->paymentMethodReference === 'pm_decline') {
+            return SetupPaymentMethodResult::failure('setup_declined');
+        }
+
+        $reference = 'pm_fake_'.bin2hex(random_bytes(6));
+
+        return SetupPaymentMethodResult::success(
+            providerReference: $reference,
+            displayBrand: 'fake_visa',
+            displayLast4: '4242'
+        );
+    }
+
+    public function chargeOffSession(GatewayOffSessionChargeRequest $request): GatewayPaymentResult
+    {
+        $this->monetaryExecutionCount++;
+
+        if ($this->forcedNextOutcome === 'timeout_after_success' || $request->providerReference === 'pm_timeout_after_success') {
+            $reference = 'off_fake_timeout_'.bin2hex(random_bytes(6));
+            $this->saveRecord($request->providerIdempotencyKey, [
+                'status' => 'success',
+                'reference' => $reference,
+                'amount' => $request->amountMinor,
+                'currency' => $request->currency,
+            ]);
+
+            throw GatewayIndeterminateOutcomeException::timeout('Simulated network timeout/disconnect after off-session charge.');
+        }
+
+        if ($this->forcedNextOutcome === 'decline' || $request->providerReference === 'pm_decline') {
+            return GatewayPaymentResult::failure(
+                errorCode: 'payment_declined',
+                reference: 'off_fake_declined_'.bin2hex(random_bytes(6))
+            );
+        }
+
+        $reference = 'off_fake_'.bin2hex(random_bytes(6));
+        $this->saveRecord($request->providerIdempotencyKey, [
+            'status' => 'success',
+            'reference' => $reference,
+            'amount' => $request->amountMinor,
+            'currency' => $request->currency,
+        ]);
+
+        return GatewayPaymentResult::success(reference: $reference);
     }
 }

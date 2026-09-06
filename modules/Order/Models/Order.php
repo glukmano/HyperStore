@@ -41,6 +41,7 @@ use Modules\Order\Enums\PaymentStatus;
  * @property int $shipping_total_minor
  * @property int $tax_total_minor
  * @property int $grand_total_minor
+ * @property ?int $amount_due_minor
  * @property string|null $commercial_model_snapshot
  * @property array<string, mixed> $customer_snapshot
  * @property array<string, mixed>|null $shipping_address_snapshot
@@ -98,6 +99,7 @@ class Order extends Model
         'shipping_total_minor',
         'tax_total_minor',
         'grand_total_minor',
+        'amount_due_minor',
         'commercial_model_snapshot',
         'customer_snapshot',
         'shipping_address_snapshot',
@@ -121,6 +123,7 @@ class Order extends Model
         'shipping_total_minor' => 'integer',
         'tax_total_minor' => 'integer',
         'grand_total_minor' => 'integer',
+        'amount_due_minor' => 'integer',
         'customer_snapshot' => 'array',
         'shipping_address_snapshot' => 'array',
         'billing_address_snapshot' => 'array',

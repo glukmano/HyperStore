@@ -28,8 +28,13 @@ class SubscriptionProductType extends ProductTypeDefinition
         return true;
     }
 
+    /**
+     * A subscription is a recurring service/access grant, not a
+     * stock-tracked physical good — renewal must not require a physical
+     * Inventory reservation every billing period.
+     */
     public function supportsInventory(): bool
     {
-        return true;
+        return false;
     }
 }

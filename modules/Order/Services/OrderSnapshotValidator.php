@@ -27,6 +27,8 @@ class OrderSnapshotValidator
      *         shipping_total_minor: int,
      *         tax_total_minor: int,
      *         grand_total_minor: int,
+     *         store_value_applied_minor: int,
+     *         amount_due_minor: int,
      *         currency: string
      *     },
      *     lines: list<array{
@@ -172,6 +174,16 @@ class OrderSnapshotValidator
             );
         }
 
+        // C.25/C.26: amount_due_minor — equal to grand_total_minor when no
+        // Store Value was applied (the two OPTIONAL keys are absent for
+        // every totals shape that predates Phase-21, hence a safe default
+        // rather than a REQUIRED key like the ones above). Widened
+        // narrowly for exactly this new field per the established
+        // discipline (ADR-0143) — never assume an unlisted field silently
+        // survives this validator's otherwise-closed shape.
+        $storeValueApplied = array_key_exists('store_value_applied', $totals) && is_int($totals['store_value_applied']) ? $totals['store_value_applied'] : 0;
+        $amountDue = array_key_exists('amount_due', $totals) && is_int($totals['amount_due']) ? $totals['amount_due'] : $grandTotal;
+
         $validatedTotals = [
             'merchandise_subtotal_minor' => $subtotal,
             'line_discounts_minor' => $lineDiscounts,
@@ -182,6 +194,8 @@ class OrderSnapshotValidator
             'shipping_total_minor' => $shippingFinal,
             'tax_total_minor' => $taxTotal,
             'grand_total_minor' => $grandTotal,
+            'store_value_applied_minor' => $storeValueApplied,
+            'amount_due_minor' => $amountDue,
             'currency' => $totalsCurrency,
         ];
 

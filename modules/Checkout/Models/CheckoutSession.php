@@ -36,6 +36,8 @@ use Modules\Cart\Models\Cart;
  * @property array<string, mixed>|null $tax_snapshot
  * @property array<string, mixed>|null $promotion_snapshot
  * @property int|null $auction_id
+ * @property int $store_value_applied_minor
+ * @property array<string, array<string, mixed>>|null $store_value_hold_refs
  * @property array<int, array<string, mixed>>|null $reservation_references
  * @property array<string, mixed>|null $fulfillment_snapshot
  * @property array<string, mixed>|null $ready_snapshot
@@ -81,6 +83,8 @@ class CheckoutSession extends Model
         'version',
         'expires_at',
         'auction_id',
+        'store_value_applied_minor',
+        'store_value_hold_refs',
     ];
 
     protected $casts = [
@@ -97,6 +101,8 @@ class CheckoutSession extends Model
         'evaluated_cart_version' => 'integer',
         'version' => 'integer',
         'expires_at' => 'datetime',
+        'store_value_applied_minor' => 'integer',
+        'store_value_hold_refs' => 'array',
     ];
 
     protected static function boot(): void

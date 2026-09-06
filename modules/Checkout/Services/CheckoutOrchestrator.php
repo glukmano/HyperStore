@@ -27,6 +27,7 @@ use Modules\Marketplace\Contracts\MarketplaceConcurrencyBarrierInterface;
 use Modules\Marketplace\Contracts\VendorCommissionQuoteServiceInterface;
 use Modules\Marketplace\Contracts\VendorListingResolutionServiceInterface;
 use Modules\Promotions\Contracts\LoyaltyCheckoutRedemptionServiceInterface;
+use Modules\Wallet\Contracts\StoreValueCheckoutHookInterface;
 use RuntimeException;
 
 class CheckoutOrchestrator implements CheckoutOrchestratorInterface
@@ -182,7 +183,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
                 // Address change invalidates previous shipping selection and recalculates tax
                 $quoteRes = $this->shippingOrchestrator->quote($lockedSession->cart, $shippingAddress);
-                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $shippingAddress, null);
+                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $shippingAddress, null, (int) $lockedSession->store_value_applied_minor);
 
                 $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
                 $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
@@ -243,7 +244,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
                 $lockedSession->selected_shipping_quote = $authoritativeQuote->toArray();
 
-                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $authoritativeQuote);
+                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $authoritativeQuote, (int) $lockedSession->store_value_applied_minor);
                 $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
                 $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
                 $lockedSession->promotion_snapshot = $pricingRes['promotion_snapshot'];
@@ -375,7 +376,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                     $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
                     $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
 
-                    $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote);
+                    $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote, (int) $lockedSession->store_value_applied_minor);
 
                     $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
                     $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
@@ -437,7 +438,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
                 $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
 
-                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, null);
+                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, null, (int) $lockedSession->store_value_applied_minor);
 
                 $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
                 $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
@@ -487,12 +488,122 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
 
                 $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
 
-                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, null);
+                $pricingRes = $this->pricingOrchestrator->calculate($cart, $dest, null, (int) $lockedSession->store_value_applied_minor);
 
                 $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
                 $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
                 $lockedSession->promotion_snapshot = $pricingRes['promotion_snapshot'];
 
+                $lockedSession->version++;
+                $lockedSession->save();
+
+                return ['session_id' => $session->id];
+            }
+        );
+
+        $session->refresh();
+
+        return $session;
+    }
+
+    /**
+     * Owner Delta §16/C.25: applies a Store Value hold (never a Coupon) —
+     * guarded by app()->bound() so a Tenant with Wallet disabled has zero
+     * Store Value code path at all. The hold amount is capped against the
+     * order's real remaining amountDue (never more than what's actually
+     * owed) before being placed.
+     */
+    public function applyStoreValue(CheckoutSession $session, string $instrumentType, ?string $accountUuid, int $requestedAmountMinor, ?string $idempotencyKey = null): CheckoutSession
+    {
+        $this->assertFreshCart($session);
+
+        if (! app()->bound(StoreValueCheckoutHookInterface::class)) {
+            throw new RuntimeException('Store Value is not available on this Tenant.');
+        }
+
+        $payload = [
+            'instrument_type' => $instrumentType,
+            'account_uuid' => $accountUuid,
+            'requested_amount_minor' => $requestedAmountMinor,
+        ];
+
+        $this->idempotencyService->execute(
+            tenantId: $session->tenant_id,
+            cartId: null,
+            checkoutSessionId: $session->id,
+            operationType: 'apply_store_value',
+            idempotencyKey: $idempotencyKey,
+            requestPayload: $payload,
+            callback: function () use ($session, $instrumentType, $accountUuid, $requestedAmountMinor) {
+                /** @var CheckoutSession $lockedSession */
+                $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                $this->assertFreshCart($lockedSession);
+
+                $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
+                $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
+
+                // Cap the request against what is actually still owed
+                // (excluding any store value already applied for OTHER
+                // instrument types) — never place a hold larger than the
+                // order itself.
+                $currentTotals = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote, 0)['totals'];
+                $alreadyAppliedOther = (int) $lockedSession->store_value_applied_minor;
+                $remainingDue = max(0, $currentTotals->grandTotal->getMinorAmount() - $alreadyAppliedOther);
+                $cappedAmount = min($requestedAmountMinor, $remainingDue);
+
+                app(StoreValueCheckoutHookInterface::class)->applyToCheckout($lockedSession, $instrumentType, $accountUuid, $cappedAmount);
+                $lockedSession->refresh();
+
+                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote, (int) $lockedSession->store_value_applied_minor);
+
+                $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
+                $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
+                $lockedSession->promotion_snapshot = $pricingRes['promotion_snapshot'];
+                $lockedSession->version++;
+                $lockedSession->save();
+
+                return ['session_id' => $session->id];
+            }
+        );
+
+        $session->refresh();
+
+        return $session;
+    }
+
+    public function removeStoreValue(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutSession
+    {
+        $this->assertFreshCart($session);
+
+        if (! app()->bound(StoreValueCheckoutHookInterface::class)) {
+            return $session;
+        }
+
+        $payload = ['action' => 'remove_store_value'];
+
+        $this->idempotencyService->execute(
+            tenantId: $session->tenant_id,
+            cartId: null,
+            checkoutSessionId: $session->id,
+            operationType: 'remove_store_value',
+            idempotencyKey: $idempotencyKey,
+            requestPayload: $payload,
+            callback: function () use ($session) {
+                /** @var CheckoutSession $lockedSession */
+                $lockedSession = CheckoutSession::query()->where('id', $session->id)->lockForUpdate()->firstOrFail();
+                $this->assertFreshCart($lockedSession);
+
+                app(StoreValueCheckoutHookInterface::class)->removeFromCheckout($lockedSession);
+                $lockedSession->refresh();
+
+                $dest = $lockedSession->shipping_address !== null ? CheckoutAddress::fromArray($lockedSession->shipping_address) : null;
+                $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
+
+                $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote, 0);
+
+                $lockedSession->pricing_snapshot = $pricingRes['pricing_snapshot'];
+                $lockedSession->tax_snapshot = $pricingRes['tax_snapshot'];
+                $lockedSession->promotion_snapshot = $pricingRes['promotion_snapshot'];
                 $lockedSession->version++;
                 $lockedSession->save();
 
@@ -555,7 +666,7 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                     $quote = $lockedSession->selected_shipping_quote !== null ? SelectedShippingQuote::fromArray($lockedSession->selected_shipping_quote, $lockedSession->currency) : null;
 
                     // Final authoritative recalculation
-                    $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote);
+                    $pricingRes = $this->pricingOrchestrator->calculate($lockedSession->cart, $dest, $quote, (int) $lockedSession->store_value_applied_minor);
                     $totals = $pricingRes['totals'];
 
                     $lockedSession->cart->loadMissing(['lines.product.translations', 'lines.variant']);
@@ -800,6 +911,14 @@ class CheckoutOrchestrator implements CheckoutOrchestratorInterface
                 if (app()->bound(BookingHoldHookInterface::class)) {
                     try {
                         app(BookingHoldHookInterface::class)->cancelHoldsForCheckout($lockedSession);
+                    } catch (\Throwable $e) {
+                        report($e);
+                    }
+                }
+
+                if (app()->bound(StoreValueCheckoutHookInterface::class)) {
+                    try {
+                        app(StoreValueCheckoutHookInterface::class)->releaseHoldsForCheckout($lockedSession);
                     } catch (\Throwable $e) {
                         report($e);
                     }

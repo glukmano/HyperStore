@@ -28,8 +28,14 @@ class LicenseProductType extends ProductTypeDefinition
         return true;
     }
 
+    /**
+     * Owner Delta §14: a license key is an individually distinct secret,
+     * allocated via LicenseKeyPool — a fundamentally different semantic
+     * than physical Inventory's fungible stock-decrement model, so this is
+     * deliberately false.
+     */
     public function supportsInventory(): bool
     {
-        return true;
+        return false;
     }
 }

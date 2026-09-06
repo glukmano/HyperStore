@@ -31,6 +31,10 @@ interface CheckoutOrchestratorInterface
 
     public function removeCoupon(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutSession;
 
+    public function applyStoreValue(CheckoutSession $session, string $instrumentType, ?string $accountUuid, int $requestedAmountMinor, ?string $idempotencyKey = null): CheckoutSession;
+
+    public function removeStoreValue(CheckoutSession $session, ?string $idempotencyKey = null): CheckoutSession;
+
     /**
      * @return array<string, mixed>
      */

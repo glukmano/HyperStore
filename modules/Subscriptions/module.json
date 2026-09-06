@@ -1,0 +1,10 @@
+{
+    "name": "Subscriptions",
+    "slug": "subscriptions",
+    "description": "Phase-21: Subscription plans, lifecycle, and renewal — reusing the existing Checkout/Order/Payment pipeline, no second Order engine.",
+    "version": "1.0.0",
+    "provider": "Modules\\Subscriptions\\SubscriptionsServiceProvider",
+    "requires": ["catalog", "customers", "cart", "checkout", "order", "payment"],
+    "order": 240,
+    "enabled": true
+}

@@ -235,6 +235,7 @@ class OrderCreationService implements OrderCreationServiceInterface
             'shipping_total_minor' => $validatedSnapshot['totals']['shipping_total_minor'],
             'tax_total_minor' => $validatedSnapshot['totals']['tax_total_minor'],
             'grand_total_minor' => $validatedSnapshot['totals']['grand_total_minor'],
+            'amount_due_minor' => $validatedSnapshot['totals']['amount_due_minor'],
             'commercial_model_snapshot' => $validatedSnapshot['context']['commercial_model_snapshot'],
             'customer_snapshot' => $validatedSnapshot['customer_data'],
             'shipping_address_snapshot' => $validatedSnapshot['shipping_address'],

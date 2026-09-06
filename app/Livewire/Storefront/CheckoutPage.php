@@ -216,7 +216,7 @@ class CheckoutPage extends Component
             $this->placedOrderId = $order->id;
             $this->placedOrderTenantId = $order->tenant_id;
             $this->placedOrderNumber = $order->order_number;
-            $this->placedOrderAmountMinor = $order->grand_total_minor;
+            $this->placedOrderAmountMinor = $order->amount_due_minor ?? $order->grand_total_minor;
             $this->placedOrderCurrency = $order->currency;
 
             // Phase-20 B2B: an Order placed on Company payment terms is

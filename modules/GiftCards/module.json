@@ -1,0 +1,10 @@
+{
+    "name": "GiftCards",
+    "slug": "gift-cards",
+    "description": "Phase-21: Gift Cards — a distinct Store Value instrument from the base model onward, delegating balance/ledger movement to modules/Wallet.",
+    "version": "1.0.0",
+    "provider": "Modules\\GiftCards\\GiftCardsServiceProvider",
+    "requires": ["wallet", "customers"],
+    "order": 220,
+    "enabled": true
+}
