@@ -7,6 +7,16 @@ the Control Center screens under `control-center/platform/plugins/*`
 both call the same `PluginLifecycleService` methods — there is no behavior
 divergence between the two surfaces.
 
+## Scaffolding a New Plugin
+
+`php artisan plugin:make <id>` generates a minimal, valid plugin package
+(`plugin.json`, `composer.json`, a `ServiceProvider` extending the real
+`App\Core\Plugin\PluginServiceProvider`) under `plugins/<id>/`, mirroring the
+exact shape of the `hello-world-plugin` fixture. It is a scaffold only — no
+new lifecycle/registry architecture. Run `composer install` inside the
+generated directory (to produce `vendor/autoload.php`, required by
+`PluginKernel::discover()`) before installing it.
+
 ## Install
 
 ```

@@ -69,7 +69,7 @@
                             @foreach($items as $item)
                                 <li>
                                     <a href="{{ $item->url() }}" wire:navigate class="{{ request()->routeIs($item->routeName) ? 'active' : '' }}">
-                                        @if($item->icon) <span>{{ $item->icon }}</span> @endif
+                                        @if($item->icon) <x-icon :name="$item->icon" class="w-5 h-5 inline-block" /> @endif
                                         {{ $item->label }}
                                     </a>
                                 </li>

@@ -42,6 +42,6 @@ class DigitalDownloadsPage extends Component
         return view('digital-delivery::livewire.storefront.digital-downloads-page', [
             'entitlements' => $entitlements,
             'downloadUrls' => $downloadUrls,
-        ]);
+        ])->layout('theme::layouts.app', ['title' => __('My Downloads')]);
     }
 }

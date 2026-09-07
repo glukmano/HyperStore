@@ -62,6 +62,7 @@ Every dependency added via Composer, NPM, or external services MUST be documente
 | `alpinejs` | `*` | Runtime | UI / Storefront | Lightweight client reactivity for Livewire | MIT | Vanilla JavaScript |
 | `laravel-echo` | `^2` (installed, dev) | Runtime | Messaging | WebSocket client, Reverb private-channel subscription for Buyer-Seller conversation UI (Phase-17) | MIT | Native WebSocket client |
 | `pusher-js` | `^8` (installed, dev) | Runtime | Messaging | Reverb's Pusher-protocol-compatible transport, used internally by `laravel-echo` (Phase-17) | MIT | N/A — required transport for Reverb |
+| `lucide-static` | `^1.41` (dev only) | Dev (build-time asset source) | Control Center / UI icons | Source of the self-hosted SVG icon set (`resources/icons/*.svg`) replacing raw emoji as Control Center navigation icons (Pre-Production Readiness). Not a runtime dependency — icons are copied once into `resources/icons/` and rendered via the `<x-icon>` Blade component, with no CDN and no bundled JS. | ISC | Any other static SVG icon set with an equivalent free license |
 
 ---
 

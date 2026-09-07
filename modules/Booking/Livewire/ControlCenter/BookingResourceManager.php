@@ -93,6 +93,6 @@ class BookingResourceManager extends Component
         return view('booking::livewire.control-center.booking-resource-manager', [
             'resources' => BookingResource::where('tenant_id', $tenantId)->with('availabilityRules', 'eligibleServices')->get(),
             'services' => BookingService::where('tenant_id', $tenantId)->get(),
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Booking Resources']);
     }
 }

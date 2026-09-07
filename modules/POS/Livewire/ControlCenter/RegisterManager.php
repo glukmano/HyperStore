@@ -100,6 +100,6 @@ class RegisterManager extends Component
             'registers' => $registers,
             'storeMarkets' => $storeMarkets,
             'inventorySources' => $inventorySources,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'POS Registers']);
     }
 }

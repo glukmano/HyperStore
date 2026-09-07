@@ -63,6 +63,6 @@ class SubscriptionManager extends Component
 
         return view('subscriptions::livewire.control-center.subscription-manager', [
             'subscriptions' => $subscriptions,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Subscriptions']);
     }
 }

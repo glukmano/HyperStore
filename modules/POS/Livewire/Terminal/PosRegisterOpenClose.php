@@ -113,6 +113,6 @@ class PosRegisterOpenClose extends Component
         return view('pos::livewire.terminal.register-open-close', [
             'activeSession' => $activeSession,
             'registers' => $registers,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'POS Register']);
     }
 }

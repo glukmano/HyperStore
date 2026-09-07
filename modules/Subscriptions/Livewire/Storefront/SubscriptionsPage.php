@@ -51,6 +51,6 @@ class SubscriptionsPage extends Component
 
         return view('subscriptions::livewire.storefront.subscriptions-page', [
             'subscriptions' => $subscriptions,
-        ]);
+        ])->layout('theme::layouts.app', ['title' => __('My Subscriptions')]);
     }
 }

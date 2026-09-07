@@ -64,6 +64,6 @@ class AuctionsServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('auctions.auctions', 'Auctions', 'control-center.auctions.auctions', 'Auctions', 'auctions.view', 'tenant', '🔨', 10));
+        $nav->register(new NavigationItem('auctions.auctions', 'Auctions', 'control-center.auctions.auctions', 'Auctions', 'auctions.view', 'tenant', 'gavel', 10));
     }
 }

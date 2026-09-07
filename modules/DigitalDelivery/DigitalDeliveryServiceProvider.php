@@ -66,7 +66,7 @@ class DigitalDeliveryServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('digital-delivery.assets', 'Digital Assets', 'control-center.digital-delivery.assets', 'Digital Delivery', 'digital-delivery.assets.view', 'tenant', '📁', 10));
-        $nav->register(new NavigationItem('digital-delivery.licenses', 'License Keys', 'control-center.digital-delivery.licenses', 'Digital Delivery', 'digital-delivery.licenses.view', 'tenant', '🔑', 20));
+        $nav->register(new NavigationItem('digital-delivery.assets', 'Digital Assets', 'control-center.digital-delivery.assets', 'Digital Delivery', 'digital-delivery.assets.view', 'tenant', 'folder', 10));
+        $nav->register(new NavigationItem('digital-delivery.licenses', 'License Keys', 'control-center.digital-delivery.licenses', 'Digital Delivery', 'digital-delivery.licenses.view', 'tenant', 'key', 20));
     }
 }

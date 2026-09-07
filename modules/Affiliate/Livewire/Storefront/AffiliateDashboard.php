@@ -47,7 +47,8 @@ class AffiliateDashboard extends Component
         $affiliate = $this->currentAffiliate();
 
         if ($affiliate === null) {
-            return view('affiliate::livewire.storefront.affiliate-dashboard', ['affiliate' => null]);
+            return view('affiliate::livewire.storefront.affiliate-dashboard', ['affiliate' => null])
+                ->layout('theme::layouts.app', ['title' => __('Affiliate Dashboard')]);
         }
 
         $balances = app(AffiliatePayableSubledgerServiceInterface::class)
@@ -69,6 +70,6 @@ class AffiliateDashboard extends Component
             'referralCodes' => $referralCodes,
             'conversionCount' => $conversionCount,
             'trackBaseUrl' => url('/r'),
-        ]);
+        ])->layout('theme::layouts.app', ['title' => __('Affiliate Dashboard')]);
     }
 }

@@ -85,6 +85,6 @@ class StoreValueAccountManager extends Component
         return view('wallet::livewire.control-center.store-value-account-manager', [
             'accounts' => $accounts,
             'balances' => $balances,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Store Value Accounts']);
     }
 }

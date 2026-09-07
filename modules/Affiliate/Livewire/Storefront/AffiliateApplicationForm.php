@@ -64,6 +64,6 @@ class AffiliateApplicationForm extends Component
 
         return view('affiliate::livewire.storefront.affiliate-application-form', [
             'existing' => $existing,
-        ]);
+        ])->layout('theme::layouts.app', ['title' => __('Become an Affiliate')]);
     }
 }

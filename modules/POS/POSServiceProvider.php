@@ -67,9 +67,9 @@ class POSServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('pos.registers', 'POS Registers', 'control-center.pos.registers', 'POS', 'pos.registers.view', 'tenant', '🧾', 10));
-        $nav->register(new NavigationItem('pos.sessions', 'Register Sessions', 'control-center.pos.sessions', 'POS', 'pos.registers.view', 'tenant', '🧾', 20));
-        $nav->register(new NavigationItem('pos.cash-movements', 'Cash Movements', 'control-center.pos.cash-movements', 'POS', 'pos.registers.view', 'tenant', '🧾', 30));
-        $nav->register(new NavigationItem('pos.manual-discounts', 'Manual Discount Audit', 'control-center.pos.manual-discounts', 'POS', 'pos.registers.view', 'tenant', '🧾', 40));
+        $nav->register(new NavigationItem('pos.registers', 'POS Registers', 'control-center.pos.registers', 'POS', 'pos.registers.view', 'tenant', 'receipt', 10));
+        $nav->register(new NavigationItem('pos.sessions', 'Register Sessions', 'control-center.pos.sessions', 'POS', 'pos.registers.view', 'tenant', 'receipt', 20));
+        $nav->register(new NavigationItem('pos.cash-movements', 'Cash Movements', 'control-center.pos.cash-movements', 'POS', 'pos.registers.view', 'tenant', 'receipt', 30));
+        $nav->register(new NavigationItem('pos.manual-discounts', 'Manual Discount Audit', 'control-center.pos.manual-discounts', 'POS', 'pos.registers.view', 'tenant', 'receipt', 40));
     }
 }

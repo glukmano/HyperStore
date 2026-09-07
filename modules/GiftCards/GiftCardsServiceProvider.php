@@ -54,6 +54,6 @@ class GiftCardsServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('gift-cards.manage', 'Gift Cards', 'control-center.gift-cards.manage', 'Wallet', 'gift-cards.view', 'tenant', '🎁', 20));
+        $nav->register(new NavigationItem('gift-cards.manage', 'Gift Cards', 'control-center.gift-cards.manage', 'Wallet', 'gift-cards.view', 'tenant', 'gift', 20));
     }
 }

@@ -76,6 +76,6 @@ class GiftCardManager extends Component
 
         return view('gift-cards::livewire.control-center.gift-card-manager', [
             'cards' => $cards,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Gift Cards']);
     }
 }

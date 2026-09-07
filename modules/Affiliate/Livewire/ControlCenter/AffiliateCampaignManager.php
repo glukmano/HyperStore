@@ -142,6 +142,6 @@ class AffiliateCampaignManager extends Component
             'referralCodes' => AffiliateReferralCode::where('tenant_id', $tenantId)->orderByDesc('id')->limit(50)->get(),
             'targetTypes' => AffiliateTargetType::cases(),
             'strategies' => AffiliateAttributionStrategy::cases(),
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Affiliate Campaigns']);
     }
 }

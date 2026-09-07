@@ -85,6 +85,6 @@ class DigitalAssetManager extends Component
 
         return view('digital-delivery::livewire.control-center.digital-asset-manager', [
             'assets' => $assets,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Digital Assets']);
     }
 }

@@ -71,8 +71,8 @@ class B2BServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('b2b.companies', 'Companies', 'control-center.b2b.companies', 'B2B', 'b2b.companies.view', 'tenant', '🏢', 10));
-        $nav->register(new NavigationItem('b2b.quotes', 'Quotes', 'control-center.b2b.quotes', 'B2B', 'b2b.quotes.view', 'tenant', '📄', 20));
-        $nav->register(new NavigationItem('b2b.credit', 'Company Credit', 'control-center.b2b.credit', 'B2B', 'b2b.companies.manage', 'tenant', '💳', 30));
+        $nav->register(new NavigationItem('b2b.companies', 'Companies', 'control-center.b2b.companies', 'B2B', 'b2b.companies.view', 'tenant', 'building-2', 10));
+        $nav->register(new NavigationItem('b2b.quotes', 'Quotes', 'control-center.b2b.quotes', 'B2B', 'b2b.quotes.view', 'tenant', 'file', 20));
+        $nav->register(new NavigationItem('b2b.credit', 'Company Credit', 'control-center.b2b.credit', 'B2B', 'b2b.companies.manage', 'tenant', 'credit-card', 30));
     }
 }

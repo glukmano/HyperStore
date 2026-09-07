@@ -107,6 +107,6 @@ class CompanyManager extends Component
         return view('b2b::livewire.control-center.company-manager', [
             'companies' => $companies,
             'customerGroups' => $customerGroups,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'B2B Companies']);
     }
 }

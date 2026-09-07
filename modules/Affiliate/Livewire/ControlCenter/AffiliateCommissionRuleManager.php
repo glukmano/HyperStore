@@ -89,6 +89,6 @@ class AffiliateCommissionRuleManager extends Component
         return view('affiliate::livewire.control-center.affiliate-commission-rule-manager', [
             'rules' => AffiliateCommissionRule::where('tenant_id', $tenantId)->orderByDesc('id')->get(),
             'affiliates' => Affiliate::where('tenant_id', $tenantId)->orderBy('display_name')->get(),
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Affiliate Commission Rules']);
     }
 }

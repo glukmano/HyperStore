@@ -44,6 +44,6 @@ class ManualDiscountAuditViewer extends Component
 
         return view('pos::livewire.control-center.manual-discount-audit-viewer', [
             'entries' => $entries,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Manual Discount Audit']);
     }
 }

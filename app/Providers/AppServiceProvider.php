@@ -32,6 +32,7 @@ use App\Core\Plugin\Console\Commands\PluginEnableCommand;
 use App\Core\Plugin\Console\Commands\PluginInspectCommand;
 use App\Core\Plugin\Console\Commands\PluginInstallCommand;
 use App\Core\Plugin\Console\Commands\PluginListCommand;
+use App\Core\Plugin\Console\Commands\PluginMakeCommand;
 use App\Core\Plugin\Console\Commands\PluginUninstallCommand;
 use App\Core\Plugin\Console\Commands\PluginUpdateCommand;
 use App\Core\Plugin\Contracts\PluginCodeSwapperInterface;
@@ -46,6 +47,7 @@ use App\Core\Plugin\Services\PluginZipInstaller;
 use App\Core\Routing\DomainAddressingService;
 use App\Core\Support\ContentSanitizer;
 use App\Core\Support\Contracts\ContentSanitizerInterface;
+use App\Core\Theme\Console\Commands\ThemeMakeCommand;
 use App\Core\Theme\Contracts\ThemeRegistryInterface;
 use App\Core\Theme\Contracts\ThemeResolverInterface;
 use App\Core\Theme\DTOs\ThemeManifest;
@@ -171,6 +173,8 @@ class AppServiceProvider extends ServiceProvider
                 PluginUpdateCommand::class,
                 PluginUninstallCommand::class,
                 PluginDoctorCommand::class,
+                PluginMakeCommand::class,
+                ThemeMakeCommand::class,
                 SyncSearchIndexSettingsCommand::class,
                 SendAbandonedCartRemindersCommand::class,
             ]);
@@ -183,7 +187,7 @@ class AppServiceProvider extends ServiceProvider
             routeName: 'control-center.dashboard',
             group: 'Overview',
             context: 'all',
-            icon: '🏠',
+            icon: 'house',
             order: 0,
         ));
 
@@ -194,7 +198,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'stores.view',
             context: 'tenant',
-            icon: '🏬',
+            icon: 'store',
             order: 10,
         ));
 
@@ -205,7 +209,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'markets.view',
             context: 'tenant',
-            icon: '🌍',
+            icon: 'globe',
             order: 20,
         ));
 
@@ -216,7 +220,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'channels.view',
             context: 'tenant',
-            icon: '📡',
+            icon: 'radio',
             order: 30,
         ));
 
@@ -227,7 +231,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'locales.view',
             context: 'tenant',
-            icon: '🈯',
+            icon: 'languages',
             order: 32,
         ));
 
@@ -238,7 +242,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'countries.view',
             context: 'tenant',
-            icon: '🗺️',
+            icon: 'map',
             order: 34,
         ));
 
@@ -249,7 +253,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'currencies.view',
             context: 'tenant',
-            icon: '💱',
+            icon: 'banknote',
             order: 36,
         ));
 
@@ -260,7 +264,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'domains.view',
             context: 'tenant',
-            icon: '🔗',
+            icon: 'link',
             order: 38,
         ));
 
@@ -271,7 +275,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'settings.manage',
             context: 'tenant',
-            icon: '⚙️',
+            icon: 'settings',
             order: 40,
         ));
 
@@ -282,7 +286,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'users.view',
             context: 'tenant',
-            icon: '👥',
+            icon: 'users',
             order: 50,
         ));
 
@@ -293,8 +297,19 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'plugins.view',
             context: 'tenant',
-            icon: '🧩',
+            icon: 'puzzle',
             order: 60,
+        ));
+
+        $navigation->register(new NavigationItem(
+            key: 'platform-developer-docs',
+            label: 'Developer Center',
+            routeName: 'control-center.platform.developer.docs.index',
+            group: 'Platform',
+            permission: 'developer.docs.view',
+            context: 'tenant',
+            icon: 'book-open',
+            order: 65,
         ));
 
         $navigation->register(new NavigationItem(
@@ -304,7 +319,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'reviews.view',
             context: 'tenant',
-            icon: '⭐',
+            icon: 'star',
             order: 70,
         ));
 
@@ -315,7 +330,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'cms.view',
             context: 'tenant',
-            icon: '📄',
+            icon: 'file',
             order: 80,
         ));
 
@@ -326,7 +341,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'reviews.view',
             context: 'tenant',
-            icon: '⭐',
+            icon: 'star',
             order: 71,
         ));
 
@@ -337,7 +352,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'reviews.view',
             context: 'tenant',
-            icon: '❓',
+            icon: 'help-circle',
             order: 72,
         ));
 
@@ -348,7 +363,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'messaging.moderate',
             context: 'tenant',
-            icon: '✉️',
+            icon: 'mail',
             order: 73,
         ));
 
@@ -359,7 +374,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'cms.view',
             context: 'tenant',
-            icon: '📝',
+            icon: 'file-text',
             order: 81,
         ));
 
@@ -370,7 +385,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'cms.view',
             context: 'tenant',
-            icon: '💬',
+            icon: 'message-circle',
             order: 82,
         ));
 
@@ -381,7 +396,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'cms.view',
             context: 'tenant',
-            icon: '🧭',
+            icon: 'compass',
             order: 83,
         ));
 
@@ -392,7 +407,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'cms.view',
             context: 'tenant',
-            icon: '🖼️',
+            icon: 'image',
             order: 84,
         ));
 
@@ -403,7 +418,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'cms.view',
             context: 'tenant',
-            icon: '🗂️',
+            icon: 'folder-tree',
             order: 85,
         ));
 
@@ -414,7 +429,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'cms.view',
             context: 'tenant',
-            icon: '↪️',
+            icon: 'corner-down-right',
             order: 86,
         ));
 
@@ -425,7 +440,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'seo.manage',
             context: 'tenant',
-            icon: '🔍',
+            icon: 'search',
             order: 90,
         ));
 
@@ -436,7 +451,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'search.manage',
             context: 'tenant',
-            icon: '🔤',
+            icon: 'languages',
             order: 91,
         ));
 
@@ -447,7 +462,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'search.manage',
             context: 'tenant',
-            icon: '📌',
+            icon: 'pin',
             order: 92,
         ));
 
@@ -458,7 +473,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'search.manage',
             context: 'tenant',
-            icon: '📊',
+            icon: 'bar-chart-3',
             order: 93,
         ));
 
@@ -469,7 +484,7 @@ class AppServiceProvider extends ServiceProvider
             group: 'Platform',
             permission: 'customers.view',
             context: 'tenant',
-            icon: '🤝',
+            icon: 'handshake',
             order: 94,
         ));
 
@@ -508,7 +523,7 @@ class AppServiceProvider extends ServiceProvider
             label: 'Rich Text',
             configSchema: ['html' => ['nullable', 'string']],
             viewPath: 'cms.blocks.rich-text',
-            icon: '📝',
+            icon: 'file-text',
         ));
 
         $registry->register(new BlockTypeDefinition(
@@ -521,7 +536,7 @@ class AppServiceProvider extends ServiceProvider
                 'cta_url' => ['nullable', 'string', 'max:500'],
             ],
             viewPath: 'cms.blocks.hero',
-            icon: '🖼️',
+            icon: 'image',
         ));
 
         $registry->register(new BlockTypeDefinition(
@@ -529,7 +544,7 @@ class AppServiceProvider extends ServiceProvider
             label: 'Image Gallery',
             configSchema: ['image_urls' => ['nullable', 'array'], 'image_urls.*' => ['string']],
             viewPath: 'cms.blocks.image-gallery',
-            icon: '🖼️',
+            icon: 'image',
         ));
 
         $registry->register(new BlockTypeDefinition(
@@ -537,7 +552,7 @@ class AppServiceProvider extends ServiceProvider
             label: 'Product Grid',
             configSchema: ['category_id' => ['nullable', 'integer'], 'limit' => ['nullable', 'integer', 'min:1', 'max:24']],
             viewPath: 'cms.blocks.product-grid',
-            icon: '🛍️',
+            icon: 'shopping-bag',
         ));
 
         $registry->register(new BlockTypeDefinition(
@@ -545,7 +560,7 @@ class AppServiceProvider extends ServiceProvider
             label: 'Custom HTML',
             configSchema: ['html' => ['nullable', 'string']],
             viewPath: 'cms.blocks.html',
-            icon: '⚠️',
+            icon: 'triangle-alert',
         ));
     }
 }

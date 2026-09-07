@@ -45,6 +45,6 @@ class WalletPage extends Component
             'accounts' => $accounts,
             'balances' => $balances,
             'entries' => $entries,
-        ]);
+        ])->layout('theme::layouts.app', ['title' => __('My Wallet')]);
     }
 }

@@ -55,8 +55,8 @@ class FulfillmentServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('fulfillment.sources', 'Fulfillment Sources', 'control-center.fulfillment.sources', 'Fulfillment', 'fulfillment.sources.view', 'tenant', '🚚', 10));
-        $nav->register(new NavigationItem('fulfillment.strategies', 'Fulfillment Strategies', 'control-center.fulfillment.strategies', 'Fulfillment', 'fulfillment.strategies.view', 'tenant', '🧭', 20));
-        $nav->register(new NavigationItem('fulfillment.preview', 'Fulfillment Preview', 'control-center.fulfillment.preview', 'Fulfillment', 'fulfillment.preview', 'tenant', '🔍', 30));
+        $nav->register(new NavigationItem('fulfillment.sources', 'Fulfillment Sources', 'control-center.fulfillment.sources', 'Fulfillment', 'fulfillment.sources.view', 'tenant', 'truck', 10));
+        $nav->register(new NavigationItem('fulfillment.strategies', 'Fulfillment Strategies', 'control-center.fulfillment.strategies', 'Fulfillment', 'fulfillment.strategies.view', 'tenant', 'compass', 20));
+        $nav->register(new NavigationItem('fulfillment.preview', 'Fulfillment Preview', 'control-center.fulfillment.preview', 'Fulfillment', 'fulfillment.preview', 'tenant', 'search', 30));
     }
 }

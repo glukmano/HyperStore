@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Core\Context\Middleware\ResolveContextMiddleware;
+use App\Core\DeveloperCenter\Livewire\DocumentationViewer;
 use App\Core\Localization\Middleware\SetLocaleAndDirectionMiddleware;
 use App\Core\Localization\ValueObjects\LocaleCode;
 use App\Core\Plugin\Livewire\PluginDetail;
@@ -204,6 +205,11 @@ Route::middleware(['web', 'auth', SetLocaleAndDirectionMiddleware::class, Resolv
         Route::prefix('plugins')->name('plugins.')->group(function () {
             Route::get('/', PluginList::class)->name('index');
             Route::get('/{pluginId}', PluginDetail::class)->name('show');
+        });
+
+        Route::prefix('developer/docs')->name('developer.docs.')->group(function () {
+            Route::get('/', DocumentationViewer::class)->name('index');
+            Route::get('/{section}/{slug}', DocumentationViewer::class)->name('show');
         });
 
         Route::get('/reviews', ReviewModerationManager::class)->name('reviews.index');

@@ -56,7 +56,7 @@ class SubscriptionsServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('subscriptions.plans', 'Subscription Plans', 'control-center.subscriptions.plans', 'Subscriptions', 'subscriptions.plans.view', 'tenant', '🔁', 10));
-        $nav->register(new NavigationItem('subscriptions.manage', 'Manage Subscriptions', 'control-center.subscriptions.manage', 'Subscriptions', 'subscriptions.manage.view', 'tenant', '📋', 20));
+        $nav->register(new NavigationItem('subscriptions.plans', 'Subscription Plans', 'control-center.subscriptions.plans', 'Subscriptions', 'subscriptions.plans.view', 'tenant', 'repeat', 10));
+        $nav->register(new NavigationItem('subscriptions.manage', 'Manage Subscriptions', 'control-center.subscriptions.manage', 'Subscriptions', 'subscriptions.manage.view', 'tenant', 'clipboard-list', 20));
     }
 }

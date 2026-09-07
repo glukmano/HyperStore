@@ -89,6 +89,6 @@ class CompanyCreditManager extends Component
             'accounts' => $accounts,
             'balances' => $balances,
             'openInvoices' => $openInvoices,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'B2B Company Credit']);
     }
 }

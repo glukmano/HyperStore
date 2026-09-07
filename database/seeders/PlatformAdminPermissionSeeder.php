@@ -28,6 +28,7 @@ class PlatformAdminPermissionSeeder extends Seeder
         'users.view',
         'users.manage',
         'roles.manage',
+        'developer.docs.view',
     ];
 
     public function run(): void

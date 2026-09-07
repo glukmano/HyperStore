@@ -78,6 +78,6 @@ class SubscriptionPlanManager extends Component
 
         return view('subscriptions::livewire.control-center.subscription-plan-manager', [
             'plans' => $plans,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Subscription Plans']);
     }
 }

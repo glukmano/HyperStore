@@ -114,11 +114,11 @@ class CatalogServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('catalog.products', 'Products', 'control-center.catalog.products.index', 'Catalog', 'products.view', 'tenant', '📦', 10));
-        $nav->register(new NavigationItem('catalog.categories', 'Categories', 'control-center.catalog.categories', 'Catalog', 'categories.view', 'tenant', '🗂️', 20));
-        $nav->register(new NavigationItem('catalog.attributes', 'Attributes', 'control-center.catalog.attributes', 'Catalog', 'attributes.view', 'tenant', '🏷️', 30));
-        $nav->register(new NavigationItem('catalog.attribute-sets', 'Attribute Sets', 'control-center.catalog.attribute-sets', 'Catalog', 'attribute_sets.view', 'tenant', '🧩', 40));
-        $nav->register(new NavigationItem('catalog.brands', 'Brands', 'control-center.catalog.brands', 'Catalog', 'brands.view', 'tenant', '🏢', 50));
+        $nav->register(new NavigationItem('catalog.products', 'Products', 'control-center.catalog.products.index', 'Catalog', 'products.view', 'tenant', 'package', 10));
+        $nav->register(new NavigationItem('catalog.categories', 'Categories', 'control-center.catalog.categories', 'Catalog', 'categories.view', 'tenant', 'folder-tree', 20));
+        $nav->register(new NavigationItem('catalog.attributes', 'Attributes', 'control-center.catalog.attributes', 'Catalog', 'attributes.view', 'tenant', 'tag', 30));
+        $nav->register(new NavigationItem('catalog.attribute-sets', 'Attribute Sets', 'control-center.catalog.attribute-sets', 'Catalog', 'attribute_sets.view', 'tenant', 'puzzle', 40));
+        $nav->register(new NavigationItem('catalog.brands', 'Brands', 'control-center.catalog.brands', 'Catalog', 'brands.view', 'tenant', 'building-2', 50));
     }
 
     protected function registerLivewireComponents(): void

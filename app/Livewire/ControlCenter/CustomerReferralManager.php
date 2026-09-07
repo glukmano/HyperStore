@@ -56,6 +56,6 @@ class CustomerReferralManager extends Component
         return view('livewire.control-center.customer-referral-manager', [
             'referrals' => $referrals,
             'rewardStatusByReferralId' => $rewardStatusByReferralId,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Customer Referrals']);
     }
 }

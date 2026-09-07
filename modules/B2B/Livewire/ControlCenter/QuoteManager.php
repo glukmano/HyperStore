@@ -85,6 +85,6 @@ class QuoteManager extends Component
 
         return view('b2b::livewire.control-center.quote-manager', [
             'quotes' => $quotes,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'B2B Quotes']);
     }
 }

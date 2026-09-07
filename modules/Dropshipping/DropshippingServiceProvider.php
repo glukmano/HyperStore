@@ -73,7 +73,7 @@ class DropshippingServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('dropshipping.suppliers', 'Suppliers', 'control-center.dropshipping.suppliers.index', 'Dropshipping', 'suppliers.view', 'tenant', '🚚', 10));
-        $nav->register(new NavigationItem('dropshipping.purchase-orders', 'Purchase Orders', 'control-center.dropshipping.purchase-orders.index', 'Dropshipping', 'purchase_orders.view', 'tenant', '📦', 20));
+        $nav->register(new NavigationItem('dropshipping.suppliers', 'Suppliers', 'control-center.dropshipping.suppliers.index', 'Dropshipping', 'suppliers.view', 'tenant', 'truck', 10));
+        $nav->register(new NavigationItem('dropshipping.purchase-orders', 'Purchase Orders', 'control-center.dropshipping.purchase-orders.index', 'Dropshipping', 'purchase_orders.view', 'tenant', 'package', 20));
     }
 }

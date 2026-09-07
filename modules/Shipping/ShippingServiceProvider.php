@@ -101,14 +101,14 @@ class ShippingServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('shipping.zones', 'Shipping Zones', 'control-center.shipping.zones', 'Shipping', 'shipping.zones.view', 'tenant', '🌍', 10));
-        $nav->register(new NavigationItem('shipping.methods', 'Shipping Methods', 'control-center.shipping.methods', 'Shipping', 'shipping.methods.view', 'tenant', '📦', 20));
-        $nav->register(new NavigationItem('shipping.rate-rules', 'Rate Rules', 'control-center.shipping.rate-rules', 'Shipping', 'shipping.rates.view', 'tenant', '📐', 30));
-        $nav->register(new NavigationItem('shipping.classes', 'Shipping Classes', 'control-center.shipping.classes', 'Shipping', 'shipping.classes.view', 'tenant', '🏷️', 40));
-        $nav->register(new NavigationItem('shipping.package-types', 'Package Types', 'control-center.shipping.package-types', 'Shipping', 'shipping.package_types.view', 'tenant', '📐', 50));
-        $nav->register(new NavigationItem('shipping.carriers', 'Carriers', 'control-center.shipping.carriers', 'Shipping', 'shipping.carriers.view', 'tenant', '🚛', 60));
-        $nav->register(new NavigationItem('shipping.pickup-locations', 'Pickup Locations', 'control-center.shipping.pickup-locations', 'Shipping', 'shipping.pickup_locations.view', 'tenant', '📍', 70));
-        $nav->register(new NavigationItem('shipping.restrictions', 'Restrictions', 'control-center.shipping.restrictions', 'Shipping', 'shipping.restrictions.view', 'tenant', '🚫', 80));
-        $nav->register(new NavigationItem('shipping.rate-preview', 'Rate Preview', 'control-center.shipping.rate-preview', 'Shipping', 'shipping.preview', 'tenant', '🔍', 90));
+        $nav->register(new NavigationItem('shipping.zones', 'Shipping Zones', 'control-center.shipping.zones', 'Shipping', 'shipping.zones.view', 'tenant', 'globe', 10));
+        $nav->register(new NavigationItem('shipping.methods', 'Shipping Methods', 'control-center.shipping.methods', 'Shipping', 'shipping.methods.view', 'tenant', 'package', 20));
+        $nav->register(new NavigationItem('shipping.rate-rules', 'Rate Rules', 'control-center.shipping.rate-rules', 'Shipping', 'shipping.rates.view', 'tenant', 'ruler', 30));
+        $nav->register(new NavigationItem('shipping.classes', 'Shipping Classes', 'control-center.shipping.classes', 'Shipping', 'shipping.classes.view', 'tenant', 'tag', 40));
+        $nav->register(new NavigationItem('shipping.package-types', 'Package Types', 'control-center.shipping.package-types', 'Shipping', 'shipping.package_types.view', 'tenant', 'ruler', 50));
+        $nav->register(new NavigationItem('shipping.carriers', 'Carriers', 'control-center.shipping.carriers', 'Shipping', 'shipping.carriers.view', 'tenant', 'truck', 60));
+        $nav->register(new NavigationItem('shipping.pickup-locations', 'Pickup Locations', 'control-center.shipping.pickup-locations', 'Shipping', 'shipping.pickup_locations.view', 'tenant', 'map-pin', 70));
+        $nav->register(new NavigationItem('shipping.restrictions', 'Restrictions', 'control-center.shipping.restrictions', 'Shipping', 'shipping.restrictions.view', 'tenant', 'ban', 80));
+        $nav->register(new NavigationItem('shipping.rate-preview', 'Rate Preview', 'control-center.shipping.rate-preview', 'Shipping', 'shipping.preview', 'tenant', 'search', 90));
     }
 }

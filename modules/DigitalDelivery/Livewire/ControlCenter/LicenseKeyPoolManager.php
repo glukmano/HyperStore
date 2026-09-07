@@ -102,6 +102,6 @@ class LicenseKeyPoolManager extends Component
 
         return view('digital-delivery::livewire.control-center.license-key-pool-manager', [
             'counts' => $counts,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'License Key Pools']);
     }
 }

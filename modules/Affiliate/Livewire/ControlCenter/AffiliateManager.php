@@ -108,6 +108,6 @@ class AffiliateManager extends Component
             'affiliates' => $affiliates,
             'balances' => $balances,
             'openFlags' => $openFlags,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Affiliates']);
     }
 }

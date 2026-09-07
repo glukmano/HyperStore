@@ -100,9 +100,9 @@ class PromotionsServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('promotions.index', 'Promotions', 'control-center.promotions.index', 'Promotions', 'promotions.view', 'tenant', '🎯', 10));
-        $nav->register(new NavigationItem('promotions.coupons', 'Coupons', 'control-center.promotions.coupons', 'Promotions', 'coupons.view', 'tenant', '🎟️', 20));
-        $nav->register(new NavigationItem('promotions.loyalty', 'Loyalty Program', 'control-center.promotions.loyalty', 'Promotions', 'loyalty.manage', 'tenant', '⭐', 30));
+        $nav->register(new NavigationItem('promotions.index', 'Promotions', 'control-center.promotions.index', 'Promotions', 'promotions.view', 'tenant', 'target', 10));
+        $nav->register(new NavigationItem('promotions.coupons', 'Coupons', 'control-center.promotions.coupons', 'Promotions', 'coupons.view', 'tenant', 'ticket', 20));
+        $nav->register(new NavigationItem('promotions.loyalty', 'Loyalty Program', 'control-center.promotions.loyalty', 'Promotions', 'loyalty.manage', 'tenant', 'star', 30));
     }
 
     protected function registerLivewireComponents(): void

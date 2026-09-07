@@ -44,6 +44,6 @@ class RegisterSessionMonitor extends Component
 
         return view('pos::livewire.control-center.register-session-monitor', [
             'sessions' => $sessions,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Register Sessions']);
     }
 }

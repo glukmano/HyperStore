@@ -170,6 +170,6 @@ class LoyaltyProgramManager extends Component
         return view('promotions::livewire.loyalty-program-manager', [
             'program' => $program,
             'rules' => $rules,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Loyalty Program']);
     }
 }

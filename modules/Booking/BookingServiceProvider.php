@@ -66,6 +66,6 @@ class BookingServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('booking.resources', 'Booking Resources', 'control-center.booking.resources', 'Booking', 'booking.view', 'tenant', '📅', 10));
+        $nav->register(new NavigationItem('booking.resources', 'Booking Resources', 'control-center.booking.resources', 'Booking', 'booking.view', 'tenant', 'calendar', 10));
     }
 }

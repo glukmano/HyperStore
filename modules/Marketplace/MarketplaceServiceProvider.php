@@ -60,7 +60,7 @@ class MarketplaceServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('marketplace.vendors', 'Vendors', 'control-center.vendors.index', 'Marketplace', 'vendors.view', 'tenant', '🏪', 10));
+        $nav->register(new NavigationItem('marketplace.vendors', 'Vendors', 'control-center.vendors.index', 'Marketplace', 'vendors.view', 'tenant', 'store', 10));
     }
 
     private function registerLivewireComponents(): void

@@ -48,6 +48,6 @@ class CashMovementLedgerViewer extends Component
 
         return view('pos::livewire.control-center.cash-movement-ledger-viewer', [
             'movements' => $movements,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Cash Movements']);
     }
 }

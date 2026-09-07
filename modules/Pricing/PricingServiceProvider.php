@@ -46,10 +46,10 @@ class PricingServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('pricing.price-books', 'Price Books', 'control-center.pricing.price-books', 'Pricing', 'pricing.view', 'tenant', '💰', 10));
-        $nav->register(new NavigationItem('pricing.products', 'Product Pricing', 'control-center.pricing.products', 'Pricing', 'pricing.view', 'tenant', '🏷️', 20));
-        $nav->register(new NavigationItem('pricing.exchange-rates', 'Exchange Rates', 'control-center.pricing.exchange-rates', 'Pricing', 'exchange_rates.view', 'tenant', '💱', 30));
-        $nav->register(new NavigationItem('pricing.taxes', 'Taxes', 'control-center.pricing.taxes', 'Pricing', 'tax.view', 'tenant', '🧾', 40));
+        $nav->register(new NavigationItem('pricing.price-books', 'Price Books', 'control-center.pricing.price-books', 'Pricing', 'pricing.view', 'tenant', 'wallet', 10));
+        $nav->register(new NavigationItem('pricing.products', 'Product Pricing', 'control-center.pricing.products', 'Pricing', 'pricing.view', 'tenant', 'tag', 20));
+        $nav->register(new NavigationItem('pricing.exchange-rates', 'Exchange Rates', 'control-center.pricing.exchange-rates', 'Pricing', 'exchange_rates.view', 'tenant', 'banknote', 30));
+        $nav->register(new NavigationItem('pricing.taxes', 'Taxes', 'control-center.pricing.taxes', 'Pricing', 'tax.view', 'tenant', 'receipt', 40));
     }
 
     protected function registerLivewireComponents(): void

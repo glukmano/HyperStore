@@ -71,6 +71,6 @@ class AffiliatePayoutManager extends Component
 
         return view('affiliate::livewire.control-center.affiliate-payout-manager', [
             'requests' => $requests,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Affiliate Payouts']);
     }
 }

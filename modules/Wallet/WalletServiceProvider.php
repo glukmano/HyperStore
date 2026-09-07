@@ -66,6 +66,6 @@ class WalletServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('wallet.accounts', 'Store Value', 'control-center.wallet.accounts', 'Wallet', 'wallet.accounts.view', 'tenant', '💰', 10));
+        $nav->register(new NavigationItem('wallet.accounts', 'Store Value', 'control-center.wallet.accounts', 'Wallet', 'wallet.accounts.view', 'tenant', 'wallet', 10));
     }
 }

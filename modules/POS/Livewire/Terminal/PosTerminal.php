@@ -135,6 +135,6 @@ class PosTerminal extends Component
         return view('pos::livewire.terminal.pos-terminal', [
             'session' => $session,
             'cart' => $cart,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'POS Terminal']);
     }
 }

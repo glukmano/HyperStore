@@ -109,7 +109,7 @@ class OrderServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('orders.orders', 'Orders', 'control-center.orders.orders.index', 'Orders', 'orders.view', 'tenant', '🧾', 10));
-        $nav->register(new NavigationItem('orders.returns', 'Returns / RMA', 'control-center.orders.returns.index', 'Orders', 'returns.view', 'tenant', '↩️', 20));
+        $nav->register(new NavigationItem('orders.orders', 'Orders', 'control-center.orders.orders.index', 'Orders', 'orders.view', 'tenant', 'receipt', 10));
+        $nav->register(new NavigationItem('orders.returns', 'Returns / RMA', 'control-center.orders.returns.index', 'Orders', 'returns.view', 'tenant', 'corner-down-left', 20));
     }
 }

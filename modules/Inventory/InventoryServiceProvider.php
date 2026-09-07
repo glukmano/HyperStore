@@ -70,15 +70,15 @@ class InventoryServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('inventory.warehouses', 'Warehouses', 'control-center.inventory.warehouses', 'Inventory', 'warehouses.view', 'tenant', '🏭', 10));
-        $nav->register(new NavigationItem('inventory.sources', 'Inventory Sources', 'control-center.inventory.sources', 'Inventory', 'inventory.view', 'tenant', '📍', 20));
-        $nav->register(new NavigationItem('inventory.stock', 'Stock', 'control-center.inventory.stock', 'Inventory', 'inventory.view', 'tenant', '📊', 30));
-        $nav->register(new NavigationItem('inventory.transfers', 'Transfers', 'control-center.inventory.transfers', 'Inventory', 'inventory.transfer', 'tenant', '🔁', 40));
-        $nav->register(new NavigationItem('inventory.adjustments', 'Adjustments', 'control-center.inventory.adjustments', 'Inventory', 'inventory.adjust', 'tenant', '⚖️', 50));
-        $nav->register(new NavigationItem('inventory.receive', 'Receiving', 'control-center.inventory.receive', 'Inventory', 'inventory.manage', 'tenant', '📥', 60));
-        $nav->register(new NavigationItem('inventory.reconcile', 'Reconciliation', 'control-center.inventory.reconcile', 'Inventory', 'inventory.reconcile', 'tenant', '🧮', 70));
-        $nav->register(new NavigationItem('inventory.movements', 'Movement History', 'control-center.inventory.movements', 'Inventory', 'inventory.movements.view', 'tenant', '📜', 80));
-        $nav->register(new NavigationItem('inventory.reservations', 'Reservations', 'control-center.inventory.reservations', 'Inventory', 'inventory.reservations.view', 'tenant', '🔒', 90));
+        $nav->register(new NavigationItem('inventory.warehouses', 'Warehouses', 'control-center.inventory.warehouses', 'Inventory', 'warehouses.view', 'tenant', 'factory', 10));
+        $nav->register(new NavigationItem('inventory.sources', 'Inventory Sources', 'control-center.inventory.sources', 'Inventory', 'inventory.view', 'tenant', 'map-pin', 20));
+        $nav->register(new NavigationItem('inventory.stock', 'Stock', 'control-center.inventory.stock', 'Inventory', 'inventory.view', 'tenant', 'bar-chart-3', 30));
+        $nav->register(new NavigationItem('inventory.transfers', 'Transfers', 'control-center.inventory.transfers', 'Inventory', 'inventory.transfer', 'tenant', 'repeat', 40));
+        $nav->register(new NavigationItem('inventory.adjustments', 'Adjustments', 'control-center.inventory.adjustments', 'Inventory', 'inventory.adjust', 'tenant', 'scale', 50));
+        $nav->register(new NavigationItem('inventory.receive', 'Receiving', 'control-center.inventory.receive', 'Inventory', 'inventory.manage', 'tenant', 'inbox', 60));
+        $nav->register(new NavigationItem('inventory.reconcile', 'Reconciliation', 'control-center.inventory.reconcile', 'Inventory', 'inventory.reconcile', 'tenant', 'calculator', 70));
+        $nav->register(new NavigationItem('inventory.movements', 'Movement History', 'control-center.inventory.movements', 'Inventory', 'inventory.movements.view', 'tenant', 'scroll-text', 80));
+        $nav->register(new NavigationItem('inventory.reservations', 'Reservations', 'control-center.inventory.reservations', 'Inventory', 'inventory.reservations.view', 'tenant', 'lock', 90));
     }
 
     protected function registerLivewireComponents(): void

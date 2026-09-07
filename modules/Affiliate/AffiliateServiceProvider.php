@@ -89,9 +89,9 @@ class AffiliateServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('affiliate.affiliates', 'Affiliates', 'control-center.affiliate.affiliates', 'Marketing', 'affiliates.view', 'tenant', '🔗', 10));
-        $nav->register(new NavigationItem('affiliate.campaigns', 'Campaigns', 'control-center.affiliate.campaigns', 'Marketing', 'marketing-campaigns.view', 'tenant', '📣', 20));
-        $nav->register(new NavigationItem('affiliate.commission-rules', 'Commission Rules', 'control-center.affiliate.commission-rules', 'Marketing', 'affiliates.manage', 'tenant', '💸', 30));
-        $nav->register(new NavigationItem('affiliate.payouts', 'Affiliate Payouts', 'control-center.affiliate.payouts', 'Marketing', 'affiliate-payouts.view', 'tenant', '💰', 40));
+        $nav->register(new NavigationItem('affiliate.affiliates', 'Affiliates', 'control-center.affiliate.affiliates', 'Marketing', 'affiliates.view', 'tenant', 'link', 10));
+        $nav->register(new NavigationItem('affiliate.campaigns', 'Campaigns', 'control-center.affiliate.campaigns', 'Marketing', 'marketing-campaigns.view', 'tenant', 'megaphone', 20));
+        $nav->register(new NavigationItem('affiliate.commission-rules', 'Commission Rules', 'control-center.affiliate.commission-rules', 'Marketing', 'affiliates.manage', 'tenant', 'banknote', 30));
+        $nav->register(new NavigationItem('affiliate.payouts', 'Affiliate Payouts', 'control-center.affiliate.payouts', 'Marketing', 'affiliate-payouts.view', 'tenant', 'wallet', 40));
     }
 }

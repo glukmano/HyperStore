@@ -97,6 +97,6 @@ class AuctionManager extends Component
 
         return view('auctions::livewire.control-center.auction-manager', [
             'auctions' => $auctions,
-        ]);
+        ])->layout('layouts.control-center', ['title' => 'Auctions']);
     }
 }

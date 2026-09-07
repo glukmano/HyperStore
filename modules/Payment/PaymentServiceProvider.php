@@ -92,6 +92,6 @@ class PaymentServiceProvider extends ModuleServiceProvider
     private function registerNavigation(): void
     {
         $nav = $this->app->make(NavigationRegistryInterface::class);
-        $nav->register(new NavigationItem('payments.payments', 'Payments', 'control-center.payments.index', 'Payments', 'payments.view', 'tenant', '💳', 100));
+        $nav->register(new NavigationItem('payments.payments', 'Payments', 'control-center.payments.index', 'Payments', 'payments.view', 'tenant', 'credit-card', 100));
     }
 }
