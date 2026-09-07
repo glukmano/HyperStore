@@ -28,6 +28,8 @@
 
 **Extended business data**: a B2B Company (`Demo Wholesale Buyers Inc.`) with the seeded B2B Buyer/Approver users attached, and one Quote (submitted then staff-priced — left in `quoted` status for the buyer to accept interactively); one live Auction (`Demo Vintage Camera`, activated via the real `AuctionLifecycleService`, biddable immediately); a Booking service (`Demo 1-Hour Consultation`) with one already-confirmed Booking and a second still-open slot to book interactively; a Subscription (`Demo Monthly Streaming Plan`, active); and a Return/RMA request against the demo Order (`requested` status, one item, real `MasterOrderSplitService` + `ReturnRequestService` pipeline).
 
+**Homepage content**: a `StoreDomain` mapping (`localhost` and `127.0.0.1` → the demo store) so a plain local browser visit resolves Tenant/Store context with no header needed — the actual root cause of an "empty" homepage; two `is_featured` products; a real `product_thumbnail` image per demo product (generated locally, no network call); and two `Modules\Cms\Models\Banner` rows (`homepage_hero`, `homepage_promo`), each with `en`+`ar` `BannerTranslation` rows and a real image. All rendered by the existing `App\Livewire\Storefront\Home` component and CMS `Banner` model — no demo content is hardcoded into the Theme.
+
 ## Explicitly Deferred (not seeded this pass)
 
 POS register-session history. See `docs/qa/LOCAL-PRODUCTION-READINESS.md` for the full readiness matrix.

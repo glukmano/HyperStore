@@ -1,12 +1,16 @@
 <div class="space-y-10">
-    <section class="hero bg-base-100 rounded-box py-16">
-        <div class="hero-content text-center">
-            <div class="max-w-md">
-                <h1 class="text-4xl font-bold">{{ __('Welcome') }}</h1>
-                <p class="py-4 text-base-content/70">{{ __('Discover our latest products.') }}</p>
+    @if ($heroBanner)
+        <x-theme::banner-section :banner="$heroBanner" variant="hero" />
+    @else
+        <section class="hero bg-base-100 rounded-box py-16">
+            <div class="hero-content text-center">
+                <div class="max-w-md">
+                    <h1 class="text-4xl font-bold">{{ __('Welcome') }}</h1>
+                    <p class="py-4 text-base-content/70">{{ __('Discover our latest products.') }}</p>
+                </div>
             </div>
-        </div>
-    </section>
+        </section>
+    @endif
 
     @if($categories->isNotEmpty())
         <section>
@@ -18,6 +22,21 @@
                             <span class="font-medium">{{ $category->translation()?->name ?? $category->code }}</span>
                         </x-ui.card>
                     </a>
+                @endforeach
+            </div>
+        </section>
+    @endif
+
+    @if ($promoBanner)
+        <x-theme::banner-section :banner="$promoBanner" variant="promo" />
+    @endif
+
+    @if($featuredProducts->isNotEmpty())
+        <section>
+            <h2 class="text-xl font-bold mb-4">{{ __('Featured Products') }}</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                @foreach($featuredProducts as $product)
+                    <x-theme::product-card :product="$product" />
                 @endforeach
             </div>
         </section>

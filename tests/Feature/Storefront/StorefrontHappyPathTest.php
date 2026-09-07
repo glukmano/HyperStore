@@ -24,6 +24,7 @@ use Livewire\Livewire;
 use Modules\Cart\Models\Cart;
 use Modules\Catalog\Models\Category;
 use Modules\Catalog\Models\Product;
+use Modules\Catalog\Models\ProductStoreListing;
 use Tests\TestCase;
 
 /**
@@ -73,6 +74,12 @@ class StorefrontHappyPathTest extends TestCase
             'status' => 'active',
         ]);
         $this->product->categories()->attach($category->id, ['is_primary' => true]);
+        ProductStoreListing::create([
+            'product_id' => $this->product->id,
+            'store_id' => $this->store->id,
+            'status' => 'published',
+            'visibility' => 'visible',
+        ]);
 
         $context = app(ContextManager::class);
         $context->setTenant(TenantContext::from($this->tenant->id, $this->tenant->name));

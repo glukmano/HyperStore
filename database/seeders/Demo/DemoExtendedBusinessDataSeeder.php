@@ -66,7 +66,7 @@ class DemoExtendedBusinessDataSeeder extends Seeder
 
         $this->seedB2bCompanyAndQuote($tenant->id, $owner);
         $this->seedAuction($tenant->id, $store->id, $source->id);
-        $this->seedBooking($tenant->id);
+        $this->seedBooking($tenant->id, $store->id);
         $this->seedSubscription($tenant->id, $store->id, $market->id, $channel->id);
         $this->seedReturnRequest($tenant->id);
 
@@ -149,7 +149,7 @@ class DemoExtendedBusinessDataSeeder extends Seeder
         }
     }
 
-    private function seedBooking(int $tenantId): void
+    private function seedBooking(int $tenantId, int $storeId): void
     {
         try {
             if (BookingService::where('tenant_id', $tenantId)->exists()) {
@@ -164,6 +164,7 @@ class DemoExtendedBusinessDataSeeder extends Seeder
                 ['product_id' => $product->id, 'locale' => 'en'],
                 ['name' => 'Demo 1-Hour Consultation', 'short_description' => 'A bookable demo service slot.', 'description' => 'Demo data seeded for local exploration of the Booking ProductType.']
             );
+            ProductStoreListing::firstOrCreate(['product_id' => $product->id, 'store_id' => $storeId], ['status' => 'published']);
 
             $bookingService = BookingService::create([
                 'tenant_id' => $tenantId,

@@ -48,6 +48,15 @@ class Banner extends Model implements HasMedia
         return $this->hasMany(BannerTranslation::class, 'banner_id');
     }
 
+    public function translation(?string $locale = null): ?BannerTranslation
+    {
+        $locale = $locale ?? app()->getLocale();
+
+        return $this->translations->firstWhere('locale', $locale)
+            ?? $this->translations->firstWhere('locale', config('app.fallback_locale', 'en'))
+            ?? $this->translations->first();
+    }
+
     public function isCurrentlyActive(): bool
     {
         if (! $this->is_active) {
