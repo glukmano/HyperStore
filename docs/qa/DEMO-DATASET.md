@@ -26,6 +26,8 @@
 
 **Business data**: one completed Order (via the real Cart→Checkout→Payment pipeline), one Wallet balance, one Gift Card.
 
+**Extended business data**: a B2B Company (`Demo Wholesale Buyers Inc.`) with the seeded B2B Buyer/Approver users attached, and one Quote (submitted then staff-priced — left in `quoted` status for the buyer to accept interactively); one live Auction (`Demo Vintage Camera`, activated via the real `AuctionLifecycleService`, biddable immediately); a Booking service (`Demo 1-Hour Consultation`) with one already-confirmed Booking and a second still-open slot to book interactively; a Subscription (`Demo Monthly Streaming Plan`, active); and a Return/RMA request against the demo Order (`requested` status, one item, real `MasterOrderSplitService` + `ReturnRequestService` pipeline).
+
 ## Explicitly Deferred (not seeded this pass)
 
-B2B Company/Quote workflow, an Auction, a Booking, a Subscription signup, an RMA/Return example, and POS register-session history. The foundation for these (B2B buyer/approver users, the POS Register itself) is already seeded so a future pass can extend `DemoBusinessDataSeeder` without redoing the foundation. See `docs/qa/LOCAL-PRODUCTION-READINESS.md` for the full readiness matrix.
+POS register-session history. See `docs/qa/LOCAL-PRODUCTION-READINESS.md` for the full readiness matrix.

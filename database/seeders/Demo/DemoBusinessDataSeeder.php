@@ -38,13 +38,10 @@ use Throwable;
  * Wallet balance, a Gift Card) reusing real domain services, never raw
  * inserts that would bypass an economic invariant.
  *
- * Explicitly DEFERRED from this pass (not silently dropped — tracked in
- * docs/qa/LOCAL-PRODUCTION-READINESS.md): B2B Company/Quote workflow,
- * Auction, Booking, Subscription signup, an RMA/Return example, and POS
- * register-session history. Each requires deeper per-module fixture setup
- * than this pass's remaining scope justified; the foundation (B2B buyer/
- * approver users, the POS Register itself) is already seeded so a future
- * pass can extend this seeder without redoing the foundation.
+ * B2B Company/Quote, Auction, Booking, Subscription, and an RMA/Return
+ * example are seeded by DemoExtendedBusinessDataSeeder (which runs
+ * immediately after this seeder in DemoSeeder). POS register-session
+ * history remains deferred — tracked in docs/qa/LOCAL-PRODUCTION-READINESS.md.
  */
 class DemoBusinessDataSeeder extends Seeder
 {

@@ -20,6 +20,7 @@ class DemoSeeder extends Seeder
             DemoFoundationSeeder::class,
             DemoCatalogSeeder::class,
             DemoBusinessDataSeeder::class,
+            DemoExtendedBusinessDataSeeder::class,
         ]);
     }
 }

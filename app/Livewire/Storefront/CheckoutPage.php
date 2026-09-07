@@ -12,6 +12,7 @@ use Modules\Cart\ValueObjects\CartContext;
 use Modules\Checkout\Contracts\CheckoutOrchestratorInterface;
 use Modules\Checkout\DTOs\CheckoutAddress;
 use Modules\Checkout\DTOs\CheckoutCustomerData;
+use Modules\Checkout\Exceptions\CheckoutExpiredException;
 use Modules\Checkout\Models\CheckoutSession;
 use Modules\Checkout\Services\CheckoutOwnershipService;
 use Modules\Order\Contracts\OrderCreationServiceInterface;
@@ -184,8 +185,27 @@ class CheckoutPage extends Component
         $rate = collect($this->shippingRates)->firstWhere('id', $this->selectedRateId)
             ?? collect($this->shippingRates)->first() ?? [];
 
-        $session = $orchestrator->selectShippingQuote($session, is_array($rate) ? $rate : []);
-        $orchestrator->reserveInventory($session);
+        try {
+            $session = $orchestrator->selectShippingQuote($session, is_array($rate) ? $rate : []);
+            $orchestrator->reserveInventory($session);
+        } catch (CheckoutExpiredException) {
+            session()->flash('error', 'Your checkout session has expired. Please start again.');
+            $this->redirect(route('storefront.cart'), navigate: true);
+
+            return;
+        } catch (RuntimeException $e) {
+            // Owner Delta (Pre-Production error-handling audit): inventory
+            // conflicts, booking-capacity conflicts, and stale price/tax/
+            // shipping-quote states all surface as a RuntimeException here
+            // (CheckoutInventoryReservationOrchestrator, BookingHoldHook,
+            // and the Checkout module's own DTO validators) — none of them
+            // were previously caught, so they crashed the Livewire action
+            // instead of showing the customer an actionable message.
+            session()->flash('error', $e->getMessage());
+
+            return;
+        }
+
         $this->step = 'payment';
     }
 
@@ -205,12 +225,25 @@ class CheckoutPage extends Component
     ): void {
         if ($this->placedOrderId === null) {
             $session = $this->requireSession();
-            $ready = $orchestrator->markReadyForOrder($session);
 
-            $result = $orderCreation->createFromCheckout(new OrderCreationDTO(
-                tenantId: $ready->tenantId,
-                checkoutId: $ready->checkoutSessionId,
-            ));
+            try {
+                $ready = $orchestrator->markReadyForOrder($session);
+
+                $result = $orderCreation->createFromCheckout(new OrderCreationDTO(
+                    tenantId: $ready->tenantId,
+                    checkoutId: $ready->checkoutSessionId,
+                ));
+            } catch (CheckoutExpiredException) {
+                session()->flash('error', 'Your checkout session has expired. Please start again.');
+                $this->redirect(route('storefront.cart'), navigate: true);
+
+                return;
+            } catch (RuntimeException $e) {
+                session()->flash('error', $e->getMessage());
+                $this->step = 'shipping';
+
+                return;
+            }
 
             $order = $result->order;
             $this->placedOrderId = $order->id;
